@@ -7,6 +7,11 @@ import React, { useState, useRef } from 'react';
 import mammoth from 'mammoth';
 import { Document, Packer, Paragraph, TextRun, ImageRun, Table, TableRow, TableCell, WidthType } from 'docx';
 import { saveAs } from 'file-saver';
+import * as XLSX from 'xlsx';
+import * as pdfjsLib from 'pdfjs-dist';
+import { jsPDF } from 'jspdf';
+import PptxGenJS from 'pptxgenjs';
+import JSZip from 'jszip';
 import { 
   Upload, 
   FileText, 
@@ -15,9 +20,15 @@ import {
   Loader2, 
   CheckCircle2, 
   AlertCircle,
-  ArrowRight
+  ArrowRight,
+  FileSpreadsheet,
+  File as FileIcon,
+  Presentation
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+
+// Set up PDF.js worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 // DeepSeek API Configuration (Now handled via server proxy)
 const DEEPSEEK_PROXY_URL = '/api/translate';
@@ -34,21 +45,48 @@ const AVAILABLE_LANGUAGES = [
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
 export default function App() {
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>(['英文']);
+  const [industry, setIndustry] = useState('');
   const [status, setStatus] = useState<TranslationStatus>('idle');
+  const [statusMessage, setStatusMessage] = useState('');
   const [progress, setProgress] = useState(0);
+  const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isCancelledRef = useRef(false);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selectedFile = e.target.files?.[0];
-    if (selectedFile && selectedFile.type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
-      setFile(selectedFile);
-      setError(null);
+    const selectedFiles = Array.from(e.target.files || []) as File[];
+    if (selectedFiles.length > 0) {
+      const validExtensions = ['docx', 'xlsx', 'pdf', 'pptx'];
+      const newFiles: File[] = [];
+      let hasInvalid = false;
+
+      selectedFiles.forEach(f => {
+        const extension = f.name.split('.').pop()?.toLowerCase();
+        if (validExtensions.includes(extension || '')) {
+          newFiles.push(f);
+        } else {
+          hasInvalid = true;
+        }
+      });
+
+      if (newFiles.length > 0) {
+        setFiles(prev => [...prev, ...newFiles]);
+        setError(hasInvalid ? '部分檔案格式不支援，已跳過' : null);
+        setStatus('idle');
+      } else if (hasInvalid) {
+        setError('請上傳有效的 .docx, .xlsx, .pdf 或 .pptx 檔案');
+      }
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setFiles(prev => prev.filter((_, i) => i !== index));
+    if (files.length === 1) {
       setStatus('idle');
-    } else {
-      setError('請上傳有效的 .docx 檔案');
+      setProgress(0);
     }
   };
 
@@ -60,23 +98,29 @@ export default function App() {
     );
   };
 
-  const translateBatch = async (text: string, targetLangs: string[], retryCount = 0): Promise<Record<string, string>> => {
-    if (!text.trim() || targetLangs.length === 0) return {};
+  const translateBatch = async (texts: string[], targetLangs: string[], retryCount = 0): Promise<Record<string, string>[]> => {
+    if (texts.length === 0 || targetLangs.length === 0) return texts.map(() => ({}));
     
     try {
       // Add a delay between batches to stay under RPM limits
       await sleep(1000); 
 
-      const prompt = `你是一個專業的翻譯官。請將以下文字同時翻譯成以下語言：${targetLangs.join('、')}。
+      const industryContext = industry ? `。這是一個關於「${industry}」行業的文件，請使用該行業的專業術語進行翻譯` : '';
+      const prompt = `你是一個專業的翻譯官${industryContext}。請將以下文字陣列中的每一項同時翻譯成以下語言：${targetLangs.join('、')}。
       請嚴格以 JSON 格式回傳結果，格式如下：
       {
-        "${targetLangs[0]}": "翻譯內容",
-        ...
+        "translations": [
+          { "${targetLangs[0]}": "翻譯內容1", "${targetLangs[1]}": "翻譯內容1", ... },
+          { "${targetLangs[0]}": "翻譯內容2", "${targetLangs[1]}": "翻譯內容2", ... },
+          ...
+        ]
       }
+      確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
+      注意：翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣），只需要純粹的翻譯內容。
       不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
       
-      待翻譯內容：
-      ${text}`;
+      待翻譯內容陣列：
+      ${JSON.stringify(texts, null, 2)}`;
 
       const response = await fetch(DEEPSEEK_PROXY_URL, {
         method: 'POST',
@@ -92,7 +136,6 @@ export default function App() {
           const errorData = await response.json();
           errorMessage = errorData.error?.message || errorMessage;
         } catch (e) {
-          // If not JSON, try to get text
           const textError = await response.text();
           errorMessage = textError || errorMessage;
         }
@@ -101,7 +144,13 @@ export default function App() {
 
       const data = await response.json();
       const resultText = data.choices[0].message.content.trim();
-      return JSON.parse(resultText);
+      const parsed = JSON.parse(resultText);
+      
+      if (!parsed.translations || !Array.isArray(parsed.translations)) {
+        throw new Error('API 回傳格式不正確');
+      }
+
+      return parsed.translations;
     } catch (err: any) {
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
@@ -110,7 +159,7 @@ export default function App() {
         const waitTime = Math.pow(2, retryCount) * 5000 + Math.random() * 2000;
         console.warn(`DeepSeek Rate limit hit. Waiting ${Math.round(waitTime/1000)}s... (Attempt ${retryCount + 1})`);
         await sleep(waitTime);
-        return translateBatch(text, targetLangs, retryCount + 1);
+        return translateBatch(texts, targetLangs, retryCount + 1);
       }
 
       if (isAuthError) {
@@ -118,314 +167,453 @@ export default function App() {
       }
 
       console.error(`DeepSeek Batch translation error:`, err);
-      const errorResult: Record<string, string> = {};
-      targetLangs.forEach(lang => errorResult[lang] = `(翻譯出錯: ${err?.message || 'API 錯誤'})`);
-      return errorResult;
+      // Fallback: return error placeholders for each text
+      return texts.map(() => {
+        const errorResult: Record<string, string> = {};
+        targetLangs.forEach(lang => errorResult[lang] = `(翻譯出錯: ${err?.message || 'API 錯誤'})`);
+        return errorResult;
+      });
     }
   };
 
-  const processFile = async () => {
-    if (!file || selectedLanguages.length === 0) return;
+  const cancelTranslation = () => {
+    isCancelledRef.current = true;
+    setStatus('idle');
+    setProgress(0);
+    setError('翻譯已取消');
+  };
+
+  const processDocx = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
+    updateProgress(5, 'processing');
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    
+    // 1. Read the main document XML
+    const documentXmlPath = 'word/document.xml';
+    const documentXmlContent = await zip.file(documentXmlPath)?.async('string');
+    if (!documentXmlContent) throw new Error('無法讀取 Word 文件內容');
+
+    const parser = new DOMParser();
+    const xmlDoc = parser.parseFromString(documentXmlContent, 'application/xml');
+    const ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+    // 2. Find all paragraphs
+    const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS(ns, 'p'));
+    const totalParagraphs = paragraphs.length;
+    
+    updateProgress(10, 'translating');
+    const BATCH_SIZE = 10;
+    
+    for (let i = 0; i < totalParagraphs; i += BATCH_SIZE) {
+      if (isCancelledRef.current) throw new Error('翻譯已取消');
+      
+      const batchParas = paragraphs.slice(i, i + BATCH_SIZE);
+      const paraData = batchParas.map(p => {
+        // Get all text nodes in this paragraph
+        const textNodes = Array.from(p.getElementsByTagNameNS(ns, 't'));
+        const fullText = textNodes.map(t => t.textContent || '').join('');
+        return { p, fullText };
+      }).filter(data => data.fullText.trim().length > 0);
+
+      if (paraData.length > 0) {
+        // Translating progress: 10% to 90%
+        const currentProgress = 10 + Math.round((Math.min(i + BATCH_SIZE, totalParagraphs) / totalParagraphs) * 80);
+        updateProgress(currentProgress, 'translating');
+        
+        const textsToTranslate = paraData.map(d => d.fullText);
+        const batchTranslations = await translateBatch(textsToTranslate, selectedLanguages);
+        
+        paraData.forEach((data, idx) => {
+          const translations = batchTranslations[idx];
+          const p = data.p;
+          
+          // Find the first run to copy its properties
+          const firstRun = p.getElementsByTagNameNS(ns, 'r')[0];
+          const firstRunPr = firstRun?.getElementsByTagNameNS(ns, 'rPr')[0];
+
+          selectedLanguages.forEach(lang => {
+            const translatedText = translations[lang];
+            if (!translatedText) return;
+
+            // Create a new run for the translation
+            const newRun = xmlDoc.createElementNS(ns, 'w:r');
+            
+            // Copy properties if they exist
+            if (firstRunPr) {
+              newRun.appendChild(firstRunPr.cloneNode(true));
+            }
+
+            // Add a break before the translation
+            const br = xmlDoc.createElementNS(ns, 'w:br');
+            newRun.appendChild(br);
+
+            // Add the translated text
+            const t = xmlDoc.createElementNS(ns, 'w:t');
+            t.textContent = translatedText;
+            newRun.appendChild(t);
+
+            // Append the translation to the paragraph
+            p.appendChild(newRun);
+          });
+        });
+      }
+    }
+
+    // 3. Save the modified XML back to the zip
+    updateProgress(95, 'generating');
+    const serializer = new XMLSerializer();
+    const modifiedXml = serializer.serializeToString(xmlDoc);
+    zip.file(documentXmlPath, modifiedXml);
+
+    // 4. Generate the new docx file
+    const content = await zip.generateAsync({ type: 'blob' });
+    const fileName = file.name.replace(/\.docx$/, `_translated.docx`);
+    saveAs(content, fileName);
+    updateProgress(100, 'generating');
+  };
+
+  const processExcel = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
+    updateProgress(5, 'processing');
+    const arrayBuffer = await file.arrayBuffer();
+    const workbook = XLSX.read(arrayBuffer);
+    const newWorkbook = XLSX.utils.book_new();
+
+    updateProgress(10, 'translating');
+    const sheetNames = workbook.SheetNames;
+    
+    for (let s = 0; s < sheetNames.length; s++) {
+      if (isCancelledRef.current) throw new Error('翻譯已取消');
+      
+      const sheetName = sheetNames[s];
+      const worksheet = workbook.Sheets[sheetName];
+      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+      
+      const newSheetData: any[][] = [];
+      const totalRows = jsonData.length;
+
+      // Batch translate rows
+      const BATCH_SIZE = 10;
+      for (let r = 0; r < totalRows; r += BATCH_SIZE) {
+        if (isCancelledRef.current) throw new Error('翻譯已取消');
+        
+        // Translating progress: 10% to 90%
+        const currentProgress = 10 + Math.round(((s * totalRows + r) / (sheetNames.length * totalRows)) * 80);
+        updateProgress(currentProgress, 'translating');
+        
+        const batchRows = jsonData.slice(r, r + BATCH_SIZE);
+        const cellsToTranslate: { r: number, c: number, text: string }[] = [];
+        
+        batchRows.forEach((row, rowIdx) => {
+          row.forEach((cellValue, colIdx) => {
+            if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
+              cellsToTranslate.push({ r: rowIdx, c: colIdx, text: cellValue });
+            }
+          });
+        });
+
+        if (cellsToTranslate.length > 0) {
+          const batchTranslations = await translateBatch(cellsToTranslate.map(c => c.text), selectedLanguages);
+          
+          cellsToTranslate.forEach((cell, idx) => {
+            const translations = batchTranslations[idx];
+            let combinedValue = cell.text;
+            for (const lang of selectedLanguages) {
+              combinedValue += `\n${translations[lang] || '(翻譯失敗)'}`;
+            }
+            batchRows[cell.r][cell.c] = combinedValue;
+          });
+        }
+        
+        newSheetData.push(...batchRows);
+      }
+      
+      const newWorksheet = XLSX.utils.aoa_to_sheet(newSheetData);
+      XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, sheetName);
+    }
+
+    updateProgress(95, 'generating');
+    const excelBuffer = XLSX.write(newWorkbook, { bookType: 'xlsx', type: 'array' });
+    const excelBlob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    saveAs(excelBlob, `translated_${file.name}`);
+    updateProgress(100, 'generating');
+  };
+
+  const processPdf = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
+    updateProgress(5, 'processing');
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const doc = new jsPDF();
+    
+    updateProgress(10, 'translating');
+    const totalPages = pdf.numPages;
+
+    for (let i = 1; i <= totalPages; i++) {
+      if (isCancelledRef.current) throw new Error('翻譯已取消');
+      
+      // Translating progress: 10% to 90%
+      const currentProgress = 10 + Math.round((i / totalPages) * 80);
+      updateProgress(currentProgress, 'translating');
+      
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const strings = textContent.items.map((item: any) => item.str);
+      const fullText = strings.join(' ').trim();
+
+      if (fullText) {
+        // Split text into manageable chunks for translation if it's too long
+        const chunks = fullText.match(/.{1,1000}/g) || [fullText];
+        const batchTranslations = await translateBatch(chunks, selectedLanguages);
+        
+        if (i > 1) doc.addPage();
+        
+        let yPos = 20;
+        const margin = 15;
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const contentWidth = pageWidth - (margin * 2);
+
+        // Header
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(14);
+        doc.setTextColor(16, 185, 129); // Emerald 600
+        doc.text(`Page ${i} Translation`, margin, yPos);
+        yPos += 10;
+
+        // Original Text
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(10);
+        doc.setTextColor(100, 116, 139); // Slate 500
+        doc.text("ORIGINAL TEXT", margin, yPos);
+        yPos += 6;
+        
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(9);
+        doc.setTextColor(30, 41, 59); // Slate 800
+        const splitOriginal = doc.splitTextToSize(fullText, contentWidth);
+        
+        // Handle page overflow for original text
+        for (const line of splitOriginal) {
+          if (yPos > 280) {
+            doc.addPage();
+            yPos = 20;
+          }
+          doc.text(line, margin, yPos);
+          yPos += 5;
+        }
+        
+        yPos += 10;
+
+        // Translations
+        for (const lang of selectedLanguages) {
+          if (yPos > 260) {
+            doc.addPage();
+            yPos = 20;
+          }
+          
+          doc.setFont("helvetica", "bold");
+          doc.setFontSize(10);
+          doc.setTextColor(16, 185, 129); // Emerald 600
+          doc.text(`${lang.toUpperCase()}`, margin, yPos);
+          yPos += 6;
+
+          doc.setFont("helvetica", "normal");
+          doc.setFontSize(10);
+          doc.setTextColor(0, 0, 0);
+          
+          const combinedTrans = batchTranslations.map(t => t[lang] || '').join(' ');
+          const splitTrans = doc.splitTextToSize(combinedTrans, contentWidth);
+          
+          for (const line of splitTrans) {
+            if (yPos > 280) {
+              doc.addPage();
+              yPos = 20;
+            }
+            doc.text(line, margin, yPos);
+            yPos += 6;
+          }
+          yPos += 8;
+        }
+      }
+    }
+
+    updateProgress(95, 'generating');
+    doc.save(`translated_${file.name}`);
+    updateProgress(100, 'generating');
+  };
+
+  const processPptx = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
+    updateProgress(5, 'processing');
+    const arrayBuffer = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    
+    // 1. Find all slide files
+    const slideFiles = Object.keys(zip.files).filter(path => path.startsWith('ppt/slides/slide') && path.endsWith('.xml'));
+    const totalSlides = slideFiles.length;
+    
+    updateProgress(10, 'translating');
+    const nsA = "http://schemas.openxmlformats.org/drawingml/2006/main";
+
+    for (let i = 0; i < totalSlides; i++) {
+      if (isCancelledRef.current) throw new Error('翻譯已取消');
+      
+      // Translating progress: 10% to 90%
+      const currentProgress = 10 + Math.round((i / totalSlides) * 80);
+      updateProgress(currentProgress, 'translating');
+      
+      const slidePath = slideFiles[i];
+      const slideXmlContent = await zip.file(slidePath)?.async('string');
+      if (!slideXmlContent) continue;
+
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(slideXmlContent, 'application/xml');
+      
+      // Find all paragraphs in the slide
+      const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS(nsA, 'p'));
+      
+      const paraData = paragraphs.map(p => {
+        const textNodes = Array.from(p.getElementsByTagNameNS(nsA, 't'));
+        const fullText = textNodes.map(t => t.textContent || '').join('');
+        return { p, fullText };
+      }).filter(data => data.fullText.trim().length > 0);
+
+      if (paraData.length > 0) {
+        const textsToTranslate = paraData.map(d => d.fullText);
+        const batchTranslations = await translateBatch(textsToTranslate, selectedLanguages);
+        
+        paraData.forEach((data, idx) => {
+          const translations = batchTranslations[idx];
+          const p = data.p;
+          
+          // Find the first run to copy its properties
+          const firstRun = p.getElementsByTagNameNS(nsA, 'r')[0];
+          const firstRunPr = firstRun?.getElementsByTagNameNS(nsA, 'rPr')[0];
+
+          selectedLanguages.forEach(lang => {
+            const translatedText = translations[lang];
+            if (!translatedText) return;
+
+            // Add a break (a:br)
+            const br = xmlDoc.createElementNS(nsA, 'a:br');
+            if (firstRunPr) {
+              br.appendChild(firstRunPr.cloneNode(true));
+            }
+            p.appendChild(br);
+
+            // Create a new run for the translation
+            const newRun = xmlDoc.createElementNS(nsA, 'a:r');
+            
+            // Copy properties if they exist
+            if (firstRunPr) {
+              newRun.appendChild(firstRunPr.cloneNode(true));
+            }
+
+            // Add the translated text in a new run
+            const t = xmlDoc.createElementNS(nsA, 'a:t');
+            t.textContent = translatedText;
+            newRun.appendChild(t);
+
+            // Append the translation to the paragraph
+            p.appendChild(newRun);
+          });
+        });
+
+        // Save the modified slide XML back to the zip
+        const serializer = new XMLSerializer();
+        const modifiedXml = serializer.serializeToString(xmlDoc);
+        zip.file(slidePath, modifiedXml);
+      }
+    }
+
+    updateProgress(95, 'generating');
+    const content = await zip.generateAsync({ type: 'blob' });
+    const fileName = file.name.replace(/\.pptx$/, `_translated.pptx`);
+    saveAs(content, fileName);
+    updateProgress(100, 'generating');
+  };
+
+  const processFiles = async () => {
+    if (files.length === 0 || selectedLanguages.length === 0) return;
 
     try {
       setStatus('processing');
       setError(null);
       setProgress(0);
+      setFileProgress({});
+      isCancelledRef.current = false;
 
-      // 1. Convert Docx to HTML (preserves images as base64)
-      const arrayBuffer = await file.arrayBuffer();
-      const result = await mammoth.convertToHtml({ arrayBuffer });
-      const htmlContent = result.value;
-
-      if (!htmlContent.trim()) {
-        throw new Error('檔案內容為空');
-      }
-
-      // 2. Parse HTML and process elements
-      setStatus('translating');
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(htmlContent, 'text/html');
-      
-      // Find all text-containing elements (p, h1-h6, li, td)
-      const elements = Array.from(doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li, td'));
-      const totalElements = elements.length;
-      
-      for (let i = 0; i < totalElements; i++) {
-        const el = elements[i];
-        const originalText = el.textContent?.trim();
+      for (let i = 0; i < files.length; i++) {
+        if (isCancelledRef.current) break;
         
-        if (originalText && originalText.length > 0) {
-          // Update progress
-          setProgress(Math.round(((i + 1) / totalElements) * 100));
-
-          // Check for images within this element
-          const images = Array.from(el.querySelectorAll('img'));
-          const hasImages = images.length > 0;
-
-          // Batch translate all selected languages at once
-          const translations = await translateBatch(originalText, selectedLanguages);
-
-          if (hasImages) {
-            // Remove images from the original element to move them after the translation
-            images.forEach(img => img.remove());
-          }
-
-          // Create a container for translations
-          const translationContainer = doc.createElement('div');
-          translationContainer.className = 'translation-container';
-          translationContainer.style.marginTop = '4px';
-          translationContainer.style.marginBottom = '12px';
-
-          for (const lang of selectedLanguages) {
-            const translatedText = translations[lang] || '(翻譯失敗)';
-            const p = doc.createElement('p');
-            p.style.color = '#000000';
-            p.style.fontStyle = 'normal';
-            p.style.fontSize = '10pt';
-            p.style.margin = '2px 0';
-            p.textContent = `[${lang}] ${translatedText}`;
-            translationContainer.appendChild(p);
-          }
-          
-          // Insert translations after the current element
-          el.insertAdjacentElement('afterend', translationContainer);
-
-          if (hasImages) {
-            // Create a new paragraph for the images and insert it after the translation
-            // This ensures the layout is: Original Text -> Translation -> Images
-            const imgPara = doc.createElement('p');
-            images.forEach(img => imgPara.appendChild(img));
-            translationContainer.insertAdjacentElement('afterend', imgPara);
-          }
-        }
-      }
-
-      // 3. Generate new Docx from modified HTML structure
-      setStatus('generating');
-      const docChildren: Paragraph[] = [];
-
-      // Helper to convert base64 to Uint8Array for docx ImageRun
-      const base64ToUint8Array = (base64: string) => {
-        const binaryString = window.atob(base64.split(',')[1]);
-        const bytes = new Uint8Array(binaryString.length);
-        for (let i = 0; i < binaryString.length; i++) {
-          bytes[i] = binaryString.charCodeAt(i);
-        }
-        return bytes;
-      };
-
-      // Recursive function to process nodes within a paragraph or heading
-      const processNode = (node: Node, isTranslation: boolean, parentStyles: any = {}): any[] => {
-        const children: any[] = [];
+        const currentFile = files[i];
+        const extension = currentFile.name.split('.').pop()?.toLowerCase();
         
-        for (const child of Array.from(node.childNodes)) {
-          if (child.nodeName === 'IMG') {
-            const img = child as HTMLImageElement;
-            if (img.src.startsWith('data:image')) {
-              try {
-                const imageData = base64ToUint8Array(img.src);
-                if (imageData && imageData.length > 0) {
-                  children.push(new ImageRun({
-                    data: imageData,
-                    transformation: {
-                      width: 400,
-                      height: 300,
-                    },
-                  }));
-                }
-              } catch (e) {
-                console.error("Failed to process image", e);
-              }
-            }
-          } else if (child.nodeType === Node.TEXT_NODE) {
-            const text = child.textContent || '';
-            if (text.trim() || text === ' ') {
-              children.push(new TextRun({
-                text: text,
-                bold: parentStyles.bold || false,
-                italics: (isTranslation ? false : parentStyles.italics) || false,
-                color: isTranslation ? "000000" : (parentStyles.color || "000000"),
-                size: parentStyles.size || undefined,
-              }));
-            }
-          } else if (child.nodeType === Node.ELEMENT_NODE) {
-            const el = child as HTMLElement;
-            const newStyles = { ...parentStyles };
-            
-            if (el.nodeName === 'STRONG' || el.nodeName === 'B') newStyles.bold = true;
-            if (el.nodeName === 'EM' || el.nodeName === 'I') newStyles.italics = true;
-            
-            // Recursively process children of this element
-            children.push(...processNode(el, isTranslation, newStyles));
-          }
-        }
-        return children;
-      };
+        setStatusMessage(`正在處理第 ${i + 1} / ${files.length} 份文件: ${currentFile.name}`);
+        
+        // Update overall progress based on file index
+        const baseProgress = (i / files.length) * 100;
+        const fileWeight = 100 / files.length;
+        
+        const updateFileProgress = (p: number, currentStatus?: TranslationStatus) => {
+          setFileProgress(prev => ({ ...prev, [currentFile.name]: p }));
+          setProgress(Math.round(baseProgress + (p * fileWeight / 100)));
+          if (currentStatus) setStatus(currentStatus);
+        };
 
-      // Iterate through the processed HTML body and convert to docx objects
-      const processTopLevelNode = (node: Node): any[] => {
-        const nodeName = node.nodeName;
-        const el = node as HTMLElement;
-
-        if (nodeName === 'P' || nodeName.match(/^H[1-6]$/)) {
-          // Determine heading level
-          let headingLevel: any = undefined;
-          if (nodeName === 'H1') headingLevel = "Heading1";
-          else if (nodeName === 'H2') headingLevel = "Heading2";
-          else if (nodeName === 'H3') headingLevel = "Heading3";
-
-          const paragraphChildren = processNode(el, false, {
-            bold: nodeName.match(/^H[1-6]$/) ? true : false,
-            size: nodeName === 'H1' ? 32 : nodeName === 'H2' ? 28 : nodeName === 'H3' ? 24 : undefined
-          });
-
-          if (paragraphChildren.length > 0) {
-            return [new Paragraph({
-              children: paragraphChildren,
-              heading: headingLevel,
-              spacing: { before: 120, after: 120 },
-            })];
-          }
-        } else if (nodeName === 'DIV') {
-          const isTranslation = el.className === 'translation-container';
-          const divChildren: any[] = [];
-          
-          for (const childNode of Array.from(el.childNodes)) {
-            if (isTranslation && childNode.nodeName === 'P') {
-              const pEl = childNode as HTMLElement;
-              const translationChildren = processNode(pEl, true, { italics: false, color: "000000" });
-              if (translationChildren.length > 0) {
-                divChildren.push(new Paragraph({
-                  children: translationChildren,
-                  spacing: { after: 200 },
-                  indent: { left: 240 },
-                }));
-              }
-            } else {
-              divChildren.push(...processTopLevelNode(childNode));
-            }
-          }
-          return divChildren;
-        } else if (nodeName === 'TABLE') {
-          const rows: TableRow[] = [];
-          const trs = Array.from(el.querySelectorAll('tr'));
-          
-          for (const tr of trs) {
-            const cells: TableCell[] = [];
-            const tds = Array.from(tr.childNodes).filter(n => n.nodeName === 'TD' || n.nodeName === 'TH') as HTMLElement[];
-            
-            for (const td of tds) {
-              const cellChildren: any[] = [];
-              for (const childNode of Array.from(td.childNodes)) {
-                cellChildren.push(...processTopLevelNode(childNode));
-              }
-              
-              cells.push(new TableCell({
-                children: cellChildren.length > 0 ? cellChildren : [new Paragraph("")],
-                width: { size: 0, type: WidthType.AUTO }, // Use AUTO for better stability
-              }));
-            }
-            
-            if (cells.length > 0) {
-              rows.push(new TableRow({ children: cells }));
-            }
-          }
-          
-          if (rows.length > 0) {
-            return [new Table({
-              rows: rows,
-              width: { size: 0, type: WidthType.AUTO }, // Use AUTO for the whole table too
-            })];
-          }
-        } else if (nodeName === 'UL' || nodeName === 'OL') {
-          const listParagraphs: any[] = [];
-          for (const childNode of Array.from(el.childNodes)) {
-            if (childNode.nodeName === 'LI') {
-              const liEl = childNode as HTMLElement;
-              const liChildren = processNode(liEl, false);
-              if (liChildren.length > 0) {
-                listParagraphs.push(new Paragraph({
-                  children: liChildren,
-                  bullet: { level: 0 },
-                }));
-              }
-            } else {
-              // Handle translations or other nodes inside the list
-              listParagraphs.push(...processTopLevelNode(childNode));
-            }
-          }
-          return listParagraphs;
-        } else if (nodeName === '#text') {
-          const text = node.textContent?.trim();
-          if (text) {
-            return [new Paragraph({ children: [new TextRun(text)] })];
-          }
-        } else {
-          // Fallback for unknown elements: try to process their children
-          const fallbackChildren: any[] = [];
-          for (const childNode of Array.from(node.childNodes)) {
-            fallbackChildren.push(...processTopLevelNode(childNode));
-          }
-          return fallbackChildren;
-        }
-        return [];
-      };
-
-      for (const node of Array.from(doc.body.childNodes)) {
-        const nodes = processTopLevelNode(node);
-        if (nodes && nodes.length > 0) {
-          docChildren.push(...nodes);
+        switch (extension) {
+          case 'docx':
+            await processDocx(currentFile, updateFileProgress);
+            break;
+          case 'xlsx':
+            await processExcel(currentFile, updateFileProgress);
+            break;
+          case 'pdf':
+            await processPdf(currentFile, updateFileProgress);
+            break;
+          case 'pptx':
+            await processPptx(currentFile, updateFileProgress);
+            break;
+          default:
+            console.warn(`不支援的檔案格式: ${currentFile.name}`);
         }
       }
-
-      // Ensure document is not empty
-      if (docChildren.length === 0) {
-        docChildren.push(new Paragraph("文件內容處理完成"));
-      }
-
-      const docxFile = new Document({
-        sections: [{
-          properties: {},
-          children: docChildren,
-        }],
-      });
-
-      const docxBlob = await Packer.toBlob(docxFile);
-      saveAs(docxBlob, `translated_${file.name}`);
       
-      setStatus('completed');
+      if (!isCancelledRef.current) {
+        setStatus('completed');
+        setStatusMessage('所有翻譯已完成！');
+        setProgress(100);
+      }
     } catch (err) {
       console.error(err);
       setError(err instanceof Error ? err.message : '處理檔案時發生錯誤');
       setStatus('error');
+      setStatusMessage('發生錯誤');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F5F5] font-sans text-[#1A1A1A] p-4 md:p-8">
+    <div className="min-h-screen bg-[#F5F5F5] font-sans text-[#1A1A1A] p-3 sm:p-4 md:p-8">
       <div className="max-w-3xl mx-auto">
         {/* Header */}
-        <header className="mb-12 text-center">
+        <header className="mb-8 md:mb-12 text-center">
           <motion.div 
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-2xl shadow-sm mb-6"
+            className="inline-flex items-center justify-center w-12 h-12 md:w-16 md:h-16 bg-white rounded-2xl shadow-sm mb-4 md:mb-6"
           >
-            <Languages className="w-8 h-8 text-emerald-600" />
+            <Languages className="w-6 h-6 md:w-8 md:h-8 text-emerald-600" />
           </motion.div>
           <motion.h1 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.1 }}
-            className="text-4xl font-light tracking-tight mb-3"
+            className="text-2xl md:text-4xl font-light tracking-tight mb-2 md:mb-3"
           >
-            Word 文書多語翻譯器
+            全能文件多語翻譯器
           </motion.h1>
           <motion.p 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.2 }}
-            className="text-muted text-sm uppercase tracking-widest opacity-60"
+            className="text-muted text-[10px] md:text-sm uppercase tracking-widest opacity-60"
           >
             Multi-Language Document Translator
           </motion.p>
@@ -436,49 +624,128 @@ export default function App() {
           initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.3 }}
-          className="bg-white rounded-[32px] shadow-sm border border-black/5 overflow-hidden"
+          className="bg-white rounded-2xl md:rounded-[32px] shadow-sm border border-black/5 overflow-hidden"
         >
-          <div className="p-8 md:p-12">
+          <div className="p-5 md:p-12">
             {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
               className={`
-                relative group cursor-pointer border-2 border-dashed rounded-2xl p-12 transition-all duration-300
-                ${file ? 'border-emerald-200 bg-emerald-50/30' : 'border-gray-200 hover:border-emerald-400 hover:bg-gray-50'}
+                relative group cursor-pointer border-2 border-dashed rounded-2xl p-6 md:p-8 transition-all duration-300
+                ${files.length > 0 ? 'border-emerald-200 bg-emerald-50/10' : 'border-gray-200 hover:border-emerald-400 hover:bg-gray-50'}
               `}
             >
               <input 
                 type="file" 
                 ref={fileInputRef}
                 onChange={handleFileChange}
-                accept=".docx"
+                accept=".docx,.xlsx,.pdf,.pptx"
+                multiple
                 className="hidden"
               />
               
               <div className="flex flex-col items-center text-center">
                 <div className={`
-                  w-16 h-16 rounded-full flex items-center justify-center mb-4 transition-transform duration-300 group-hover:scale-110
-                  ${file ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'}
+                  w-12 h-12 rounded-full flex items-center justify-center mb-3 transition-transform duration-300 group-hover:scale-110
+                  ${files.length > 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'}
                 `}>
-                  {file ? <FileText className="w-8 h-8" /> : <Upload className="w-8 h-8" />}
+                  <Upload className="w-6 h-6" />
                 </div>
                 
-                {file ? (
-                  <div>
-                    <p className="text-lg font-medium text-emerald-900 mb-1">{file.name}</p>
-                    <p className="text-sm text-emerald-600 opacity-70">{(file.size / 1024).toFixed(1)} KB • 已就緒</p>
-                  </div>
-                ) : (
-                  <div>
-                    <p className="text-lg font-medium mb-1">點擊或拖拽上傳 Word 檔案</p>
-                    <p className="text-sm text-gray-400">僅支援 .docx 格式</p>
-                  </div>
-                )}
+                <div>
+                  <p className="text-base font-medium mb-1">點擊或拖拽上傳文件</p>
+                  <p className="text-xs text-gray-400">支援 .docx, .xlsx, .pdf, .pptx 格式 (可多選)</p>
+                </div>
               </div>
             </div>
 
+            {/* File List */}
+            <AnimatePresence>
+              {files.length > 0 && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-6 space-y-2"
+                >
+                  <div className="flex justify-between items-center px-1 mb-2">
+                    <span className="text-[11px] uppercase tracking-wider font-semibold text-gray-400">待處理檔案 ({files.length})</span>
+                    {status === 'idle' && (
+                      <button 
+                        onClick={() => setFiles([])}
+                        className="text-[10px] text-red-500 hover:underline"
+                      >
+                        全部清除
+                      </button>
+                    )}
+                  </div>
+                  {files.map((f, idx) => (
+                    <motion.div 
+                      key={`${f.name}-${idx}`}
+                      initial={{ opacity: 0, x: -10 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, x: 10 }}
+                      className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100"
+                    >
+                      <div className="flex items-center gap-2 md:gap-3 min-w-0">
+                        <div className="text-emerald-600 shrink-0">
+                          {f.name.endsWith('.docx') && <FileText className="w-3 h-3 md:w-4 md:h-4" />}
+                          {f.name.endsWith('.xlsx') && <FileSpreadsheet className="w-3 h-3 md:w-4 md:h-4" />}
+                          {f.name.endsWith('.pdf') && <FileIcon className="w-3 h-3 md:w-4 md:h-4" />}
+                          {f.name.endsWith('.pptx') && <Presentation className="w-3 h-3 md:w-4 md:h-4" />}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs md:text-sm font-medium text-gray-700 truncate">{f.name}</p>
+                          <p className="text-[9px] md:text-[10px] text-gray-400">{(f.size / 1024).toFixed(1)} KB</p>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center gap-2 md:gap-3">
+                        {status !== 'idle' && status !== 'error' && (
+                          <div className="flex flex-col items-end gap-1">
+                            <span className="text-[9px] md:text-[10px] font-mono text-emerald-600">
+                              {fileProgress[f.name] || 0}%
+                            </span>
+                            <div className="w-12 md:w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-emerald-500 transition-all duration-300" 
+                                style={{ width: `${fileProgress[f.name] || 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+                        {status === 'idle' && (
+                          <button 
+                            onClick={() => removeFile(idx)}
+                            className="p-1 hover:bg-red-50 rounded-lg text-gray-400 hover:text-red-500 transition-colors"
+                          >
+                            <AlertCircle className="w-4 h-4 rotate-45" />
+                          </button>
+                        )}
+                        {status === 'completed' && fileProgress[f.name] === 100 && (
+                          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        )}
+                      </div>
+                    </motion.div>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {/* Settings */}
             <div className="mt-8 space-y-6">
+              <div>
+                <label className="block text-[11px] uppercase tracking-wider font-semibold text-gray-400 mb-2 ml-1">
+                  工廠行業 (可選，使翻譯更精準)
+                </label>
+                <input
+                  type="text"
+                  value={industry}
+                  onChange={(e) => setIndustry(e.target.value)}
+                  placeholder="例如：電子、紡織、汽車..."
+                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all text-sm"
+                />
+              </div>
+
               <div>
                 <label className="block text-[11px] uppercase tracking-wider font-semibold text-gray-400 mb-4 ml-1">
                   選擇目標語言 (可多選)
@@ -504,33 +771,35 @@ export default function App() {
                 </div>
               </div>
               
-              <div className="flex items-end">
+              <div className="flex flex-col gap-3">
                 <button
-                  disabled={!file || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'}
-                  onClick={processFile}
+                  disabled={files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'}
+                  onClick={processFiles}
                   className={`
-                    w-full h-[56px] rounded-xl font-medium flex items-center justify-center gap-2 transition-all
-                    ${!file || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'
+                    w-full h-[48px] md:h-[56px] rounded-xl font-medium flex items-center justify-center gap-2 transition-all px-4
+                    ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                       : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 active:scale-[0.98]'}
                   `}
                 >
                   {status === 'idle' && (
                     <>
-                      <span>開始翻譯 {selectedLanguages.length > 0 && `(${selectedLanguages.length} 種語言)`}</span>
-                      <ArrowRight className="w-4 h-4" />
+                      <span className="truncate">
+                        開始翻譯 {files.length > 0 && `${files.length} 份`} {selectedLanguages.length > 0 && `(${selectedLanguages.length} 種語言)`}
+                      </span>
+                      <ArrowRight className="w-4 h-4 shrink-0" />
                     </>
                   )}
                   {(status === 'processing' || status === 'translating' || status === 'generating') && (
                     <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>處理中...</span>
+                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      <span className="truncate">正在處理 {Object.keys(fileProgress).length} / {files.length}...</span>
                     </>
                   )}
                   {status === 'completed' && (
                     <>
                       <CheckCircle2 className="w-4 h-4" />
-                      <span>翻譯完成</span>
+                      <span>全部翻譯完成</span>
                     </>
                   )}
                   {status === 'error' && (
@@ -540,6 +809,15 @@ export default function App() {
                     </>
                   )}
                 </button>
+                
+                {(status === 'processing' || status === 'translating' || status === 'generating') && (
+                  <button
+                    onClick={cancelTranslation}
+                    className="w-full h-[40px] rounded-xl font-medium text-red-500 hover:bg-red-50 transition-all text-sm border border-red-100"
+                  >
+                    取消翻譯
+                  </button>
+                )}
               </div>
             </div>
 
@@ -554,12 +832,9 @@ export default function App() {
                 >
                   <div className="flex justify-between items-center mb-2">
                     <span className="text-sm font-medium text-gray-600">
-                      {status === 'processing' && '正在讀取文件...'}
-                      {status === 'translating' && `正在翻譯句子 (${progress}%)`}
-                      {status === 'generating' && '正在生成新文件...'}
-                      {status === 'completed' && '處理完成！檔案已下載'}
+                      {statusMessage}
                     </span>
-                    {status === 'translating' && (
+                    {(status === 'processing' || status === 'translating' || status === 'generating') && (
                       <span className="text-xs font-mono text-emerald-600">{progress}%</span>
                     )}
                   </div>
@@ -587,12 +862,12 @@ export default function App() {
             )}
           </div>
 
-          {/* Footer Info */}
-          <div className="bg-gray-50 border-t border-gray-100 p-6 flex items-center justify-between">
+            {/* Footer Info */}
+          <div className="bg-gray-50 border-t border-gray-100 p-5 md:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-4">
               <div className="flex -space-x-2">
                 {[1, 2, 3].map(i => (
-                  <div key={i} className="w-8 h-8 rounded-full border-2 border-white bg-gray-200 overflow-hidden">
+                  <div key={i} className="w-6 h-6 md:w-8 md:h-8 rounded-full border-2 border-white bg-gray-200 overflow-hidden">
                     <img 
                       src={`https://picsum.photos/seed/user${i}/32/32`} 
                       alt="User" 
@@ -601,9 +876,9 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <span className="text-xs text-gray-400 font-medium">已有超過 1,000+ 份文件被翻譯</span>
+              <span className="text-[10px] md:text-xs text-gray-400 font-medium">已有超過 1,000+ 份文件被翻譯</span>
             </div>
-            <div className="flex items-center gap-2 text-xs text-gray-400">
+            <div className="flex items-center gap-2 text-[10px] md:text-xs text-gray-400">
               <CheckCircle2 className="w-3 h-3 text-emerald-500" />
               <span>由 DeepSeek AI 強力驅動</span>
             </div>
@@ -613,9 +888,9 @@ export default function App() {
         {/* Instructions */}
         <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-8">
           {[
-            { title: "上傳文件", desc: "支援標準 Word (.docx) 格式，系統會自動提取文字內容。" },
-            { title: "智能翻譯", desc: "使用 Gemini AI 進行語境感知翻譯，確保翻譯品質。" },
-            { title: "雙語對照", desc: "翻譯結果將自動插入原句下方，並生成新的對照文件。" }
+            { title: "上傳文件", desc: "支援 Word, Excel, PDF, PPTX 格式，系統會自動提取文字內容。" },
+            { title: "智能翻譯", desc: "使用 DeepSeek AI 進行語境感知翻譯，確保翻譯品質。" },
+            { title: "多語對照", desc: "翻譯結果將以對照形式呈現，並生成新的翻譯文件。" }
           ].map((item, idx) => (
             <div key={idx} className="text-center">
               <div className="text-2xl font-serif italic text-emerald-600/30 mb-2">0{idx + 1}</div>
