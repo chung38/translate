@@ -369,8 +369,10 @@ export default function App() {
         if (!lineCtx) return;
         
         const metrics = ctx.measureText(lineText);
+        // Use a more precise height to avoid squashing and extra whitespace
+        const canvasHeight = fontSize * scale * 1.4;
         lineCanvas.width = metrics.width;
-        lineCanvas.height = fontSize * scale * 2;
+        lineCanvas.height = canvasHeight;
         
         lineCtx.font = `${isBold ? 'bold ' : ''}${fontSize * scale}px ${fontStack}`;
         lineCtx.fillStyle = color;
@@ -378,7 +380,8 @@ export default function App() {
         lineCtx.fillText(lineText, 0, 0);
         
         const imgData = lineCanvas.toDataURL('image/png');
-        doc.addImage(imgData, 'PNG', x, ty, metrics.width / scale, fontSize * 2 / scale);
+        // The height in PDF should be (canvasHeight / scale) to maintain aspect ratio
+        doc.addImage(imgData, 'PNG', x, ty, metrics.width / scale, canvasHeight / scale);
       };
 
       for (let n = 0; n < words.length; n++) {
