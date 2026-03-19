@@ -9,6 +9,7 @@ import { Document, Packer, Paragraph, TextRun, ImageRun, Table, TableRow, TableC
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
 import * as pdfjsLib from 'pdfjs-dist';
+import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { jsPDF } from 'jspdf';
 import PptxGenJS from 'pptxgenjs';
 import JSZip from 'jszip';
@@ -28,7 +29,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 
 // Set up PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 // DeepSeek API Configuration (Now handled via server proxy)
 const DEEPSEEK_PROXY_URL = '/api/translate';
