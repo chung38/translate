@@ -442,26 +442,17 @@ export default function App() {
         const pageWidth = doc.internal.pageSize.getWidth();
         const contentWidth = pageWidth - (margin * 2);
 
-        // Header
-        yPos = safeRenderText(`Page ${i} Translation`, margin, yPos, contentWidth, 14, true, '#10B981');
-        yPos += 4;
+        // Original Text (Restored as requested, but without green headers)
+        yPos = safeRenderText(fullText, margin, yPos, contentWidth, 10, false, '#1E293B');
+        yPos += 10;
 
-        // Original Text
-        yPos = safeRenderText("ORIGINAL TEXT", margin, yPos, contentWidth, 10, true, '#64748B');
-        yPos += 2;
-        yPos = safeRenderText(fullText, margin, yPos, contentWidth, 9, false, '#1E293B');
-        yPos += 8;
-
-        // Translations
+        // Translations - Only render the translated text to remove extra green headers/labels
         for (const lang of selectedLanguages) {
           if (yPos > 260) {
             doc.addPage();
             yPos = 20;
           }
           
-          yPos = safeRenderText(lang.toUpperCase(), margin, yPos, contentWidth, 10, true, '#10B981');
-          yPos += 2;
-
           const combinedTrans = batchTranslations.map(t => t[lang] || '').join(' ');
           yPos = safeRenderText(combinedTrans, margin, yPos, contentWidth, 10, false, '#000000');
           yPos += 6;
