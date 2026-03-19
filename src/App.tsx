@@ -540,17 +540,18 @@ export default function App() {
       setFileProgress({});
       isCancelledRef.current = false;
 
-      for (let i = 0; i < files.length; i++) {
+      const filesToProcess = [...files];
+      for (let i = 0; i < filesToProcess.length; i++) {
         if (isCancelledRef.current) break;
         
-        const currentFile = files[i];
+        const currentFile = filesToProcess[i];
         const extension = currentFile.name.split('.').pop()?.toLowerCase();
         
-        setStatusMessage(`正在處理第 ${i + 1} / ${files.length} 份文件: ${currentFile.name}`);
+        setStatusMessage(`正在處理第 ${i + 1} / ${filesToProcess.length} 份文件: ${currentFile.name}`);
         
         // Update overall progress based on file index
-        const baseProgress = (i / files.length) * 100;
-        const fileWeight = 100 / files.length;
+        const baseProgress = (i / filesToProcess.length) * 100;
+        const fileWeight = 100 / filesToProcess.length;
         
         const updateFileProgress = (p: number, currentStatus?: TranslationStatus) => {
           setFileProgress(prev => ({ ...prev, [currentFile.name]: p }));
@@ -558,21 +559,30 @@ export default function App() {
           if (currentStatus) setStatus(currentStatus);
         };
 
-        switch (extension) {
-          case 'docx':
-            await processDocx(currentFile, updateFileProgress);
-            break;
-          case 'xlsx':
-            await processExcel(currentFile, updateFileProgress);
-            break;
-          case 'pdf':
-            await processPdf(currentFile, updateFileProgress);
-            break;
-          case 'pptx':
-            await processPptx(currentFile, updateFileProgress);
-            break;
-          default:
-            console.warn(`不支援的檔案格式: ${currentFile.name}`);
+        try {
+          switch (extension) {
+            case 'docx':
+              await processDocx(currentFile, updateFileProgress);
+              break;
+            case 'xlsx':
+              await processExcel(currentFile, updateFileProgress);
+              break;
+            case 'pdf':
+              await processPdf(currentFile, updateFileProgress);
+              break;
+            case 'pptx':
+              await processPptx(currentFile, updateFileProgress);
+              break;
+            default:
+              console.warn(`不支援的檔案格式: ${currentFile.name}`);
+          }
+          // Remove file from list after successful processing
+          setFiles(prev => prev.filter(f => f !== currentFile));
+        } catch (fileErr) {
+          console.error(`處理檔案 ${currentFile.name} 時發生錯誤:`, fileErr);
+          // We continue to the next file even if one fails, 
+          // but we might want to keep the failed file in the list
+          setError(`處理 ${currentFile.name} 時發生錯誤: ${fileErr instanceof Error ? fileErr.message : '未知錯誤'}`);
         }
       }
       
