@@ -348,10 +348,78 @@ export default function App() {
     updateProgress(10, 'translating');
     const totalPages = pdf.numPages;
 
+    // Helper to render text using canvas to avoid CJK font issues in jsPDF
+    const renderText = (text: string, x: number, y: number, maxWidth: number, fontSize: number, isBold = false, color = '#000000'): { nextY: number; remainingText: string } => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return { nextY: y, remainingText: '' };
+
+      const scale = 4;
+      const fontStack = '"Microsoft JhengHei", "微軟正黑體", "Noto Sans TC", "PingFang TC", sans-serif';
+      ctx.font = `${isBold ? 'bold ' : ''}${fontSize * scale}px ${fontStack}`;
+      
+      const words = text.split('');
+      let line = '';
+      let currentY = y;
+      const lineHeight = fontSize * 1.4;
+
+      const renderLine = (lineText: string, ty: number) => {
+        const lineCanvas = document.createElement('canvas');
+        const lineCtx = lineCanvas.getContext('2d');
+        if (!lineCtx) return;
+        
+        const metrics = ctx.measureText(lineText);
+        lineCanvas.width = metrics.width;
+        lineCanvas.height = fontSize * scale * 2;
+        
+        lineCtx.font = `${isBold ? 'bold ' : ''}${fontSize * scale}px ${fontStack}`;
+        lineCtx.fillStyle = color;
+        lineCtx.textBaseline = 'top';
+        lineCtx.fillText(lineText, 0, 0);
+        
+        const imgData = lineCanvas.toDataURL('image/png');
+        doc.addImage(imgData, 'PNG', x, ty, metrics.width / scale, fontSize * 2 / scale);
+      };
+
+      for (let n = 0; n < words.length; n++) {
+        const testLine = line + words[n];
+        const metrics = ctx.measureText(testLine);
+        const testWidth = metrics.width / scale;
+        
+        if (testWidth > maxWidth && n > 0) {
+          renderLine(line, currentY);
+          line = words[n];
+          currentY += lineHeight;
+          
+          if (currentY > 275) {
+            doc.addPage();
+            currentY = 20;
+            return { nextY: currentY, remainingText: words.slice(n).join('') };
+          }
+        } else {
+          line = testLine;
+        }
+      }
+      
+      if (line) {
+        renderLine(line, currentY);
+        currentY += lineHeight;
+      }
+      
+      return { nextY: currentY, remainingText: '' };
+    };
+
+    const safeRenderText = (text: string, x: number, y: number, maxWidth: number, fontSize: number, isBold = false, color = '#000000') => {
+      let result = renderText(text, x, y, maxWidth, fontSize, isBold, color);
+      while (result.remainingText) {
+        result = renderText(result.remainingText, x, result.nextY, maxWidth, fontSize, isBold, color);
+      }
+      return result.nextY;
+    };
+
     for (let i = 1; i <= totalPages; i++) {
       if (isCancelledRef.current) throw new Error('翻譯已取消');
       
-      // Translating progress: 10% to 90%
       const currentProgress = 10 + Math.round((i / totalPages) * 80);
       updateProgress(currentProgress, 'translating');
       
@@ -361,7 +429,6 @@ export default function App() {
       const fullText = strings.join(' ').trim();
 
       if (fullText) {
-        // Split text into manageable chunks for translation if it's too long
         const chunks = fullText.match(/.{1,1000}/g) || [fullText];
         const batchTranslations = await translateBatch(chunks, selectedLanguages);
         
@@ -373,35 +440,14 @@ export default function App() {
         const contentWidth = pageWidth - (margin * 2);
 
         // Header
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(14);
-        doc.setTextColor(16, 185, 129); // Emerald 600
-        doc.text(`Page ${i} Translation`, margin, yPos);
-        yPos += 10;
+        yPos = safeRenderText(`Page ${i} Translation`, margin, yPos, contentWidth, 14, true, '#10B981');
+        yPos += 4;
 
         // Original Text
-        doc.setFont("helvetica", "bold");
-        doc.setFontSize(10);
-        doc.setTextColor(100, 116, 139); // Slate 500
-        doc.text("ORIGINAL TEXT", margin, yPos);
-        yPos += 6;
-        
-        doc.setFont("helvetica", "normal");
-        doc.setFontSize(9);
-        doc.setTextColor(30, 41, 59); // Slate 800
-        const splitOriginal = doc.splitTextToSize(fullText, contentWidth);
-        
-        // Handle page overflow for original text
-        for (const line of splitOriginal) {
-          if (yPos > 280) {
-            doc.addPage();
-            yPos = 20;
-          }
-          doc.text(line, margin, yPos);
-          yPos += 5;
-        }
-        
-        yPos += 10;
+        yPos = safeRenderText("ORIGINAL TEXT", margin, yPos, contentWidth, 10, true, '#64748B');
+        yPos += 2;
+        yPos = safeRenderText(fullText, margin, yPos, contentWidth, 9, false, '#1E293B');
+        yPos += 8;
 
         // Translations
         for (const lang of selectedLanguages) {
@@ -410,28 +456,12 @@ export default function App() {
             yPos = 20;
           }
           
-          doc.setFont("helvetica", "bold");
-          doc.setFontSize(10);
-          doc.setTextColor(16, 185, 129); // Emerald 600
-          doc.text(`${lang.toUpperCase()}`, margin, yPos);
-          yPos += 6;
+          yPos = safeRenderText(lang.toUpperCase(), margin, yPos, contentWidth, 10, true, '#10B981');
+          yPos += 2;
 
-          doc.setFont("helvetica", "normal");
-          doc.setFontSize(10);
-          doc.setTextColor(0, 0, 0);
-          
           const combinedTrans = batchTranslations.map(t => t[lang] || '').join(' ');
-          const splitTrans = doc.splitTextToSize(combinedTrans, contentWidth);
-          
-          for (const line of splitTrans) {
-            if (yPos > 280) {
-              doc.addPage();
-              yPos = 20;
-            }
-            doc.text(line, margin, yPos);
-            yPos += 6;
-          }
-          yPos += 8;
+          yPos = safeRenderText(combinedTrans, margin, yPos, contentWidth, 10, false, '#000000');
+          yPos += 6;
         }
       }
     }
