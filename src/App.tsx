@@ -255,9 +255,13 @@ export default function App() {
             spacing = xmlDoc.createElementNS(ns, 'w:spacing');
             pPr.appendChild(spacing);
           }
-          // Set line spacing to single (240) and rule to auto
-          spacing.setAttribute('w:line', '240');
+          // Set line spacing to a tighter value (200 twips, approx 0.85x) and remove before/after spacing
+          spacing.setAttribute('w:line', '200');
           spacing.setAttribute('w:lineRule', 'auto');
+          spacing.setAttribute('w:before', '0');
+          spacing.setAttribute('w:after', '0');
+          spacing.setAttribute('w:beforeAutospacing', '0');
+          spacing.setAttribute('w:afterAutospacing', '0');
 
           selectedLanguages.forEach(lang => {
             const translatedText = translations[lang];
@@ -287,6 +291,18 @@ export default function App() {
               rFonts.setAttribute('w:ascii', 'Arial');
               rFonts.setAttribute('w:hAnsi', 'Arial');
               rFonts.setAttribute('w:cs', 'Arial'); // Complex script font for Vietnamese
+              
+              // Set language to Vietnamese if applicable to improve rendering
+              if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
+                let langEl = newPr.getElementsByTagNameNS(ns, 'lang')[0];
+                if (!langEl) {
+                  langEl = xmlDoc.createElementNS(ns, 'w:lang');
+                  newPr.appendChild(langEl);
+                }
+                langEl.setAttribute('w:val', 'vi-VN');
+                langEl.setAttribute('w:eastAsia', 'vi-VN');
+                langEl.setAttribute('w:bidi', 'vi-VN');
+              }
               
               newRun.appendChild(newPr);
             }
@@ -408,7 +424,7 @@ export default function App() {
       const words = text.split('');
       let line = '';
       let currentY = y;
-      const lineHeight = fontSize * 1.4;
+      const lineHeight = fontSize * 1.2;
 
       const renderLine = (lineText: string, ty: number) => {
         const lineCanvas = document.createElement('canvas');
@@ -559,6 +575,24 @@ export default function App() {
           const firstRun = p.getElementsByTagNameNS(nsA, 'r')[0];
           const firstRunPr = firstRun?.getElementsByTagNameNS(nsA, 'rPr')[0];
 
+          // Set tighter line spacing for PPTX (85% of standard)
+          let pPr = p.getElementsByTagNameNS(nsA, 'pPr')[0];
+          if (!pPr) {
+            pPr = xmlDoc.createElementNS(nsA, 'a:pPr');
+            p.insertBefore(pPr, p.firstChild);
+          }
+          let lnSpc = pPr.getElementsByTagNameNS(nsA, 'lnSpc')[0];
+          if (!lnSpc) {
+            lnSpc = xmlDoc.createElementNS(nsA, 'a:lnSpc');
+            pPr.appendChild(lnSpc);
+          }
+          let spcPct = lnSpc.getElementsByTagNameNS(nsA, 'spcPct')[0];
+          if (!spcPct) {
+            spcPct = xmlDoc.createElementNS(nsA, 'a:spcPct');
+            lnSpc.appendChild(spcPct);
+          }
+          spcPct.setAttribute('val', '85000'); // 85% line spacing
+
           selectedLanguages.forEach(lang => {
             const translatedText = translations[lang];
             if (!translatedText) return;
@@ -575,7 +609,24 @@ export default function App() {
             
             // Copy properties if they exist
             if (firstRunPr) {
-              newRun.appendChild(firstRunPr.cloneNode(true));
+              const newPr = firstRunPr.cloneNode(true) as Element;
+              // Force Arial for Vietnamese in PPTX to avoid metric issues
+              if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
+                let latin = newPr.getElementsByTagNameNS(nsA, 'latin')[0];
+                if (!latin) {
+                  latin = xmlDoc.createElementNS(nsA, 'a:latin');
+                  newPr.appendChild(latin);
+                }
+                latin.setAttribute('typeface', 'Arial');
+                
+                let cs = newPr.getElementsByTagNameNS(nsA, 'cs')[0];
+                if (!cs) {
+                  cs = xmlDoc.createElementNS(nsA, 'a:cs');
+                  newPr.appendChild(cs);
+                }
+                cs.setAttribute('typeface', 'Arial');
+              }
+              newRun.appendChild(newPr);
             }
 
             // Add the translated text in a new run
