@@ -15,6 +15,18 @@ export default defineConfig(({mode}) => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks: {
+            'pdf-lib': ['pdfjs-dist', 'jspdf'],
+            'excel-lib': ['xlsx'],
+            'vendor': ['react', 'react-dom', 'lucide-react', 'framer-motion'],
+          },
+        },
+      },
+      chunkSizeWarningLimit: 1000,
+    },
     server: {
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
