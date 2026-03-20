@@ -154,11 +154,16 @@ export default function App() {
       return parsed.translations;
     } catch (err: any) {
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
+      const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError');
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
       
-      if (isRateLimit && retryCount < 5) {
-        const waitTime = Math.pow(2, retryCount) * 5000 + Math.random() * 2000;
-        console.warn(`DeepSeek Rate limit hit. Waiting ${Math.round(waitTime/1000)}s... (Attempt ${retryCount + 1})`);
+      // Retry for rate limits or transient network errors
+      if ((isRateLimit || isNetworkError) && retryCount < 5) {
+        const waitTime = isRateLimit 
+          ? (Math.pow(2, retryCount) * 5000 + Math.random() * 2000)
+          : (2000 + Math.random() * 1000); // Shorter wait for network errors
+          
+        console.warn(`DeepSeek ${isRateLimit ? 'Rate limit' : 'Network error'} hit. Waiting ${Math.round(waitTime/1000)}s... (Attempt ${retryCount + 1})`);
         await sleep(waitTime);
         return translateBatch(texts, targetLangs, retryCount + 1);
       }
