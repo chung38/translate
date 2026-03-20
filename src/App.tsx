@@ -118,6 +118,7 @@ export default function App() {
       }
       確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
       注意：翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣），只需要純粹的翻譯內容。
+      確保翻譯內容完全使用目標語言，不要夾雜原始語言或其他語言的文字（除非是專有名詞或型號）。
       不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
       
       待翻譯內容陣列：
@@ -243,6 +244,21 @@ export default function App() {
           const firstRun = p.getElementsByTagNameNS(ns, 'r')[0];
           const firstRunPr = firstRun?.getElementsByTagNameNS(ns, 'rPr')[0];
 
+          // Ensure paragraph spacing is consistent to prevent large gaps in wrapped text (especially for Vietnamese)
+          let pPr = p.getElementsByTagNameNS(ns, 'pPr')[0];
+          if (!pPr) {
+            pPr = xmlDoc.createElementNS(ns, 'w:pPr');
+            p.insertBefore(pPr, p.firstChild);
+          }
+          let spacing = pPr.getElementsByTagNameNS(ns, 'spacing')[0];
+          if (!spacing) {
+            spacing = xmlDoc.createElementNS(ns, 'w:spacing');
+            pPr.appendChild(spacing);
+          }
+          // Set line spacing to single (240) and rule to auto
+          spacing.setAttribute('w:line', '240');
+          spacing.setAttribute('w:lineRule', 'auto');
+
           selectedLanguages.forEach(lang => {
             const translatedText = translations[lang];
             if (!translatedText) return;
@@ -252,7 +268,27 @@ export default function App() {
             
             // Copy properties if they exist
             if (firstRunPr) {
-              newRun.appendChild(firstRunPr.cloneNode(true));
+              const newPr = firstRunPr.cloneNode(true) as Element;
+              // Remove properties that might cause weird spacing in Latin/Vietnamese text (like Chinese character spacing)
+              const propsToRemove = ['spacing', 'w', 'kern'];
+              propsToRemove.forEach(prop => {
+                const els = newPr.getElementsByTagNameNS(ns, prop);
+                while (els.length > 0) {
+                  newPr.removeChild(els[0]);
+                }
+              });
+              
+              // Force a standard font for translations to avoid metric issues with diacritics
+              let rFonts = newPr.getElementsByTagNameNS(ns, 'rFonts')[0];
+              if (!rFonts) {
+                rFonts = xmlDoc.createElementNS(ns, 'w:rFonts');
+                newPr.appendChild(rFonts);
+              }
+              rFonts.setAttribute('w:ascii', 'Arial');
+              rFonts.setAttribute('w:hAnsi', 'Arial');
+              rFonts.setAttribute('w:cs', 'Arial'); // Complex script font for Vietnamese
+              
+              newRun.appendChild(newPr);
             }
 
             // Add a break before the translation
