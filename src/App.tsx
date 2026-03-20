@@ -104,7 +104,7 @@ export default function App() {
     
     try {
       // Add a delay between batches to stay under RPM limits
-      await sleep(1000); 
+      await sleep(1000 + Math.random() * 500); 
 
       const industryContext = industry ? `。這是一個關於「${industry}」行業的文件，請使用該行業的專業術語進行翻譯` : '';
       const prompt = `你是一個專業的翻譯官${industryContext}。請將以下文字陣列中的每一項同時翻譯成以下語言：${targetLangs.join('、')}。
@@ -123,13 +123,19 @@ export default function App() {
       待翻譯內容陣列：
       ${JSON.stringify(texts, null, 2)}`;
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
       const response = await fetch(DEEPSEEK_PROXY_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ prompt }),
+        signal: controller.signal
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         let errorMessage = `HTTP error! status: ${response.status}`;
@@ -154,14 +160,14 @@ export default function App() {
       return parsed.translations;
     } catch (err: any) {
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
-      const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError');
+      const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
       
       // Retry for rate limits or transient network errors
-      if ((isRateLimit || isNetworkError) && retryCount < 5) {
+      if ((isRateLimit || isNetworkError) && retryCount < 10) {
         const waitTime = isRateLimit 
           ? (Math.pow(2, retryCount) * 5000 + Math.random() * 2000)
-          : (2000 + Math.random() * 1000); // Shorter wait for network errors
+          : (3000 + Math.random() * 2000); // Wait for network errors
           
         console.warn(`DeepSeek ${isRateLimit ? 'Rate limit' : 'Network error'} hit. Waiting ${Math.round(waitTime/1000)}s... (Attempt ${retryCount + 1})`);
         await sleep(waitTime);
@@ -208,7 +214,7 @@ export default function App() {
     const totalParagraphs = paragraphs.length;
     
     updateProgress(10, 'translating');
-    const BATCH_SIZE = 10;
+    const BATCH_SIZE = 5;
     
     for (let i = 0; i < totalParagraphs; i += BATCH_SIZE) {
       if (isCancelledRef.current) throw new Error('翻譯已取消');
@@ -298,7 +304,7 @@ export default function App() {
       const totalRows = jsonData.length;
 
       // Batch translate rows
-      const BATCH_SIZE = 10;
+      const BATCH_SIZE = 5;
       for (let r = 0; r < totalRows; r += BATCH_SIZE) {
         if (isCancelledRef.current) throw new Error('翻譯已取消');
         
@@ -437,7 +443,7 @@ export default function App() {
       const fullText = strings.join(' ').trim();
 
       if (fullText) {
-        const chunks = fullText.match(/.{1,1000}/g) || [fullText];
+        const chunks = fullText.match(/.{1,500}/g) || [fullText];
         const batchTranslations = await translateBatch(chunks, selectedLanguages);
         
         if (i > 1) doc.addPage();
