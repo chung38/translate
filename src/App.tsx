@@ -8,6 +8,7 @@ import mammoth from 'mammoth';
 import { Document, Packer, Paragraph, TextRun, ImageRun, Table, TableRow, TableCell, WidthType } from 'docx';
 import { saveAs } from 'file-saver';
 import * as XLSX from 'xlsx';
+import ExcelJS from 'exceljs';
 import * as pdfjsLib from 'pdfjs-dist';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import { jsPDF } from 'jspdf';
@@ -385,62 +386,74 @@ export default function App() {
   const processExcel = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
     updateProgress(5, 'processing');
     const arrayBuffer = await file.arrayBuffer();
-    const workbook = XLSX.read(arrayBuffer);
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(arrayBuffer);
 
     updateProgress(10, 'translating');
-    const sheetNames = workbook.SheetNames;
     
-    for (let s = 0; s < sheetNames.length; s++) {
+    // Collect all cells that need translation across all worksheets
+    const sheetsToProcess: { sheet: ExcelJS.Worksheet, cells: any[] }[] = [];
+    
+    workbook.eachSheet((worksheet) => {
+      const robustCells: any[] = [];
+      worksheet.eachRow((row) => {
+        row.eachCell((cell) => {
+          const val = cell.value;
+          if (typeof val === 'string' && val.trim()) {
+            robustCells.push({ r: row.number, c: cell.col, text: val });
+          } else if (val && typeof val === 'object' && 'richText' in (val as any)) {
+            const richTextVal = val as any;
+            const plainText = (richTextVal.richText || []).map((rt: any) => rt.text || '').join('');
+            if (plainText.trim()) {
+              robustCells.push({ r: row.number, c: cell.col, text: plainText });
+            }
+          }
+        });
+      });
+      
+      if (robustCells.length > 0) {
+        sheetsToProcess.push({ sheet: worksheet, cells: robustCells });
+      }
+    });
+
+    const totalSheets = sheetsToProcess.length;
+    for (let s = 0; s < totalSheets; s++) {
       if (isCancelledRef.current) throw new Error('翻譯已取消');
       
-      const sheetName = sheetNames[s];
-      const worksheet = workbook.Sheets[sheetName];
+      const { sheet, cells } = sheetsToProcess[s];
+      const BATCH_SIZE = 20;
       
-      // Collect all cells that need translation
-      const cellsToTranslate: { key: string, text: string }[] = [];
-      for (const key in worksheet) {
-        if (key[0] === '!') continue; // Skip metadata keys like !ref, !merges
-        const cell = worksheet[key];
-        // Only translate string cells that aren't empty
-        if (cell && cell.t === 's' && cell.v && typeof cell.v === 'string' && cell.v.trim()) {
-          cellsToTranslate.push({ key, text: cell.v });
-        }
-      }
-
-      // Batch translate the collected cells
-      const BATCH_SIZE = 20; // Larger batch size for individual cells
-      for (let i = 0; i < cellsToTranslate.length; i += BATCH_SIZE) {
+      for (let i = 0; i < cells.length; i += BATCH_SIZE) {
         if (isCancelledRef.current) throw new Error('翻譯已取消');
         
-        // Progress calculation
-        const currentProgress = 10 + Math.round(((s * cellsToTranslate.length + i) / (sheetNames.length * Math.max(1, cellsToTranslate.length))) * 80);
+        const currentProgress = 10 + Math.round(((s * cells.length + i) / (totalSheets * Math.max(1, cells.length))) * 80);
         updateProgress(currentProgress, 'translating');
         
-        const batch = cellsToTranslate.slice(i, i + BATCH_SIZE);
+        const batch = cells.slice(i, i + BATCH_SIZE);
         const batchTexts = batch.map(c => c.text);
         
         const batchTranslations = await translateBatch(batchTexts, selectedLanguages);
         
         batch.forEach((cellInfo, idx) => {
           const translations = batchTranslations[idx];
-          const cell = worksheet[cellInfo.key];
+          const cell = sheet.getCell(cellInfo.r, cellInfo.c);
           
           let combinedValue = cellInfo.text;
           for (const lang of selectedLanguages) {
             combinedValue += `\n${translations[lang] || '(翻譯失敗)'}`;
           }
           
-          // Update the cell value in-place to preserve formatting/styles
-          cell.v = combinedValue;
-          // If there's a formatted text property, update it too
-          if (cell.w) delete cell.w; 
+          // Update the cell value while preserving the original style/borders
+          cell.value = combinedValue;
+          // Ensure alignment allows wrapping for the new multi-line content
+          cell.alignment = { ...cell.alignment, wrapText: true, vertical: 'top' };
         });
       }
     }
 
     updateProgress(95, 'generating');
-    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
-    const excelBlob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const buffer = await workbook.xlsx.writeBuffer();
+    const excelBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const fileName = `translated_${file.name}`;
     saveAs(excelBlob, fileName);
     updateProgress(100, 'generating');
