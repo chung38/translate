@@ -109,25 +109,27 @@ export default function App() {
       await sleep(1000 + Math.random() * 500); 
 
       const industryContext = industry ? `。這是一個關於「${industry}」行業的文件，請使用該行業的專業術語進行翻譯` : '';
-      const prompt = `你是一個專業的翻譯官${industryContext}。請將以下文字陣列中的每一項同時翻譯成以下語言：${targetLangs.join('、')}。
+      const prompt = `你是一個專業的翻譯官${industryContext}。
+      請將以下文字陣列中的每一項同時翻譯成以下語言：${targetLangs.join('、')}。
+
       請嚴格以 JSON 格式回傳結果，格式如下：
       {
         "translations": [
-          { "${targetLangs[0]}": "翻譯內容1", "${targetLangs[1]}": "翻譯內容1", ... },
-          { "${targetLangs[0]}": "翻譯內容2", "${targetLangs[1]}": "翻譯內容2", ... },
+          { ${targetLangs.map(l => `"${l}": "翻譯內容"`).join(', ')} },
           ...
         ]
       }
-      確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
-      注意：
-      1. 翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣），只需要純粹的翻譯內容。
-      2. 確保翻譯內容完全使用目標語言，不要夾雜原始語言或其他語言的文字（除非是專有名詞或型號）。
-      3. **重要：如果輸入文字中包含 <color hex="RRGGBB">...</color> 標籤，請在翻譯後的對應單字或片語上也保留這些標籤與相同的 hex 值。**
-      4. **特別注意：請確保標籤前後的空格被正確保留。例如 "turns <color hex=\"FF0000\">on</color> and press" 標籤前後的空格非常重要，不要讓單字粘在一起。**
-      5. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
-      
+
+      要求：
+      1. 確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
+      2. 每個物件的鍵 (Key) 必須完全對應目標語言名稱：${targetLangs.map(l => `"${l}"`).join(', ')}。
+      3. 翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣）。
+      4. 確保翻譯內容完全使用目標語言，不要夾雜原始語言。
+      5. **重要：如果輸入文字中包含 <color hex="RRGGBB">...</color> 標籤，請在翻譯後的對應單字或片語上也保留這些標籤與相同的 hex 值。**
+      6. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
+
       待翻譯內容陣列：
-      ${JSON.stringify(texts, null, 2)}`;
+      ${JSON.stringify(texts)}`;
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
@@ -395,19 +397,43 @@ export default function App() {
       const sheetsToProcess: { sheet: ExcelJS.Worksheet, cells: any[] }[] = [];
       
       workbook.eachSheet((worksheet) => {
-        const robustCells: any[] = [];
-        worksheet.eachRow((row) => {
-          row.eachCell((cell) => {
-            // Use cell.text to get the displayed string, which handles formulas, rich text, etc.
-            const text = cell.text;
-            if (text && text.toString().trim()) {
-              robustCells.push({ r: row.number, c: cell.col, text: text.toString() });
+        const cells: any[] = [];
+        // Iterate over all rows that have values
+        worksheet.eachRow({ includeEmpty: false }, (row) => {
+          row.eachCell({ includeEmpty: false }, (cell) => {
+            let text = '';
+            const val = cell.value;
+            
+            if (typeof val === 'string') {
+              text = val;
+            } else if (val && typeof val === 'object') {
+              if ('richText' in val) {
+                text = (val as any).richText.map((rt: any) => rt.text || '').join('');
+              } else if ('result' in val) {
+                text = (val as any).result?.toString() || '';
+              } else if ('text' in val) {
+                text = (val as any).text?.toString() || '';
+              } else {
+                // Fallback to cell.text which is a getter in exceljs
+                text = cell.text;
+              }
+            } else if (val !== null && val !== undefined) {
+              text = val.toString();
+            }
+
+            if (text && text.trim()) {
+              cells.push({ 
+                r: row.number, 
+                c: cell.col, 
+                text: text.trim(),
+                address: cell.address
+              });
             }
           });
         });
         
-        if (robustCells.length > 0) {
-          sheetsToProcess.push({ sheet: worksheet, cells: robustCells });
+        if (cells.length > 0) {
+          sheetsToProcess.push({ sheet: worksheet, cells });
         }
       });
 
@@ -435,21 +461,28 @@ export default function App() {
           
           batch.forEach((cellInfo, idx) => {
             const translations = batchTranslations[idx];
-            const cell = sheet.getRow(cellInfo.r).getCell(cellInfo.c);
+            // Use getCell with address for better reliability
+            const cell = sheet.getCell(cellInfo.address);
             
             let combinedValue = cellInfo.text;
+            let hasTranslation = false;
+            
             for (const lang of selectedLanguages) {
               const translatedText = translations[lang];
-              if (translatedText) {
+              if (translatedText && !translatedText.includes('翻譯出錯')) {
+                combinedValue += `\n${translatedText}`;
+                hasTranslation = true;
+              } else if (translatedText) {
                 combinedValue += `\n${translatedText}`;
               } else {
                 combinedValue += `\n(翻譯失敗)`;
               }
             }
             
-            // Update the cell value while preserving the original style/borders
+            // Only update if we actually got a translation or if we want to show failure
             cell.value = combinedValue;
-            // Ensure alignment allows wrapping for the new multi-line content
+            
+            // Ensure alignment allows wrapping
             cell.alignment = { 
               ...cell.alignment, 
               wrapText: true, 
