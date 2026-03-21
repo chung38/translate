@@ -386,7 +386,6 @@ export default function App() {
     updateProgress(5, 'processing');
     const arrayBuffer = await file.arrayBuffer();
     const workbook = XLSX.read(arrayBuffer);
-    const newWorkbook = XLSX.utils.book_new();
 
     updateProgress(10, 'translating');
     const sheetNames = workbook.SheetNames;
@@ -396,53 +395,51 @@ export default function App() {
       
       const sheetName = sheetNames[s];
       const worksheet = workbook.Sheets[sheetName];
-      const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
       
-      const newSheetData: any[][] = [];
-      const totalRows = jsonData.length;
+      // Collect all cells that need translation
+      const cellsToTranslate: { key: string, text: string }[] = [];
+      for (const key in worksheet) {
+        if (key[0] === '!') continue; // Skip metadata keys like !ref, !merges
+        const cell = worksheet[key];
+        // Only translate string cells that aren't empty
+        if (cell && cell.t === 's' && cell.v && typeof cell.v === 'string' && cell.v.trim()) {
+          cellsToTranslate.push({ key, text: cell.v });
+        }
+      }
 
-      // Batch translate rows
-      const BATCH_SIZE = 5;
-      for (let r = 0; r < totalRows; r += BATCH_SIZE) {
+      // Batch translate the collected cells
+      const BATCH_SIZE = 20; // Larger batch size for individual cells
+      for (let i = 0; i < cellsToTranslate.length; i += BATCH_SIZE) {
         if (isCancelledRef.current) throw new Error('翻譯已取消');
         
-        // Translating progress: 10% to 90%
-        const currentProgress = 10 + Math.round(((s * totalRows + r) / (sheetNames.length * totalRows)) * 80);
+        // Progress calculation
+        const currentProgress = 10 + Math.round(((s * cellsToTranslate.length + i) / (sheetNames.length * Math.max(1, cellsToTranslate.length))) * 80);
         updateProgress(currentProgress, 'translating');
         
-        const batchRows = jsonData.slice(r, r + BATCH_SIZE);
-        const cellsToTranslate: { r: number, c: number, text: string }[] = [];
+        const batch = cellsToTranslate.slice(i, i + BATCH_SIZE);
+        const batchTexts = batch.map(c => c.text);
         
-        batchRows.forEach((row, rowIdx) => {
-          row.forEach((cellValue, colIdx) => {
-            if (cellValue && typeof cellValue === 'string' && cellValue.trim()) {
-              cellsToTranslate.push({ r: rowIdx, c: colIdx, text: cellValue });
-            }
-          });
-        });
-
-        if (cellsToTranslate.length > 0) {
-          const batchTranslations = await translateBatch(cellsToTranslate.map(c => c.text), selectedLanguages);
+        const batchTranslations = await translateBatch(batchTexts, selectedLanguages);
+        
+        batch.forEach((cellInfo, idx) => {
+          const translations = batchTranslations[idx];
+          const cell = worksheet[cellInfo.key];
           
-          cellsToTranslate.forEach((cell, idx) => {
-            const translations = batchTranslations[idx];
-            let combinedValue = cell.text;
-            for (const lang of selectedLanguages) {
-              combinedValue += `\n${translations[lang] || '(翻譯失敗)'}`;
-            }
-            batchRows[cell.r][cell.c] = combinedValue;
-          });
-        }
-        
-        newSheetData.push(...batchRows);
+          let combinedValue = cellInfo.text;
+          for (const lang of selectedLanguages) {
+            combinedValue += `\n${translations[lang] || '(翻譯失敗)'}`;
+          }
+          
+          // Update the cell value in-place to preserve formatting/styles
+          cell.v = combinedValue;
+          // If there's a formatted text property, update it too
+          if (cell.w) delete cell.w; 
+        });
       }
-      
-      const newWorksheet = XLSX.utils.aoa_to_sheet(newSheetData);
-      XLSX.utils.book_append_sheet(newWorkbook, newWorksheet, sheetName);
     }
 
     updateProgress(95, 'generating');
-    const excelBuffer = XLSX.write(newWorkbook, { bookType: 'xlsx', type: 'array' });
+    const excelBuffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
     const excelBlob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const fileName = `translated_${file.name}`;
     saveAs(excelBlob, fileName);
