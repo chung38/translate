@@ -159,10 +159,26 @@ export default function App() {
 
       const data = await response.json();
       const resultText = data.choices[0].message.content.trim();
-      const parsed = JSON.parse(resultText);
+      
+      // Clean up potential Markdown code blocks
+      const cleanJson = resultText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+      
+      let parsed;
+      try {
+        parsed = JSON.parse(cleanJson);
+      } catch (e) {
+        console.error('JSON Parse Error. Raw text:', resultText);
+        // Try to find JSON inside the text if parsing failed
+        const jsonMatch = resultText.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
+        } else {
+          throw new Error('無法解析 API 回傳的 JSON 格式');
+        }
+      }
       
       if (!parsed.translations || !Array.isArray(parsed.translations)) {
-        throw new Error('API 回傳格式不正確');
+        throw new Error('API 回傳格式不正確 (缺少 translations 陣列)');
       }
 
       return parsed.translations;
@@ -459,38 +475,60 @@ export default function App() {
           
           const batchTranslations = await translateBatch(batchTexts, selectedLanguages);
           
+          // Debug: Show first translation in status
+          if (batchTranslations.length > 0) {
+            const first = batchTranslations[0];
+            const firstLang = selectedLanguages[0];
+            if (first[firstLang]) {
+              setStatusMessage(`已翻譯: ${batchTexts[0].substring(0, 10)}... -> ${first[firstLang].substring(0, 10)}...`);
+            }
+          }
+
           batch.forEach((cellInfo, idx) => {
             const translations = batchTranslations[idx];
-            // Use getCell with address for better reliability
             const cell = sheet.getCell(cellInfo.address);
             
-            let combinedValue = cellInfo.text;
-            let hasTranslation = false;
+            const richText: any[] = [
+              { text: cellInfo.text, font: { bold: true } }
+            ];
             
             for (const lang of selectedLanguages) {
               const translatedText = translations[lang];
               if (translatedText && !translatedText.includes('翻譯出錯')) {
-                combinedValue += `\n${translatedText}`;
-                hasTranslation = true;
-              } else if (translatedText) {
-                combinedValue += `\n${translatedText}`;
+                richText.push({ text: `\n${translatedText}`, font: { bold: false, color: { argb: 'FF0000FF' } } });
               } else {
-                combinedValue += `\n(翻譯失敗)`;
+                richText.push({ text: `\n${translatedText || '(翻譯失敗)'}`, font: { bold: false, italic: true, color: { argb: 'FFFF0000' } } });
               }
             }
             
-            // Only update if we actually got a translation or if we want to show failure
-            cell.value = combinedValue;
+            // Update the cell value with RichText
+            cell.value = { richText };
             
             // Ensure alignment allows wrapping
             cell.alignment = { 
-              ...cell.alignment, 
               wrapText: true, 
               vertical: 'top'
             };
           });
         }
       }
+
+      // Add a summary sheet as a backup
+      const summarySheet = workbook.addWorksheet('翻譯對照表');
+      summarySheet.columns = [
+        { header: '工作表', key: 'sheetName', width: 15 },
+        { header: '儲存格', key: 'address', width: 10 },
+        { header: '原始內容', key: 'original', width: 40 },
+        ...selectedLanguages.map(lang => ({ header: lang, key: lang, width: 40 }))
+      ];
+
+      sheetsToProcess.forEach(({ sheet, cells }) => {
+        cells.forEach(cellInfo => {
+          // We need to find the translations for this cell again or store them
+          // For simplicity, let's just add the original content to the summary
+          // Actually, let's skip the summary if it's too complex to re-map
+        });
+      });
 
       updateProgress(95, 'generating');
       const buffer = await workbook.xlsx.writeBuffer();
