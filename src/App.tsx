@@ -54,6 +54,7 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<{ name: string, date: string, blob: Blob, type: string }[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const isCancelledRef = useRef(false);
 
@@ -378,6 +379,7 @@ export default function App() {
     const fileName = file.name.replace(/\.docx$/, `_translated.docx`);
     saveAs(content, fileName);
     updateProgress(100, 'generating');
+    return { blob: content, name: fileName };
   };
 
   const processExcel = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
@@ -442,8 +444,10 @@ export default function App() {
     updateProgress(95, 'generating');
     const excelBuffer = XLSX.write(newWorkbook, { bookType: 'xlsx', type: 'array' });
     const excelBlob = new Blob([excelBuffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    saveAs(excelBlob, `translated_${file.name}`);
+    const fileName = `translated_${file.name}`;
+    saveAs(excelBlob, fileName);
     updateProgress(100, 'generating');
+    return { blob: excelBlob, name: fileName };
   };
 
   const processPdf = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
@@ -568,8 +572,11 @@ export default function App() {
     }
 
     updateProgress(95, 'generating');
-    doc.save(`translated_${file.name}`);
+    const pdfBlob = doc.output('blob');
+    const fileName = `translated_${file.name}`;
+    saveAs(pdfBlob, fileName);
     updateProgress(100, 'generating');
+    return { blob: pdfBlob, name: fileName };
   };
 
   const processPptx = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
@@ -749,6 +756,7 @@ export default function App() {
     const fileName = file.name.replace(/\.pptx$/, `_translated.pptx`);
     saveAs(content, fileName);
     updateProgress(100, 'generating');
+    return { blob: content, name: fileName };
   };
 
   const processFiles = async () => {
@@ -781,22 +789,34 @@ export default function App() {
         };
 
         try {
+          let result: { blob: Blob, name: string } | undefined;
           switch (extension) {
             case 'docx':
-              await processDocx(currentFile, updateFileProgress);
+              result = await processDocx(currentFile, updateFileProgress);
               break;
             case 'xlsx':
-              await processExcel(currentFile, updateFileProgress);
+              result = await processExcel(currentFile, updateFileProgress);
               break;
             case 'pdf':
-              await processPdf(currentFile, updateFileProgress);
+              result = await processPdf(currentFile, updateFileProgress);
               break;
             case 'pptx':
-              await processPptx(currentFile, updateFileProgress);
+              result = await processPptx(currentFile, updateFileProgress);
               break;
             default:
               console.warn(`不支援的檔案格式: ${currentFile.name}`);
           }
+          
+          if (result) {
+            const newEntry = { 
+              name: result.name, 
+              date: new Date().toLocaleTimeString(), 
+              blob: result.blob, 
+              type: extension || 'unknown' 
+            };
+            setHistory(prev => [newEntry, ...prev].slice(0, 3));
+          }
+
           // Remove file from list after successful processing
           setFiles(prev => prev.filter(f => f !== currentFile));
         } catch (fileErr) {
@@ -1115,6 +1135,55 @@ export default function App() {
             </div>
           </div>
         </motion.div>
+
+        {/* Translation History */}
+        <AnimatePresence>
+          {history.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="mt-8 bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden"
+            >
+              <div className="p-5 md:p-6 border-b border-gray-50 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  </div>
+                  <h2 className="text-sm font-medium text-gray-800">最近翻譯的文件 (最後 3 份)</h2>
+                </div>
+                <span className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">History</span>
+              </div>
+              <div className="divide-y divide-gray-50">
+                {history.map((item, idx) => (
+                  <div key={idx} className="p-4 md:p-5 flex items-center justify-between hover:bg-gray-50 transition-colors">
+                    <div className="flex items-center gap-4">
+                      <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center text-gray-400">
+                        {item.type === 'docx' && <FileText className="w-5 h-5 text-blue-500" />}
+                        {item.type === 'xlsx' && <FileSpreadsheet className="w-5 h-5 text-emerald-500" />}
+                        {item.type === 'pdf' && <FileIcon className="w-5 h-5 text-red-500" />}
+                        {item.type === 'pptx' && <Presentation className="w-5 h-5 text-orange-500" />}
+                        {!['docx', 'xlsx', 'pdf', 'pptx'].includes(item.type) && <FileIcon className="w-5 h-5" />}
+                      </div>
+                      <div>
+                        <h3 className="text-sm font-medium text-gray-700 truncate max-w-[180px] sm:max-w-[300px]">
+                          {item.name}
+                        </h3>
+                        <p className="text-[10px] text-gray-400 mt-0.5">{item.date}</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => saveAs(item.blob, item.name)}
+                      className="p-2 rounded-lg hover:bg-emerald-50 text-emerald-600 transition-all group"
+                      title="重新下載"
+                    >
+                      <Download className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {/* Instructions */}
         <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-8">
