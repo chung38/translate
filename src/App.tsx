@@ -82,6 +82,8 @@ export default function App() {
       } else if (hasInvalid) {
         setError('請上傳有效的 .docx, .xlsx, .pdf 或 .pptx 檔案');
       }
+      // Reset input value to allow same file selection
+      e.target.value = '';
     }
   };
 
