@@ -117,9 +117,11 @@ export default function App() {
         ]
       }
       確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
-      注意：翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣），只需要純粹的翻譯內容。
-      確保翻譯內容完全使用目標語言，不要夾雜原始語言或其他語言的文字（除非是專有名詞或型號）。
-      不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
+      注意：
+      1. 翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣），只需要純粹的翻譯內容。
+      2. 確保翻譯內容完全使用目標語言，不要夾雜原始語言或其他語言的文字（除非是專有名詞或型號）。
+      3. **重要：如果輸入文字中包含 <color hex="RRGGBB">...</color> 標籤，請在翻譯後的對應單字或片語上也保留這些標籤與相同的 hex 值。**
+      4. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
       
       待翻譯內容陣列：
       ${JSON.stringify(texts, null, 2)}`;
@@ -222,18 +224,33 @@ export default function App() {
       
       const batchParas = paragraphs.slice(i, i + BATCH_SIZE);
       const paraData = batchParas.map(p => {
-        // Get all text nodes in this paragraph
-        const textNodes = Array.from(p.getElementsByTagNameNS(ns, 't'));
-        const fullText = textNodes.map(t => t.textContent || '').join('');
-        return { p, fullText };
-      }).filter(data => data.fullText.trim().length > 0);
+        // Get all runs in this paragraph to check for color
+        const runs = Array.from(p.getElementsByTagNameNS(ns, 'r'));
+        let taggedText = '';
+        runs.forEach(r => {
+          const t = r.getElementsByTagNameNS(ns, 't')[0];
+          if (!t) return;
+          const text = t.textContent || '';
+          const rPr = r.getElementsByTagNameNS(ns, 'rPr')[0];
+          const color = rPr?.getElementsByTagNameNS(ns, 'color')[0];
+          const hex = color?.getAttribute('w:val');
+          
+          // If color is present and not default black/auto, wrap it in tags
+          if (hex && hex !== '000000' && hex !== 'auto') {
+            taggedText += `<color hex="${hex}">${text}</color>`;
+          } else {
+            taggedText += text;
+          }
+        });
+        return { p, taggedText };
+      }).filter(data => data.taggedText.trim().length > 0);
 
       if (paraData.length > 0) {
         // Translating progress: 10% to 90%
         const currentProgress = 10 + Math.round((Math.min(i + BATCH_SIZE, totalParagraphs) / totalParagraphs) * 80);
         updateProgress(currentProgress, 'translating');
         
-        const textsToTranslate = paraData.map(d => d.fullText);
+        const textsToTranslate = paraData.map(d => d.taggedText);
         const batchTranslations = await translateBatch(textsToTranslate, selectedLanguages);
         
         paraData.forEach((data, idx) => {
@@ -267,57 +284,80 @@ export default function App() {
             const translatedText = translations[lang];
             if (!translatedText) return;
 
-            // Create a new run for the translation
-            const newRun = xmlDoc.createElementNS(ns, 'w:r');
+            // Split by color tags
+            const parts = translatedText.split(/(<color hex="[0-9A-Fa-f]{6}">.*?<\/color>)/g);
             
-            // Copy properties if they exist
-            if (firstRunPr) {
-              const newPr = firstRunPr.cloneNode(true) as Element;
-              // Remove properties that might cause weird spacing in Latin/Vietnamese text (like Chinese character spacing)
-              const propsToRemove = ['spacing', 'w', 'kern'];
-              propsToRemove.forEach(prop => {
-                const els = newPr.getElementsByTagNameNS(ns, prop);
-                while (els.length > 0) {
-                  newPr.removeChild(els[0]);
+            parts.forEach((part, pIdx) => {
+              // Create a new run for each part
+              const newRun = xmlDoc.createElementNS(ns, 'w:r');
+              
+              // Copy properties if they exist
+              if (firstRunPr) {
+                const newPr = firstRunPr.cloneNode(true) as Element;
+                // Remove properties that might cause weird spacing or incorrect colors in translations
+                const propsToRemove = ['spacing', 'w', 'kern', 'color'];
+                propsToRemove.forEach(prop => {
+                  const els = newPr.getElementsByTagNameNS(ns, prop);
+                  while (els.length > 0) {
+                    newPr.removeChild(els[0]);
+                  }
+                });
+                
+                // If this part is a color tag, apply the color
+                if (part.startsWith('<color')) {
+                  const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
+                  if (match) {
+                    const hex = match[1];
+                    const colorEl = xmlDoc.createElementNS(ns, 'w:color');
+                    colorEl.setAttribute('w:val', hex);
+                    newPr.appendChild(colorEl);
+                  }
                 }
-              });
-              
-              // Force a standard font for translations to avoid metric issues with diacritics
-              let rFonts = newPr.getElementsByTagNameNS(ns, 'rFonts')[0];
-              if (!rFonts) {
-                rFonts = xmlDoc.createElementNS(ns, 'w:rFonts');
-                newPr.appendChild(rFonts);
-              }
-              rFonts.setAttribute('w:ascii', 'Arial');
-              rFonts.setAttribute('w:hAnsi', 'Arial');
-              rFonts.setAttribute('w:cs', 'Arial'); // Complex script font for Vietnamese
-              
-              // Set language to Vietnamese if applicable to improve rendering
-              if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
-                let langEl = newPr.getElementsByTagNameNS(ns, 'lang')[0];
-                if (!langEl) {
-                  langEl = xmlDoc.createElementNS(ns, 'w:lang');
-                  newPr.appendChild(langEl);
+
+                // Force a standard font for translations to avoid metric issues with diacritics
+                let rFonts = newPr.getElementsByTagNameNS(ns, 'rFonts')[0];
+                if (!rFonts) {
+                  rFonts = xmlDoc.createElementNS(ns, 'w:rFonts');
+                  newPr.appendChild(rFonts);
                 }
-                langEl.setAttribute('w:val', 'vi-VN');
-                langEl.setAttribute('w:eastAsia', 'vi-VN');
-                langEl.setAttribute('w:bidi', 'vi-VN');
+                rFonts.setAttribute('w:ascii', 'Arial');
+                rFonts.setAttribute('w:hAnsi', 'Arial');
+                rFonts.setAttribute('w:cs', 'Arial'); // Complex script font for Vietnamese
+                
+                // Set language to Vietnamese if applicable to improve rendering
+                if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
+                  let langEl = newPr.getElementsByTagNameNS(ns, 'lang')[0];
+                  if (!langEl) {
+                    langEl = xmlDoc.createElementNS(ns, 'w:lang');
+                    newPr.appendChild(langEl);
+                  }
+                  langEl.setAttribute('w:val', 'vi-VN');
+                  langEl.setAttribute('w:eastAsia', 'vi-VN');
+                  langEl.setAttribute('w:bidi', 'vi-VN');
+                }
+                
+                newRun.appendChild(newPr);
               }
-              
-              newRun.appendChild(newPr);
-            }
 
-            // Add a break before the translation
-            const br = xmlDoc.createElementNS(ns, 'w:br');
-            newRun.appendChild(br);
+              // Add a break before the translation (only for the first part of each language)
+              if (pIdx === 0) {
+                const br = xmlDoc.createElementNS(ns, 'w:br');
+                newRun.appendChild(br);
+              }
 
-            // Add the translated text
-            const t = xmlDoc.createElementNS(ns, 'w:t');
-            t.textContent = translatedText;
-            newRun.appendChild(t);
+              // Add the text
+              const t = xmlDoc.createElementNS(ns, 'w:t');
+              if (part.startsWith('<color')) {
+                const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
+                t.textContent = match ? match[2] : part;
+              } else {
+                t.textContent = part;
+              }
+              newRun.appendChild(t);
 
-            // Append the translation to the paragraph
-            p.appendChild(newRun);
+              // Append the translation to the paragraph
+              p.appendChild(newRun);
+            });
           });
         });
       }
@@ -558,13 +598,30 @@ export default function App() {
       const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS(nsA, 'p'));
       
       const paraData = paragraphs.map(p => {
-        const textNodes = Array.from(p.getElementsByTagNameNS(nsA, 't'));
-        const fullText = textNodes.map(t => t.textContent || '').join('');
-        return { p, fullText };
-      }).filter(data => data.fullText.trim().length > 0);
+        // Get all runs in this paragraph to check for color
+        const runs = Array.from(p.getElementsByTagNameNS(nsA, 'r'));
+        let taggedText = '';
+        runs.forEach(r => {
+          const t = r.getElementsByTagNameNS(nsA, 't')[0];
+          if (!t) return;
+          const text = t.textContent || '';
+          const rPr = r.getElementsByTagNameNS(nsA, 'rPr')[0];
+          const solidFill = rPr?.getElementsByTagNameNS(nsA, 'solidFill')[0];
+          const srgbClr = solidFill?.getElementsByTagNameNS(nsA, 'srgbClr')[0];
+          const hex = srgbClr?.getAttribute('val');
+          
+          // If color is present and not default black/auto, wrap it in tags
+          if (hex && hex !== '000000') {
+            taggedText += `<color hex="${hex}">${text}</color>`;
+          } else {
+            taggedText += text;
+          }
+        });
+        return { p, taggedText };
+      }).filter(data => data.taggedText.trim().length > 0);
 
       if (paraData.length > 0) {
-        const textsToTranslate = paraData.map(d => d.fullText);
+        const textsToTranslate = paraData.map(d => d.taggedText);
         const batchTranslations = await translateBatch(textsToTranslate, selectedLanguages);
         
         paraData.forEach((data, idx) => {
@@ -597,45 +654,81 @@ export default function App() {
             const translatedText = translations[lang];
             if (!translatedText) return;
 
-            // Add a break (a:br)
-            const br = xmlDoc.createElementNS(nsA, 'a:br');
-            if (firstRunPr) {
-              br.appendChild(firstRunPr.cloneNode(true));
-            }
-            p.appendChild(br);
-
-            // Create a new run for the translation
-            const newRun = xmlDoc.createElementNS(nsA, 'a:r');
+            // Split by color tags
+            const parts = translatedText.split(/(<color hex="[0-9A-Fa-f]{6}">.*?<\/color>)/g);
             
-            // Copy properties if they exist
-            if (firstRunPr) {
-              const newPr = firstRunPr.cloneNode(true) as Element;
-              // Force Arial for Vietnamese in PPTX to avoid metric issues
-              if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
-                let latin = newPr.getElementsByTagNameNS(nsA, 'latin')[0];
-                if (!latin) {
-                  latin = xmlDoc.createElementNS(nsA, 'a:latin');
-                  newPr.appendChild(latin);
+            parts.forEach((part, pIdx) => {
+              // Add a break (a:br) only before the first part of each language
+              if (pIdx === 0) {
+                const br = xmlDoc.createElementNS(nsA, 'a:br');
+                if (firstRunPr) {
+                  br.appendChild(firstRunPr.cloneNode(true));
                 }
-                latin.setAttribute('typeface', 'Arial');
-                
-                let cs = newPr.getElementsByTagNameNS(nsA, 'cs')[0];
-                if (!cs) {
-                  cs = xmlDoc.createElementNS(nsA, 'a:cs');
-                  newPr.appendChild(cs);
-                }
-                cs.setAttribute('typeface', 'Arial');
+                p.appendChild(br);
               }
-              newRun.appendChild(newPr);
-            }
 
-            // Add the translated text in a new run
-            const t = xmlDoc.createElementNS(nsA, 'a:t');
-            t.textContent = translatedText;
-            newRun.appendChild(t);
+              // Create a new run for each part
+              const newRun = xmlDoc.createElementNS(nsA, 'a:r');
+              
+              // Copy properties if they exist
+              if (firstRunPr) {
+                const newPr = firstRunPr.cloneNode(true) as Element;
+                
+                // Remove color/fill properties to prevent entire translation from being colored
+                // if only part of the original was colored (since we copy from the first run)
+                const propsToRemove = ['solidFill', 'gradFill', 'blipFill', 'pattFill', 'grpFill'];
+                propsToRemove.forEach(prop => {
+                  const els = newPr.getElementsByTagNameNS(nsA, prop);
+                  while (els.length > 0) {
+                    newPr.removeChild(els[0]);
+                  }
+                });
 
-            // Append the translation to the paragraph
-            p.appendChild(newRun);
+                // If this part is a color tag, apply the color
+                if (part.startsWith('<color')) {
+                  const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
+                  if (match) {
+                    const hex = match[1];
+                    const solidFill = xmlDoc.createElementNS(nsA, 'a:solidFill');
+                    const srgbClr = xmlDoc.createElementNS(nsA, 'a:srgbClr');
+                    srgbClr.setAttribute('val', hex);
+                    solidFill.appendChild(srgbClr);
+                    newPr.appendChild(solidFill);
+                  }
+                }
+
+                // Force Arial for Vietnamese in PPTX to avoid metric issues
+                if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
+                  let latin = newPr.getElementsByTagNameNS(nsA, 'latin')[0];
+                  if (!latin) {
+                    latin = xmlDoc.createElementNS(nsA, 'a:latin');
+                    newPr.appendChild(latin);
+                  }
+                  latin.setAttribute('typeface', 'Arial');
+                  
+                  let cs = newPr.getElementsByTagNameNS(nsA, 'cs')[0];
+                  if (!cs) {
+                    cs = xmlDoc.createElementNS(nsA, 'a:cs');
+                    newPr.appendChild(cs);
+                  }
+                  cs.setAttribute('typeface', 'Arial');
+                }
+                newRun.appendChild(newPr);
+              }
+
+              // Add the text
+              const t = xmlDoc.createElementNS(nsA, 'a:t');
+              if (part.startsWith('<color')) {
+                const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
+                t.textContent = match ? match[2] : part;
+              } else {
+                t.textContent = part;
+              }
+              newRun.appendChild(t);
+
+              // Append the translation to the paragraph
+              p.appendChild(newRun);
+            });
           });
         });
 
