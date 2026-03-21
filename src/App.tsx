@@ -25,7 +25,8 @@ import {
   ArrowRight,
   FileSpreadsheet,
   File as FileIcon,
-  Presentation
+  Presentation,
+  History
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
@@ -38,10 +39,10 @@ const DEEPSEEK_PROXY_URL = '/api/translate';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const AVAILABLE_LANGUAGES = [
-  { id: 'th', name: '泰文', label: 'Thai' },
-  { id: 'id', name: '印尼文', label: 'Indonesian' },
-  { id: 'vi', name: '越南文', label: 'Vietnamese' },
-  { id: 'en', name: '英文', label: 'English' },
+  { id: 'th', name: '泰文', label: 'Thai', flag: '🇹🇭' },
+  { id: 'id', name: '印尼文', label: 'Indonesian', flag: '🇮🇩' },
+  { id: 'vi', name: '越南文', label: 'Vietnamese', flag: '🇻🇳' },
+  { id: 'en', name: '英文', label: 'English', flag: '🇺🇸' },
 ];
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
@@ -443,12 +444,17 @@ export default function App() {
           row.eachCell({ includeEmpty: false }, (cell) => {
             let text = '';
             const val = cell.value;
+            let originalFont = cell.font;
             
             if (typeof val === 'string') {
               text = val;
             } else if (val && typeof val === 'object') {
               if ('richText' in val) {
-                text = (val as any).richText.map((rt: any) => rt.text || '').join('');
+                const rt = (val as any).richText;
+                text = rt.map((rtPart: any) => rtPart.text || '').join('');
+                if (rt.length > 0 && rt[0].font) {
+                  originalFont = rt[0].font;
+                }
               } else if ('result' in val) {
                 text = (val as any).result?.toString() || '';
               } else if ('text' in val) {
@@ -466,7 +472,8 @@ export default function App() {
                 r: row.number, 
                 c: cell.col, 
                 text: text.trim(),
-                address: cell.address
+                address: cell.address,
+                font: originalFont ? JSON.parse(JSON.stringify(originalFont)) : undefined
               });
             }
           });
@@ -513,23 +520,26 @@ export default function App() {
             const cell = sheet.getCell(cellInfo.address);
             const row = sheet.getRow(cellInfo.r);
             
+            // Use original font for the original text
+            const originalFont = cellInfo.font || {};
             const richText: any[] = [
-              { text: cellInfo.text, font: { bold: true, size: 11 } }
+              { text: cellInfo.text, font: { ...originalFont } }
             ];
             
             let hasTranslation = false;
             for (const lang of selectedLanguages) {
               const translatedText = translations[lang];
               if (translatedText && !translatedText.includes('翻譯出錯')) {
+                // Use original font including color for translation
                 richText.push({ 
                   text: `\n${translatedText}`, 
-                  font: { bold: false, size: 10, color: { argb: 'FF0000FF' } } 
+                  font: { ...originalFont } 
                 });
                 hasTranslation = true;
               } else {
                 richText.push({ 
                   text: `\n(待翻譯: ${lang})`, 
-                  font: { bold: false, size: 9, italic: true, color: { argb: 'FF888888' } } 
+                  font: { ...originalFont, size: (originalFont.size || 11) - 1, italic: true, color: { argb: 'FF888888' } } 
                 });
               }
             }
@@ -537,11 +547,12 @@ export default function App() {
             // Update the cell value with RichText
             cell.value = { richText };
             
-            // Force alignment and row height for visibility
+            // Preserve original alignment but ensure wrapText is true
+            const originalAlignment = cell.alignment || {};
             cell.alignment = { 
+              ...originalAlignment,
               wrapText: true, 
-              vertical: 'top',
-              horizontal: 'left'
+              vertical: 'top'
             };
 
             // Increase row height to accommodate multiple lines (approx 15pt per line)
@@ -974,49 +985,85 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#F5F5F5] font-sans text-[#1A1A1A] p-3 sm:p-4 md:p-8">
-      <div className="max-w-3xl mx-auto">
+    <div className="min-h-screen bg-[#FAFAFA] font-sans text-[#1A1A1A] relative overflow-hidden">
+      {/* Background Accents */}
+      <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-emerald-50/50 to-transparent -z-10" />
+      <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-100/20 blur-[120px] rounded-full -z-10" />
+      <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100/20 blur-[120px] rounded-full -z-10" />
+
+      <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 relative z-10">
         {/* Header */}
         <header className="mb-8 md:mb-12 text-center">
           <motion.div 
-            initial={{ opacity: 0, y: -20 }}
+            initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="inline-flex items-center justify-center w-12 h-12 md:w-16 md:h-16 bg-white rounded-2xl shadow-sm mb-4 md:mb-6"
+            transition={{ duration: 0.5 }}
+            className="inline-flex items-center justify-center mb-4"
           >
-            <Languages className="w-6 h-6 md:w-8 md:h-8 text-emerald-600" />
+            <div className="relative">
+              <div className="absolute inset-0 bg-emerald-500/10 blur-xl rounded-full" />
+              <div className="relative w-12 h-12 bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center">
+                <Languages className="w-6 h-6 text-emerald-600" />
+              </div>
+            </div>
           </motion.div>
-          <motion.h1 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.1 }}
-            className="text-2xl md:text-4xl font-light tracking-tight mb-2 md:mb-3"
-          >
-            全能文件多語翻譯器
-          </motion.h1>
-          <motion.p 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className="text-muted text-[10px] md:text-sm uppercase tracking-widest opacity-60"
-          >
-            Multi-Language Document Translator
-          </motion.p>
+
+          <div className="space-y-1">
+            <motion.h1 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1, duration: 0.5 }}
+              className="text-2xl md:text-4xl font-bold tracking-tight text-gray-900"
+            >
+              全能文件<span className="text-emerald-600">多語翻譯器</span>
+            </motion.h1>
+
+            <motion.p
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              transition={{ delay: 0.2, duration: 0.5 }}
+              className="text-gray-400 text-xs md:text-sm font-medium tracking-wide"
+            >
+              Professional AI-powered document translation
+            </motion.p>
+          </div>
         </header>
+
+        {/* Instructions */}
+        <div className="mb-16 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
+          {[
+            { title: "上傳文件", desc: "支援 Word, Excel, PDF, PPTX 格式，自動提取內容。" },
+            { title: "智能翻譯", desc: "使用 AI 進行語境感知翻譯，確保翻譯品質。" },
+            { title: "多語對照", desc: "翻譯結果以對照形式呈現，並生成新文件。" }
+          ].map((item, idx) => (
+            <motion.div 
+              key={idx} 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 + idx * 0.1 }}
+              className="relative p-6 rounded-2xl bg-white/50 border border-white shadow-sm hover:shadow-md transition-all group"
+            >
+              <div className="text-3xl font-serif italic text-emerald-600/20 mb-3 group-hover:text-emerald-600/40 transition-colors">0{idx + 1}</div>
+              <h3 className="font-semibold text-gray-800 mb-2">{item.title}</h3>
+              <p className="text-xs text-gray-500 leading-relaxed font-light">{item.desc}</p>
+            </motion.div>
+          ))}
+        </div>
 
         {/* Main Card */}
         <motion.div 
-          initial={{ opacity: 0, scale: 0.98 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.3 }}
-          className="bg-white rounded-2xl md:rounded-[32px] shadow-sm border border-black/5 overflow-hidden"
+          initial={{ opacity: 0, y: 30 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.6 }}
+          className="bg-white rounded-[40px] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.08)] border border-black/5 overflow-hidden"
         >
-          <div className="p-5 md:p-12">
+          <div className="p-6 md:p-16">
             {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
               className={`
-                relative group cursor-pointer border-2 border-dashed rounded-2xl p-6 md:p-8 transition-all duration-300
-                ${files.length > 0 ? 'border-emerald-200 bg-emerald-50/10' : 'border-gray-200 hover:border-emerald-400 hover:bg-gray-50'}
+                relative group cursor-pointer border-2 border-dashed rounded-[32px] p-8 md:p-12 transition-all duration-500
+                ${files.length > 0 ? 'border-emerald-200 bg-emerald-50/20' : 'border-gray-200 hover:border-emerald-400 hover:bg-gray-50/50'}
               `}
             >
               <input 
@@ -1030,15 +1077,15 @@ export default function App() {
               
               <div className="flex flex-col items-center text-center">
                 <div className={`
-                  w-12 h-12 rounded-full flex items-center justify-center mb-3 transition-transform duration-300 group-hover:scale-110
-                  ${files.length > 0 ? 'bg-emerald-100 text-emerald-600' : 'bg-gray-100 text-gray-400'}
+                  w-16 h-16 rounded-full flex items-center justify-center mb-4 transition-all duration-500 group-hover:scale-110
+                  ${files.length > 0 ? 'bg-emerald-100 text-emerald-600 shadow-inner' : 'bg-gray-50 text-gray-400'}
                 `}>
-                  <Upload className="w-6 h-6" />
+                  <Upload className="w-7 h-7" />
                 </div>
                 
-                <div>
-                  <p className="text-base font-medium mb-1">點擊或拖拽上傳文件</p>
-                  <p className="text-xs text-gray-400">支援 .docx, .xlsx, .pdf, .pptx 格式 (可多選)</p>
+                <div className="max-w-xs">
+                  <p className="text-lg font-medium text-gray-800 mb-2">點擊或拖拽上傳文件</p>
+                  <p className="text-sm text-gray-400 font-light">支援 .docx, .xlsx, .pdf, .pptx 格式 (可多選)</p>
                 </div>
               </div>
             </div>
@@ -1068,30 +1115,30 @@ export default function App() {
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: 10 }}
-                      className="flex items-center justify-between p-3 bg-gray-50 rounded-xl border border-gray-100"
+                      className="flex items-center justify-between p-4 bg-gray-50/50 rounded-2xl border border-gray-100/50 hover:bg-white hover:shadow-sm transition-all"
                     >
-                      <div className="flex items-center gap-2 md:gap-3 min-w-0">
-                        <div className="text-emerald-600 shrink-0">
-                          {f.name.endsWith('.docx') && <FileText className="w-3 h-3 md:w-4 md:h-4" />}
-                          {f.name.endsWith('.xlsx') && <FileSpreadsheet className="w-3 h-3 md:w-4 md:h-4" />}
-                          {f.name.endsWith('.pdf') && <FileIcon className="w-3 h-3 md:w-4 md:h-4" />}
-                          {f.name.endsWith('.pptx') && <Presentation className="w-3 h-3 md:w-4 md:h-4" />}
+                      <div className="flex items-center gap-4 min-w-0">
+                        <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-emerald-600 shadow-sm">
+                          {f.name.endsWith('.docx') && <FileText className="w-5 h-5" />}
+                          {f.name.endsWith('.xlsx') && <FileSpreadsheet className="w-5 h-5" />}
+                          {f.name.endsWith('.pdf') && <FileIcon className="w-5 h-5" />}
+                          {f.name.endsWith('.pptx') && <Presentation className="w-5 h-5" />}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-xs md:text-sm font-medium text-gray-700 truncate">{f.name}</p>
-                          <p className="text-[9px] md:text-[10px] text-gray-400">{(f.size / 1024).toFixed(1)} KB</p>
+                          <p className="text-sm font-medium text-gray-700 truncate">{f.name}</p>
+                          <p className="text-[10px] text-gray-400 font-light">{(f.size / 1024).toFixed(1)} KB</p>
                         </div>
                       </div>
                       
-                      <div className="flex items-center gap-2 md:gap-3">
+                      <div className="flex items-center gap-4">
                         {status !== 'idle' && status !== 'error' && (
-                          <div className="flex flex-col items-end gap-1">
-                            <span className="text-[9px] md:text-[10px] font-mono text-emerald-600">
+                          <div className="flex flex-col items-end gap-1.5">
+                            <span className="text-[10px] font-mono font-bold text-emerald-600">
                               {fileProgress[f.name] || 0}%
                             </span>
-                            <div className="w-12 md:w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                            <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
                               <div 
-                                className="h-full bg-emerald-500 transition-all duration-300" 
+                                className="h-full bg-emerald-500 transition-all duration-500" 
                                 style={{ width: `${fileProgress[f.name] || 0}%` }}
                               />
                             </div>
@@ -1100,13 +1147,15 @@ export default function App() {
                         {status === 'idle' && (
                           <button 
                             onClick={() => removeFile(idx)}
-                            className="p-1 hover:bg-red-50 rounded-lg text-gray-400 hover:text-red-500 transition-colors"
+                            className="p-2 hover:bg-red-50 rounded-full text-gray-300 hover:text-red-500 transition-all"
                           >
                             <AlertCircle className="w-4 h-4 rotate-45" />
                           </button>
                         )}
                         {status === 'completed' && fileProgress[f.name] === 100 && (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          </div>
                         )}
                       </div>
                     </motion.div>
@@ -1116,54 +1165,59 @@ export default function App() {
             </AnimatePresence>
 
             {/* Settings */}
-            <div className="mt-8 space-y-6">
+            <div className="mt-12 space-y-10">
               <div>
-                <label className="block text-[11px] uppercase tracking-wider font-semibold text-gray-400 mb-2 ml-1">
+                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400 mb-4 ml-1">
                   工廠行業 (可選，使翻譯更精準)
                 </label>
-                <input
-                  type="text"
-                  value={industry}
-                  onChange={(e) => setIndustry(e.target.value)}
-                  placeholder="例如：電子、紡織、汽車..."
-                  className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-emerald-400 focus:ring-1 focus:ring-emerald-400 outline-none transition-all text-sm"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={industry}
+                    onChange={(e) => setIndustry(e.target.value)}
+                    placeholder="例如：電子、紡織、汽車..."
+                    className="w-full px-5 py-4 rounded-[20px] border border-gray-100 bg-gray-50/30 focus:bg-white focus:border-emerald-400 focus:ring-4 focus:ring-emerald-400/5 outline-none transition-all text-sm placeholder:text-gray-300"
+                  />
+                </div>
               </div>
 
               <div>
-                <label className="block text-[11px] uppercase tracking-wider font-semibold text-gray-400 mb-4 ml-1">
+                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400 mb-6 ml-1">
                   選擇目標語言 (可多選)
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                   {AVAILABLE_LANGUAGES.map((lang) => (
                     <button
                       key={lang.id}
                       onClick={() => toggleLanguage(lang.name)}
                       className={`
-                        flex items-center justify-between px-4 py-3 rounded-xl border transition-all text-sm
-                        ${selectedLanguages.includes(lang.name)
-                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700 font-medium'
-                          : 'bg-white border-gray-200 text-gray-600 hover:border-emerald-200'}
+                        group relative flex items-center justify-between px-5 py-4 rounded-[20px] border transition-all duration-300
+                        ${selectedLanguages.includes(lang.name) 
+                          ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_8px_20px_-6px_rgba(16,185,129,0.4)]' 
+                          : 'border-gray-100 bg-white hover:border-emerald-200 hover:bg-emerald-50/30 text-gray-600'}
                       `}
                     >
-                      <span>{lang.name}</span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg">{lang.flag}</span>
+                        <span className="text-xs font-medium tracking-wide">{lang.name}</span>
+                      </div>
                       {selectedLanguages.includes(lang.name) && (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                        <CheckCircle2 className="w-4 h-4 text-white" />
                       )}
                     </button>
                   ))}
                 </div>
               </div>
               
-              <div className="flex flex-col gap-3">
+              <div className="flex flex-col gap-3 pt-4">
                 <button
                   disabled={files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'}
                   onClick={processFiles}
                   className={`
-                    w-full h-[48px] md:h-[56px] rounded-xl font-medium flex items-center justify-center gap-2 transition-all px-4
+                    w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
                     ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'
                       ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-lg shadow-emerald-600/20 active:scale-[0.98]'}
+                      : 'bg-gray-900 text-white hover:bg-black hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]'}
                   `}
                 >
                   {status === 'idle' && (
@@ -1197,7 +1251,7 @@ export default function App() {
                 {(status === 'processing' || status === 'translating' || status === 'generating') && (
                   <button
                     onClick={cancelTranslation}
-                    className="w-full h-[40px] rounded-xl font-medium text-red-500 hover:bg-red-50 transition-all text-sm border border-red-100"
+                    className="w-full h-[48px] rounded-[20px] font-medium text-red-500 hover:bg-red-50 transition-all text-sm border border-red-100"
                   >
                     取消翻譯
                   </button>
@@ -1245,28 +1299,6 @@ export default function App() {
               </motion.div>
             )}
           </div>
-
-            {/* Footer Info */}
-          <div className="bg-gray-50 border-t border-gray-100 p-5 md:p-6 flex flex-col sm:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-4">
-              <div className="flex -space-x-2">
-                {[1, 2, 3].map(i => (
-                  <div key={i} className="w-6 h-6 md:w-8 md:h-8 rounded-full border-2 border-white bg-gray-200 overflow-hidden">
-                    <img 
-                      src={`https://picsum.photos/seed/user${i}/32/32`} 
-                      alt="User" 
-                      referrerPolicy="no-referrer"
-                    />
-                  </div>
-                ))}
-              </div>
-              <span className="text-[10px] md:text-xs text-gray-400 font-medium">已有超過 1,000+ 份文件被翻譯</span>
-            </div>
-            <div className="flex items-center gap-2 text-[10px] md:text-xs text-gray-400">
-              <CheckCircle2 className="w-3 h-3 text-emerald-500" />
-              <span>由 DeepSeek AI 強力驅動</span>
-            </div>
-          </div>
         </motion.div>
 
         {/* Translation History */}
@@ -1275,41 +1307,47 @@ export default function App() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="mt-8 bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden"
+              className="mt-12 bg-white rounded-[32px] shadow-[0_20px_40px_-12px_rgba(0,0,0,0.04)] border border-black/5 overflow-hidden"
             >
-              <div className="p-5 md:p-6 border-b border-gray-50 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center">
-                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+              <div className="p-6 md:p-8 border-b border-gray-50 flex items-center justify-between bg-gray-50/30">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center">
+                    <History className="w-5 h-5 text-emerald-600" />
                   </div>
-                  <h2 className="text-sm font-medium text-gray-800">最近翻譯的文件 (最後 3 份)</h2>
+                  <div>
+                    <h2 className="text-sm font-semibold text-gray-800">最近翻譯</h2>
+                    <p className="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Translation History</p>
+                  </div>
                 </div>
-                <span className="text-[10px] uppercase tracking-wider text-gray-400 font-bold">History</span>
               </div>
               <div className="divide-y divide-gray-50">
                 {history.map((item, idx) => (
-                  <div key={idx} className="p-4 md:p-5 flex items-center justify-between hover:bg-gray-50 transition-colors">
-                    <div className="flex items-center gap-4">
-                      <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center text-gray-400">
-                        {item.type === 'docx' && <FileText className="w-5 h-5 text-blue-500" />}
-                        {item.type === 'xlsx' && <FileSpreadsheet className="w-5 h-5 text-emerald-500" />}
-                        {item.type === 'pdf' && <FileIcon className="w-5 h-5 text-red-500" />}
-                        {item.type === 'pptx' && <Presentation className="w-5 h-5 text-orange-500" />}
-                        {!['docx', 'xlsx', 'pdf', 'pptx'].includes(item.type) && <FileIcon className="w-5 h-5" />}
+                  <div key={idx} className="p-5 md:p-6 flex items-center justify-between hover:bg-gray-50/50 transition-all group">
+                    <div className="flex items-center gap-5">
+                      <div className="w-12 h-12 rounded-2xl bg-gray-50 flex items-center justify-center text-gray-400 group-hover:bg-white group-hover:shadow-sm transition-all">
+                        {item.type === 'docx' && <FileText className="w-6 h-6 text-blue-500/70" />}
+                        {item.type === 'xlsx' && <FileSpreadsheet className="w-6 h-6 text-emerald-500/70" />}
+                        {item.type === 'pdf' && <FileIcon className="w-6 h-6 text-red-500/70" />}
+                        {item.type === 'pptx' && <Presentation className="w-6 h-6 text-orange-500/70" />}
+                        {!['docx', 'xlsx', 'pdf', 'pptx'].includes(item.type) && <FileIcon className="w-6 h-6" />}
                       </div>
                       <div>
-                        <h3 className="text-sm font-medium text-gray-700 truncate max-w-[180px] sm:max-w-[300px]">
+                        <h3 className="text-sm font-medium text-gray-700 truncate max-w-[180px] sm:max-w-[400px]">
                           {item.name}
                         </h3>
-                        <p className="text-[10px] text-gray-400 mt-0.5">{item.date}</p>
+                        <div className="flex items-center gap-2 mt-1">
+                          <span className="text-[10px] text-gray-400 font-light">{item.date}</span>
+                          <span className="w-1 h-1 rounded-full bg-gray-200" />
+                          <span className="text-[10px] text-emerald-600 font-medium uppercase tracking-tighter">Success</span>
+                        </div>
                       </div>
                     </div>
                     <button
                       onClick={() => saveAs(item.blob, item.name)}
-                      className="p-2 rounded-lg hover:bg-emerald-50 text-emerald-600 transition-all group"
+                      className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-emerald-50 text-emerald-600 transition-all group/btn border border-transparent hover:border-emerald-100"
                       title="重新下載"
                     >
-                      <Download className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                      <Download className="w-4 h-4 group-hover/btn:scale-110 transition-transform" />
                     </button>
                   </div>
                 ))}
@@ -1317,21 +1355,6 @@ export default function App() {
             </motion.div>
           )}
         </AnimatePresence>
-
-        {/* Instructions */}
-        <div className="mt-12 grid grid-cols-1 md:grid-cols-3 gap-8">
-          {[
-            { title: "上傳文件", desc: "支援 Word, Excel, PDF, PPTX 格式，系統會自動提取文字內容。" },
-            { title: "智能翻譯", desc: "使用 DeepSeek AI 進行語境感知翻譯，確保翻譯品質。" },
-            { title: "多語對照", desc: "翻譯結果將以對照形式呈現，並生成新的翻譯文件。" }
-          ].map((item, idx) => (
-            <div key={idx} className="text-center">
-              <div className="text-2xl font-serif italic text-emerald-600/30 mb-2">0{idx + 1}</div>
-              <h3 className="font-medium mb-1">{item.title}</h3>
-              <p className="text-xs text-gray-500 leading-relaxed">{item.desc}</p>
-            </div>
-          ))}
-        </div>
       </div>
     </div>
   );
