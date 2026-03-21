@@ -385,79 +385,91 @@ export default function App() {
 
   const processExcel = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
     updateProgress(5, 'processing');
-    const arrayBuffer = await file.arrayBuffer();
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.load(arrayBuffer);
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(arrayBuffer);
 
-    updateProgress(10, 'translating');
-    
-    // Collect all cells that need translation across all worksheets
-    const sheetsToProcess: { sheet: ExcelJS.Worksheet, cells: any[] }[] = [];
-    
-    workbook.eachSheet((worksheet) => {
-      const robustCells: any[] = [];
-      worksheet.eachRow((row) => {
-        row.eachCell((cell) => {
-          const val = cell.value;
-          if (typeof val === 'string' && val.trim()) {
-            robustCells.push({ r: row.number, c: cell.col, text: val });
-          } else if (val && typeof val === 'object' && 'richText' in (val as any)) {
-            const richTextVal = val as any;
-            const plainText = (richTextVal.richText || []).map((rt: any) => rt.text || '').join('');
-            if (plainText.trim()) {
-              robustCells.push({ r: row.number, c: cell.col, text: plainText });
+      updateProgress(10, 'translating');
+      
+      const sheetsToProcess: { sheet: ExcelJS.Worksheet, cells: any[] }[] = [];
+      
+      workbook.eachSheet((worksheet) => {
+        const robustCells: any[] = [];
+        worksheet.eachRow((row) => {
+          row.eachCell((cell) => {
+            // Use cell.text to get the displayed string, which handles formulas, rich text, etc.
+            const text = cell.text;
+            if (text && text.toString().trim()) {
+              robustCells.push({ r: row.number, c: cell.col, text: text.toString() });
             }
-          }
+          });
         });
+        
+        if (robustCells.length > 0) {
+          sheetsToProcess.push({ sheet: worksheet, cells: robustCells });
+        }
       });
-      
-      if (robustCells.length > 0) {
-        sheetsToProcess.push({ sheet: worksheet, cells: robustCells });
-      }
-    });
 
-    const totalSheets = sheetsToProcess.length;
-    for (let s = 0; s < totalSheets; s++) {
-      if (isCancelledRef.current) throw new Error('翻譯已取消');
-      
-      const { sheet, cells } = sheetsToProcess[s];
-      const BATCH_SIZE = 20;
-      
-      for (let i = 0; i < cells.length; i += BATCH_SIZE) {
+      if (sheetsToProcess.length === 0) {
+        throw new Error('找不到可翻譯的文字內容');
+      }
+
+      const totalSheets = sheetsToProcess.length;
+      for (let s = 0; s < totalSheets; s++) {
         if (isCancelledRef.current) throw new Error('翻譯已取消');
         
-        const currentProgress = 10 + Math.round(((s * cells.length + i) / (totalSheets * Math.max(1, cells.length))) * 80);
-        updateProgress(currentProgress, 'translating');
+        const { sheet, cells } = sheetsToProcess[s];
+        const BATCH_SIZE = 10;
         
-        const batch = cells.slice(i, i + BATCH_SIZE);
-        const batchTexts = batch.map(c => c.text);
-        
-        const batchTranslations = await translateBatch(batchTexts, selectedLanguages);
-        
-        batch.forEach((cellInfo, idx) => {
-          const translations = batchTranslations[idx];
-          const cell = sheet.getCell(cellInfo.r, cellInfo.c);
+        for (let i = 0; i < cells.length; i += BATCH_SIZE) {
+          if (isCancelledRef.current) throw new Error('翻譯已取消');
           
-          let combinedValue = cellInfo.text;
-          for (const lang of selectedLanguages) {
-            combinedValue += `\n${translations[lang] || '(翻譯失敗)'}`;
-          }
+          const currentProgress = 10 + Math.round(((s * cells.length + i) / (totalSheets * Math.max(1, cells.length))) * 80);
+          updateProgress(currentProgress, 'translating');
           
-          // Update the cell value while preserving the original style/borders
-          cell.value = combinedValue;
-          // Ensure alignment allows wrapping for the new multi-line content
-          cell.alignment = { ...cell.alignment, wrapText: true, vertical: 'top' };
-        });
+          const batch = cells.slice(i, i + BATCH_SIZE);
+          const batchTexts = batch.map(c => c.text);
+          
+          const batchTranslations = await translateBatch(batchTexts, selectedLanguages);
+          
+          batch.forEach((cellInfo, idx) => {
+            const translations = batchTranslations[idx];
+            const cell = sheet.getRow(cellInfo.r).getCell(cellInfo.c);
+            
+            let combinedValue = cellInfo.text;
+            for (const lang of selectedLanguages) {
+              const translatedText = translations[lang];
+              if (translatedText) {
+                combinedValue += `\n${translatedText}`;
+              } else {
+                combinedValue += `\n(翻譯失敗)`;
+              }
+            }
+            
+            // Update the cell value while preserving the original style/borders
+            cell.value = combinedValue;
+            // Ensure alignment allows wrapping for the new multi-line content
+            cell.alignment = { 
+              ...cell.alignment, 
+              wrapText: true, 
+              vertical: 'top'
+            };
+          });
+        }
       }
-    }
 
-    updateProgress(95, 'generating');
-    const buffer = await workbook.xlsx.writeBuffer();
-    const excelBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const fileName = `translated_${file.name}`;
-    saveAs(excelBlob, fileName);
-    updateProgress(100, 'generating');
-    return { blob: excelBlob, name: fileName };
+      updateProgress(95, 'generating');
+      const buffer = await workbook.xlsx.writeBuffer();
+      const excelBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      const fileName = `translated_${file.name}`;
+      saveAs(excelBlob, fileName);
+      updateProgress(100, 'generating');
+      return { blob: excelBlob, name: fileName };
+    } catch (err: any) {
+      console.error('Excel processing error:', err);
+      throw err;
+    }
   };
 
   const processPdf = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
