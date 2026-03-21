@@ -121,7 +121,8 @@ export default function App() {
       1. 翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣），只需要純粹的翻譯內容。
       2. 確保翻譯內容完全使用目標語言，不要夾雜原始語言或其他語言的文字（除非是專有名詞或型號）。
       3. **重要：如果輸入文字中包含 <color hex="RRGGBB">...</color> 標籤，請在翻譯後的對應單字或片語上也保留這些標籤與相同的 hex 值。**
-      4. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
+      4. **特別注意：請確保標籤前後的空格被正確保留。例如 "turns <color hex=\"FF0000\">on</color> and press" 標籤前後的空格非常重要，不要讓單字粘在一起。**
+      5. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
       
       待翻譯內容陣列：
       ${JSON.stringify(texts, null, 2)}`;
@@ -347,6 +348,9 @@ export default function App() {
 
               // Add the text
               const t = xmlDoc.createElementNS(ns, 'w:t');
+              // Important: Preserve spaces in Word runs
+              t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
+              
               if (part.startsWith('<color')) {
                 const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
                 t.textContent = match ? match[2] : part;
@@ -718,6 +722,7 @@ export default function App() {
 
               // Add the text
               const t = xmlDoc.createElementNS(nsA, 'a:t');
+              // PowerPoint text nodes generally preserve spaces, but we ensure the content is clean
               if (part.startsWith('<color')) {
                 const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
                 t.textContent = match ? match[2] : part;
