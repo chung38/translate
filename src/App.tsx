@@ -181,7 +181,29 @@ export default function App() {
         throw new Error('API 回傳格式不正確 (缺少 translations 陣列)');
       }
 
-      return parsed.translations;
+      // Normalize keys to match targetLangs exactly
+      const normalizedTranslations = parsed.translations.map((item: any) => {
+        const newItem: any = {};
+        targetLangs.forEach(lang => {
+          // Try exact match
+          if (item[lang]) {
+            newItem[lang] = item[lang];
+          } else {
+            // Try fuzzy match (e.g. "English" for "英文")
+            const keys = Object.keys(item);
+            const fuzzyKey = keys.find(k => k.toLowerCase().includes(lang.toLowerCase()) || lang.toLowerCase().includes(k.toLowerCase()));
+            if (fuzzyKey) {
+              newItem[lang] = item[fuzzyKey];
+            } else if (keys.length === 1 && targetLangs.length === 1) {
+              // If only one language requested and one returned, assume it's the one
+              newItem[lang] = item[keys[0]];
+            }
+          }
+        });
+        return newItem;
+      });
+
+      return normalizedTranslations;
     } catch (err: any) {
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
       const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
@@ -487,28 +509,44 @@ export default function App() {
           batch.forEach((cellInfo, idx) => {
             const translations = batchTranslations[idx];
             const cell = sheet.getCell(cellInfo.address);
+            const row = sheet.getRow(cellInfo.r);
             
             const richText: any[] = [
-              { text: cellInfo.text, font: { bold: true } }
+              { text: cellInfo.text, font: { bold: true, size: 11 } }
             ];
             
+            let hasTranslation = false;
             for (const lang of selectedLanguages) {
               const translatedText = translations[lang];
               if (translatedText && !translatedText.includes('翻譯出錯')) {
-                richText.push({ text: `\n${translatedText}`, font: { bold: false, color: { argb: 'FF0000FF' } } });
+                richText.push({ 
+                  text: `\n${translatedText}`, 
+                  font: { bold: false, size: 10, color: { argb: 'FF0000FF' } } 
+                });
+                hasTranslation = true;
               } else {
-                richText.push({ text: `\n${translatedText || '(翻譯失敗)'}`, font: { bold: false, italic: true, color: { argb: 'FFFF0000' } } });
+                richText.push({ 
+                  text: `\n(待翻譯: ${lang})`, 
+                  font: { bold: false, size: 9, italic: true, color: { argb: 'FF888888' } } 
+                });
               }
             }
             
             // Update the cell value with RichText
             cell.value = { richText };
             
-            // Ensure alignment allows wrapping
+            // Force alignment and row height for visibility
             cell.alignment = { 
               wrapText: true, 
-              vertical: 'top'
+              vertical: 'top',
+              horizontal: 'left'
             };
+
+            // Increase row height to accommodate multiple lines (approx 15pt per line)
+            const minHeight = (selectedLanguages.length + 1) * 18;
+            if (!row.height || row.height < minHeight) {
+              row.height = minHeight;
+            }
           });
         }
       }
