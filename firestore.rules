@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/ai-studio-73f1054c-98a8-42f0-9773-7ee439bbea70/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+  match /databases/(default)/documents {
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

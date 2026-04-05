@@ -1,0 +1,67 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "Stores user information and settings.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "The unique Firebase Auth ID." },
+        "email": { "type": "string", "format": "email", "description": "User's email address." },
+        "displayName": { "type": "string", "description": "User's display name." },
+        "photoURL": { "type": "string", "format": "uri", "description": "URL to user's profile picture." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp." },
+        "role": { "type": "string", "enum": ["user", "admin"], "description": "User's role in the system." },
+        "isPaid": { "type": "boolean", "description": "Whether the user has a paid subscription." },
+        "quota": { "type": "integer", "description": "Total number of files allowed for translation." },
+        "isPendingDeletion": { "type": "boolean", "description": "Whether the user is marked for deletion upon next login." }
+      },
+      "required": ["uid", "email", "role", "isPaid", "quota"]
+    },
+    "Payment": {
+      "title": "Payment Record",
+      "description": "Stores details about a payment transaction.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The ID of the user who made the payment." },
+        "orderId": { "type": "string", "description": "Unique order ID for the transaction." },
+        "amount": { "type": "integer", "description": "Amount paid in TWD." },
+        "currency": { "type": "string", "description": "Currency code (e.g., TWD)." },
+        "status": { "type": "string", "enum": ["pending", "completed", "failed"], "description": "Status of the payment." },
+        "transactionId": { "type": "string", "description": "Transaction ID from LINE Pay." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the payment was initiated." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "When the payment status was last updated." }
+      },
+      "required": ["userId", "orderId", "amount", "status", "createdAt"]
+    },
+    "TranslationHistory": {
+      "title": "Translation History",
+      "description": "Stores metadata about a user's translation jobs.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The ID of the user who performed the translation." },
+        "fileName": { "type": "string", "description": "Original name of the file." },
+        "translatedFileName": { "type": "string", "description": "Name of the translated file." },
+        "fileType": { "type": "string", "description": "Extension of the file (docx, xlsx, etc.)." },
+        "targetLanguages": { "type": "array", "items": { "type": "string" }, "description": "List of target languages." },
+        "industry": { "type": "string", "description": "The industry context used for translation." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "When the translation was performed." },
+        "status": { "type": "string", "enum": ["completed", "error"], "description": "Status of the job." }
+      },
+      "required": ["userId", "fileName", "timestamp", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document."
+    },
+    "/users/{userId}/history/{historyId}": {
+      "schema": "TranslationHistory",
+      "description": "User's translation history records."
+    },
+    "/payments/{paymentId}": {
+      "schema": "Payment",
+      "description": "Payment transaction records."
+    }
+  }
+}

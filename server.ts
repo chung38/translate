@@ -2,20 +2,113 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { fileURLToPath } from "url";
+import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
+import PQueue from 'p-queue';
+import rateLimit from 'express-rate-limit';
+import { initializeApp } from 'firebase/app';
+import { 
+  getFirestore, 
+  collection, 
+  doc, 
+  setDoc, 
+  getDoc, 
+  updateDoc, 
+  runTransaction, 
+  serverTimestamp 
+} from 'firebase/firestore';
+
+console.log("SERVER STARTING UP...");
+
+// Load Firebase config
+const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+console.log("Firebase Config Loaded:", { ...firebaseConfig, apiKey: "REDACTED" });
+
+// Initialize Firebase Client SDK on server
+const firebaseApp = initializeApp(firebaseConfig);
+const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+
+// Test Firestore connection on startup
+async function testFirestore() {
+  try {
+    console.log("Testing Firestore connection to database:", firebaseConfig.firestoreDatabaseId);
+    const testRef = doc(db, 'server_status', 'last_start');
+    await setDoc(testRef, {
+      timestamp: serverTimestamp(),
+      message: "Server started",
+      projectId: firebaseConfig.projectId
+    });
+    console.log("Firestore connection test successful");
+  } catch (err) {
+    console.error("Firestore connection test failed:", err);
+  }
+}
+testFirestore();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  
+  // Trust the first proxy (e.g., Google Cloud Run / Nginx) to correctly populate req.ip from X-Forwarded-For
+  app.set('trust proxy', 1);
+  
+  const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  // 限制請求的 payload 大小，避免傳送過大的檔案或內容
+  app.use(express.json({ limit: '15mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '15mb' }));
+
+  // 設定 API 請求次數限制 (Rate Limiting)
+  // 限制每個 IP 在 15 分鐘內最多只能發送 100 次請求
+  const apiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100,
+    message: { error: { message: '請求次數過多，請稍後再試。' } },
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => {
+      // 處理 Forwarded header 警告
+      const forwarded = req.headers['forwarded'];
+      if (forwarded && typeof forwarded === 'string') {
+        const match = forwarded.match(/for="?([^;"]+)"?/);
+        if (match) return match[1];
+      }
+      // Fallback to Express's req.ip (which uses X-Forwarded-For because of trust proxy)
+      return req.ip || req.socket.remoteAddress || 'unknown';
+    }
+  });
+
+  // Request logger
+  app.use((req, res, next) => {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+    next();
+  });
+
+  // Catch-all API logger
+  app.all("/api/*", (req, res, next) => {
+    console.log(`API Request: ${req.method} ${req.url}`);
+    next();
+  });
+
+  // Create a queue for DeepSeek API calls to prevent rate limits
+  // concurrency: 10 means max 10 requests at the same time
+  // intervalCap: 30, interval: 1000 means max 30 requests per second
+  const translationQueue = new PQueue({ concurrency: 10, intervalCap: 30, interval: 1000 });
 
   // DeepSeek Proxy API
-  app.post("/api/translate", async (req, res) => {
+  app.post("/api/translate", apiLimiter, async (req, res) => {
     const { prompt } = req.body;
     const apiKey = process.env.DEEPSEEK_API_KEY;
+
+    // 驗證 prompt 長度，避免過大的文本導致後端或 API 崩潰
+    if (typeof prompt !== 'string') {
+      return res.status(400).json({ error: { message: "無效的請求內容" } });
+    }
+    if (prompt.length > 200000) { // 限制約 20 萬字元
+      return res.status(400).json({ error: { message: "文本內容過長，超過系統單次處理限制。" } });
+    }
 
     if (!apiKey) {
       return res.status(500).json({ 
@@ -26,32 +119,77 @@ async function startServer() {
     }
 
     try {
-      const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`
-        },
-        body: JSON.stringify({
-          model: "deepseek-chat",
-          messages: [
-            { role: "system", content: "You are a helpful assistant that translates text into multiple languages and outputs only structured JSON." },
-            { role: "user", content: prompt }
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0.3
-        })
+      // Add the request to the queue
+      const data = await translationQueue.add(async () => {
+        console.log(`[Queue] Starting translation request. Queue size: ${translationQueue.size}, Pending: ${translationQueue.pending}`);
+        
+        let retries = 3;
+        let delay = 1000;
+        
+        while (retries > 0) {
+          try {
+            const response = await fetch("https://api.deepseek.com/v1/chat/completions", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${apiKey}`
+              },
+              body: JSON.stringify({
+                model: "deepseek-chat",
+                messages: [
+                  { role: "system", content: "You are a helpful assistant that translates text into multiple languages and outputs only structured JSON." },
+                  { role: "user", content: prompt }
+                ],
+                response_format: { type: "json_object" },
+                temperature: 0.3,
+                max_tokens: 8192
+              })
+            });
+
+            const responseText = await response.text();
+            
+            if (!response.ok) {
+              if ((response.status === 429 || response.status >= 500) && retries > 1) {
+                console.log(`[Queue] DeepSeek API Error (${response.status}). Retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                retries--;
+                delay *= 2;
+                continue;
+              }
+              
+              let errorData;
+              try {
+                errorData = JSON.parse(responseText);
+              } catch (e) {
+                errorData = { error: { message: `DeepSeek API Error (${response.status}): ${responseText.substring(0, 200)}` } };
+              }
+              throw { status: response.status, data: errorData };
+            }
+
+            try {
+              return JSON.parse(responseText);
+            } catch (e) {
+              throw new Error(`DeepSeek API returned invalid JSON: ${responseText.substring(0, 200)}`);
+            }
+          } catch (fetchError: any) {
+            if (retries > 1 && !fetchError.status) {
+              console.log(`[Queue] Network Error: ${fetchError.message}. Retrying in ${delay}ms...`);
+              await new Promise(resolve => setTimeout(resolve, delay));
+              retries--;
+              delay *= 2;
+              continue;
+            }
+            throw fetchError;
+          }
+        }
       });
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        return res.status(response.status).json(errorData);
-      }
-
-      const data = await response.json();
       res.json(data);
     } catch (err: any) {
       console.error("DeepSeek Proxy Error:", err);
+      if (err.status && err.data) {
+        return res.status(err.status).json(err.data);
+      }
       res.status(500).json({ error: { message: err.message || "Internal Server Error" } });
     }
   });
@@ -72,7 +210,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 

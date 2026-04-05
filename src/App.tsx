@@ -3,42 +3,79 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useRef } from 'react';
-import mammoth from 'mammoth';
-import { Document, Packer, Paragraph, TextRun, ImageRun, Table, TableRow, TableCell, WidthType } from 'docx';
+import React, { useState, useRef, useEffect } from 'react';
 import { saveAs } from 'file-saver';
-import * as XLSX from 'xlsx';
-import ExcelJS from 'exceljs';
-import * as pdfjsLib from 'pdfjs-dist';
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.mjs?url';
-import { jsPDF } from 'jspdf';
-import PptxGenJS from 'pptxgenjs';
-import JSZip from 'jszip';
 import { 
   Upload, 
   FileText, 
   Languages, 
   Download, 
   Loader2, 
+  RefreshCw,
   CheckCircle2, 
   AlertCircle,
   ArrowRight,
   FileSpreadsheet,
   File as FileIcon,
   Presentation,
-  History
+  History,
+  LogIn,
+  LogOut,
+  User as UserIcon,
+  Clock,
+  Shield,
+  Search,
+  X,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { TranslationProgress } from './components/TranslationProgress';
+import { TranslationHistory } from './components/TranslationHistory';
+import { HistoryPanel } from './components/HistoryPanel';
+import { AuthModal } from './components/AuthModal';
+import { AdminPanel } from './components/AdminPanel';
+import { UpgradeModal } from './components/UpgradeModal';
+import { DeletedModal } from './components/DeletedModal';
+import { UserProfile } from './types';
+import { useTranslation } from './hooks/useTranslation';
+import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
+import { 
+  auth, 
+  db, 
+  googleProvider, 
+  signInWithPopup, 
+  onAuthStateChanged, 
+  doc, 
+  getDoc, 
+  setDoc, 
+  deleteDoc,
+  collection, 
+  addDoc, 
+  query, 
+  orderBy, 
+  onSnapshot, 
+  getDocs,
+  handleFirestoreError,
+  OperationType,
+  Timestamp,
+  where,
+  limit,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updateProfile,
+  sendEmailVerification,
+  deleteUser as deleteAuthUser
+} from './firebase';
+import type { User } from './firebase';
 
-// Set up PDF.js worker
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
-
-// DeepSeek API Configuration (Now handled via server proxy)
-const DEEPSEEK_PROXY_URL = '/api/translate';
-
-const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+// Error Boundary Component
+// Error Boundary Component (Placeholder for functional compatibility)
+const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  return <>{children}</>;
+};
 
 const AVAILABLE_LANGUAGES = [
+  { id: 'zh-TW', name: '繁體中文', label: 'Traditional Chinese', flag: '🇹🇼' },
   { id: 'th', name: '泰文', label: 'Thai', flag: '🇹🇭' },
   { id: 'id', name: '印尼文', label: 'Indonesian', flag: '🇮🇩' },
   { id: 'vi', name: '越南文', label: 'Vietnamese', flag: '🇻🇳' },
@@ -48,38 +85,491 @@ const AVAILABLE_LANGUAGES = [
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
 export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showDeletedModal, setShowDeletedModal] = useState(false);
+  const [isPaying, setIsPaying] = useState(false);
+  const [pendingOrderId, setPendingOrderId] = useState<string | null>(null);
+
+  const [dbHistory, setDbHistory] = useState<any[]>([]);
   const [files, setFiles] = useState<File[]>([]);
+  const [processingFiles, setProcessingFiles] = useState<File[]>([]);
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>(['英文']);
+  const [outputMode, setOutputMode] = useState<'combined' | 'separate'>('combined');
   const [industry, setIndustry] = useState('');
-  const [status, setStatus] = useState<TranslationStatus>('idle');
-  const [statusMessage, setStatusMessage] = useState('');
-  const [progress, setProgress] = useState(0);
-  const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
-  const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<{ name: string, date: string, blob: Blob, type: string }[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
+  const [uploadStatus, setUploadStatus] = useState<Record<string, 'uploading' | 'success' | 'error'>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const isCancelledRef = useRef(false);
+
+  const {
+    status,
+    setStatus,
+    statusMessage,
+    setStatusMessage,
+    progress,
+    setProgress,
+    fileProgress,
+    setFileProgress,
+    error,
+    setError,
+    isCancelledRef,
+    saveToFirestore,
+    translateBatch,
+    cancelTranslation
+  } = useTranslation(user, setDbHistory);
+
+  const [reloadCounter, setReloadCounter] = useState(0);
+
+  // Firebase Auth Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser && !currentUser.emailVerified) {
+        try {
+          await currentUser.reload();
+          setReloadCounter(c => c + 1);
+        } catch (e) {
+          console.error("Failed to reload user", e);
+        }
+      }
+      setUser(auth.currentUser);
+      if (!auth.currentUser) {
+        setUserProfile(null);
+        setIsAuthReady(true);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Poll for email verification status
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout;
+    if (user && !user.emailVerified) {
+      intervalId = setInterval(async () => {
+        try {
+          await user.reload();
+          if (auth.currentUser?.emailVerified) {
+            setReloadCounter(c => c + 1);
+            clearInterval(intervalId);
+          }
+        } catch (e) {
+          console.error("Failed to poll user reload", e);
+        }
+      }, 3000);
+    }
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+    };
+  }, [user, reloadCounter]);
+
+  // Profile Listener
+  useEffect(() => {
+    if (!user) return;
+
+    const userRef = doc(db, 'users', user.uid);
+    let unsubscribeSnapshot: (() => void) | null = null;
+
+    const initProfile = async () => {
+      try {
+        const userSnap = await getDoc(userRef);
+        const isAdminEmail = user.email === 'chen.chung.shih@gmail.com';
+
+        if (!userSnap.exists()) {
+          // Check if another document exists with the same email (Consolidate by Email)
+          const q = query(collection(db, 'users'), where('email', '==', user.email), limit(1));
+          const emailQuerySnap = await getDocs(q);
+          
+          let existingData: Partial<UserProfile> = {};
+          // SECURITY: Only inherit privileges if the email is VERIFIED
+          if (!emailQuerySnap.empty && user.emailVerified) {
+            const oldDoc = emailQuerySnap.docs[0];
+            const oldData = oldDoc.data() as UserProfile;
+            
+            if (oldData.role !== undefined) existingData.role = oldData.role;
+            if (oldData.isPaid !== undefined) existingData.isPaid = oldData.isPaid;
+            if (oldData.quota !== undefined) existingData.quota = oldData.quota;
+            if (oldData.displayName || user.displayName) existingData.displayName = oldData.displayName || user.displayName || undefined;
+            if (oldData.photoURL || user.photoURL) existingData.photoURL = oldData.photoURL || user.photoURL || undefined;
+            
+            if (oldDoc.id !== user.uid) {
+              try {
+                await deleteDoc(doc(db, 'users', oldDoc.id));
+              } catch (e) {
+                console.error("Failed to delete old profile:", e);
+              }
+            }
+          }
+
+          const newProfile: UserProfile = {
+            uid: user.uid,
+            email: user.email || null,
+            emailVerified: user.emailVerified,
+            displayName: user.displayName || (user.email ? user.email.split('@')[0] : '未命名用戶'),
+            photoURL: user.photoURL || null,
+            createdAt: Timestamp.now(),
+            role: (isAdminEmail && user.emailVerified) ? 'admin' : (existingData.role || 'user'),
+            isPaid: existingData.isPaid || false,
+            quota: existingData.quota !== undefined ? existingData.quota : 2,
+            ...existingData
+          };
+          
+          // Remove any undefined values before saving to Firestore
+          Object.keys(newProfile).forEach(key => {
+            if (newProfile[key as keyof UserProfile] === undefined) {
+              delete newProfile[key as keyof UserProfile];
+            }
+          });
+
+          await setDoc(userRef, newProfile);
+          setUserProfile(newProfile);
+        } else {
+          const currentData = userSnap.data() as UserProfile;
+          
+          if (currentData.isPendingDeletion) {
+            try {
+              if (auth.currentUser) {
+                await deleteAuthUser(auth.currentUser);
+              }
+              await deleteDoc(userRef);
+            } catch (e) {
+              console.error("Failed to delete user auth record:", e);
+              await auth.signOut();
+            }
+            setShowDeletedModal(true);
+            setUser(null);
+            setUserProfile(null);
+            setIsAuthReady(true);
+            return;
+          }
+          
+          let updatedData = { ...currentData };
+          let needsUpdate = false;
+
+          if (isAdminEmail && !user.emailVerified && currentData.role === 'admin') {
+            updatedData.role = 'user';
+            needsUpdate = true;
+          }
+          
+          if (currentData.emailVerified !== user.emailVerified) {
+            updatedData.emailVerified = user.emailVerified;
+            needsUpdate = true;
+          }
+
+          if (needsUpdate) {
+            await setDoc(userRef, updatedData, { merge: true });
+          }
+          
+          setUserProfile(updatedData);
+          
+          if (isAdminEmail && user.emailVerified && currentData.role !== 'admin') {
+            await setDoc(userRef, { role: 'admin' }, { merge: true });
+          }
+        }
+
+        unsubscribeSnapshot = onSnapshot(userRef, async (doc) => {
+          if (doc.exists()) {
+            const data = doc.data() as UserProfile;
+            
+            if (data.isPendingDeletion) {
+              try {
+                if (auth.currentUser) {
+                  await deleteAuthUser(auth.currentUser);
+                }
+                await deleteDoc(userRef);
+              } catch (e) {
+                console.error("Failed to delete user auth record:", e);
+                await auth.signOut();
+              }
+              setShowDeletedModal(true);
+              setUser(null);
+              setUserProfile(null);
+              return;
+            }
+
+            if (user.email === 'chen.chung.shih@gmail.com') {
+              if (user.emailVerified) {
+                setUserProfile(data);
+              } else {
+                setUserProfile({ ...data, role: 'user' });
+              }
+            } else {
+              setUserProfile(data);
+            }
+          } else {
+            // Document was deleted by admin
+            try {
+              if (auth.currentUser) {
+                await deleteAuthUser(auth.currentUser);
+              }
+            } catch (e) {
+              console.error("Failed to delete user auth record:", e);
+              await auth.signOut();
+            }
+            setShowDeletedModal(true);
+            setUser(null);
+            setUserProfile(null);
+          }
+        });
+
+      } catch (error) {
+        console.error("Profile initialization error:", error);
+      }
+      setIsAuthReady(true);
+    };
+
+    initProfile();
+
+    return () => {
+      if (unsubscribeSnapshot) unsubscribeSnapshot();
+    };
+  }, [user, reloadCounter]);
+
+
+
+
+
+          
+
+          
+
+
+
+
+            
+
+
+
+
+
+
+              
+
+
+
+
+
+
+
+              
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // Firestore History Listener
+  useEffect(() => {
+    if (!user || !isAuthReady) {
+      setDbHistory([]);
+      return;
+    }
+
+    const historyRef = collection(db, 'users', user.uid, 'history');
+    const q = query(historyRef, orderBy('timestamp', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(doc => ({
+        id: doc.id,
+        ...doc.data()
+      }));
+      setDbHistory(items);
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, `users/${user.uid}/history`, user);
+    });
+
+    return () => unsubscribe();
+  }, [user, isAuthReady]);
+
+  // Listen for payment updates (polling-like behavior via Firestore real-time)
+  useEffect(() => {
+    if (!user || !isPaying) return;
+    
+    // If we have a specific orderId, listen to that document directly
+    if (pendingOrderId) {
+      const paymentRef = doc(db, 'payments', pendingOrderId);
+      const unsubscribe = onSnapshot(paymentRef, (doc) => {
+        if (doc.exists() && doc.data().status === 'completed') {
+          console.log("Payment completed detected via specific orderId listener");
+          setPendingOrderId(null);
+          setIsPaying(false);
+          setStatus('completed');
+          setStatusMessage('支付成功！額度已更新。');
+        }
+      }, (error) => {
+        console.error("Specific payment listener error:", error);
+      });
+      return () => unsubscribe();
+    }
+
+    // Fallback: Listen for any completed payment for this user in the last 5 minutes
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const paymentsRef = collection(db, 'payments');
+    const q = query(
+      paymentsRef, 
+      where('userId', '==', user.uid), 
+      where('status', '==', 'completed'),
+      where('createdAt', '>=', Timestamp.fromDate(fiveMinutesAgo)),
+      limit(1)
+    );
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.empty) {
+        console.log("Payment completed detected via fallback listener");
+        setIsPaying(false);
+        setStatus('completed');
+        setStatusMessage('支付成功！額度已更新。');
+      }
+    }, (error) => {
+      console.error("Fallback payment listener error:", error);
+    });
+    
+    return () => unsubscribe();
+  }, [user, isPaying, pendingOrderId]);
+
+  const handleLogin = async () => {
+    setError(null);
+    setShowAuthModal(true);
+  };
+
+  const handleLogout = async () => {
+    setError(null);
+    await auth.signOut();
+  };
+
+  // Check for payment confirmation on mount
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const transactionId = urlParams.get('transactionId');
+    const orderId = urlParams.get('orderId');
+    const statusParam = urlParams.get('status');
+    const messageParam = urlParams.get('message');
+    
+    if (statusParam === 'success') {
+      setStatus('completed');
+      setStatusMessage('支付成功！額度已更新。');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (statusParam === 'error') {
+      setError(messageParam || '支付失敗');
+      setStatus('error');
+      window.history.replaceState({}, document.title, window.location.pathname);
+    } else if (transactionId && orderId) {
+      const confirmPayment = async () => {
+        setStatus('processing');
+        setStatusMessage('正在確認支付狀態...');
+        try {
+          const response = await fetch('/api/linepay/confirm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ transactionId, orderId }),
+          });
+          const data = await response.json();
+          if (data.success) {
+            setStatus('completed');
+            setStatusMessage('支付成功！額度已更新。');
+            // Clear URL params
+            window.history.replaceState({}, document.title, window.location.pathname);
+          } else {
+            throw new Error(data.error || '支付確認失敗');
+          }
+        } catch (err: any) {
+          setError(err.message);
+          setStatus('error');
+        }
+      };
+      confirmPayment();
+    }
+  }, []);
+
+  const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB
+  const MAX_FILE_COUNT = 10;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const selectedFiles = Array.from(e.target.files || []) as File[];
     if (selectedFiles.length > 0) {
+      if (files.length + selectedFiles.length > MAX_FILE_COUNT) {
+        setError(`一次最多只能處理 ${MAX_FILE_COUNT} 個檔案`);
+        e.target.value = '';
+        return;
+      }
+
       const validExtensions = ['docx', 'xlsx', 'pdf', 'pptx'];
+      const legacyExtensions = ['doc', 'xls', 'ppt'];
       const newFiles: File[] = [];
       let hasInvalid = false;
+      let hasLegacy = false;
+      let hasOversized = false;
 
       selectedFiles.forEach(f => {
         const extension = f.name.split('.').pop()?.toLowerCase();
-        if (validExtensions.includes(extension || '')) {
-          newFiles.push(f);
-        } else {
+        if (legacyExtensions.includes(extension || '')) {
+          hasLegacy = true;
+        } else if (!validExtensions.includes(extension || '')) {
           hasInvalid = true;
+        } else if (f.size > MAX_FILE_SIZE) {
+          hasOversized = true;
+        } else {
+          newFiles.push(f);
         }
       });
 
       if (newFiles.length > 0) {
-        setFiles(prev => [...prev, ...newFiles]);
-        setError(hasInvalid ? '部分檔案格式不支援，已跳過' : null);
+        setFiles(prev => {
+          const existingNames = new Set(prev.map(f => f.name));
+          const uniqueNewFiles = newFiles.filter(f => !existingNames.has(f.name));
+          return [...prev, ...uniqueNewFiles];
+        });
+        
+        if (hasLegacy) {
+          setError('系統不支援舊版 .doc, .xls, .ppt 格式，請先使用 Office 另存為 .docx, .xlsx, .pptx 後再上傳。');
+        } else if (hasOversized) {
+          setError('部分檔案超過 15MB 限制，已跳過');
+        } else if (hasInvalid) {
+          setError('部分檔案格式不支援，已跳過');
+        } else {
+          setError(null);
+        }
+        
         setStatus('idle');
+
+        // Simulate upload progress
+        newFiles.forEach(file => {
+          setUploadStatus(prev => ({ ...prev, [file.name]: 'uploading' }));
+          setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
+          
+          let progress = 0;
+          const interval = setInterval(() => {
+            progress += Math.random() * 30 + 10;
+            if (progress >= 100) {
+              progress = 100;
+              clearInterval(interval);
+              setUploadStatus(prev => ({ ...prev, [file.name]: 'success' }));
+            }
+            setUploadProgress(prev => ({ ...prev, [file.name]: progress }));
+          }, 200);
+        });
+
+      } else if (hasLegacy) {
+        setError('系統不支援舊版 .doc, .xls, .ppt 格式，請先使用 Office 另存為 .docx, .xlsx, .pptx 後再上傳。');
+      } else if (hasOversized) {
+        setError('檔案大小不能超過 15MB');
       } else if (hasInvalid) {
         setError('請上傳有效的 .docx, .xlsx, .pdf 或 .pptx 檔案');
       }
@@ -89,7 +579,20 @@ export default function App() {
   };
 
   const removeFile = (index: number) => {
+    const fileToRemove = files[index];
     setFiles(prev => prev.filter((_, i) => i !== index));
+    if (fileToRemove) {
+      setUploadStatus(prev => {
+        const next = { ...prev };
+        delete next[fileToRemove.name];
+        return next;
+      });
+      setUploadProgress(prev => {
+        const next = { ...prev };
+        delete next[fileToRemove.name];
+        return next;
+      });
+    }
     if (files.length === 1) {
       setStatus('idle');
       setProgress(0);
@@ -104,807 +607,40 @@ export default function App() {
     );
   };
 
-  const translateBatch = async (texts: string[], targetLangs: string[], retryCount = 0): Promise<Record<string, string>[]> => {
-    if (texts.length === 0 || targetLangs.length === 0) return texts.map(() => ({}));
-    
-    try {
-      // Add a delay between batches to stay under RPM limits
-      await sleep(1000 + Math.random() * 500); 
-
-      const industryContext = industry ? `。這是一個關於「${industry}」行業的文件，請使用該行業的專業術語進行翻譯` : '';
-      const prompt = `你是一個專業的翻譯官${industryContext}。
-      請將以下文字陣列中的每一項同時翻譯成以下語言：${targetLangs.join('、')}。
-
-      請嚴格以 JSON 格式回傳結果，格式如下：
-      {
-        "translations": [
-          { ${targetLangs.map(l => `"${l}": "翻譯內容"`).join(', ')} },
-          ...
-        ]
-      }
-
-      要求：
-      1. 確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
-      2. 每個物件的鍵 (Key) 必須完全對應目標語言名稱：${targetLangs.map(l => `"${l}"`).join(', ')}。
-      3. 翻譯後的文字內容中，絕對不要包含任何語言標籤（例如不要出現 [英文] 或 [English] 等字樣）。
-      4. 確保翻譯內容完全使用目標語言，不要夾雜原始語言。
-      5. **重要：如果輸入文字中包含 <color hex="RRGGBB">...</color> 標籤，請在翻譯後的對應單字或片語上也保留這些標籤與相同的 hex 值。**
-      6. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
-
-      待翻譯內容陣列：
-      ${JSON.stringify(texts)}`;
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
-
-      const response = await fetch(DEEPSEEK_PROXY_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ prompt }),
-        signal: controller.signal
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        let errorMessage = `HTTP error! status: ${response.status}`;
-        try {
-          const errorData = await response.json();
-          errorMessage = errorData.error?.message || errorMessage;
-        } catch (e) {
-          const textError = await response.text();
-          errorMessage = textError || errorMessage;
-        }
-        throw new Error(errorMessage);
-      }
-
-      const data = await response.json();
-      const resultText = data.choices[0].message.content.trim();
-      
-      // Clean up potential Markdown code blocks
-      const cleanJson = resultText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-      
-      let parsed;
-      try {
-        parsed = JSON.parse(cleanJson);
-      } catch (e) {
-        console.error('JSON Parse Error. Raw text:', resultText);
-        // Try to find JSON inside the text if parsing failed
-        const jsonMatch = resultText.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          parsed = JSON.parse(jsonMatch[0]);
-        } else {
-          throw new Error('無法解析 API 回傳的 JSON 格式');
-        }
-      }
-      
-      if (!parsed.translations || !Array.isArray(parsed.translations)) {
-        throw new Error('API 回傳格式不正確 (缺少 translations 陣列)');
-      }
-
-      // Normalize keys to match targetLangs exactly
-      const normalizedTranslations = parsed.translations.map((item: any) => {
-        const newItem: any = {};
-        targetLangs.forEach(lang => {
-          // Try exact match
-          if (item[lang]) {
-            newItem[lang] = item[lang];
-          } else {
-            // Try fuzzy match (e.g. "English" for "英文")
-            const keys = Object.keys(item);
-            const fuzzyKey = keys.find(k => k.toLowerCase().includes(lang.toLowerCase()) || lang.toLowerCase().includes(k.toLowerCase()));
-            if (fuzzyKey) {
-              newItem[lang] = item[fuzzyKey];
-            } else if (keys.length === 1 && targetLangs.length === 1) {
-              // If only one language requested and one returned, assume it's the one
-              newItem[lang] = item[keys[0]];
-            }
-          }
-        });
-        return newItem;
-      });
-
-      return normalizedTranslations;
-    } catch (err: any) {
-      const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
-      const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
-      const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
-      
-      // Retry for rate limits or transient network errors
-      if ((isRateLimit || isNetworkError) && retryCount < 10) {
-        const waitTime = isRateLimit 
-          ? (Math.pow(2, retryCount) * 5000 + Math.random() * 2000)
-          : (3000 + Math.random() * 2000); // Wait for network errors
-          
-        console.warn(`DeepSeek ${isRateLimit ? 'Rate limit' : 'Network error'} hit. Waiting ${Math.round(waitTime/1000)}s... (Attempt ${retryCount + 1})`);
-        await sleep(waitTime);
-        return translateBatch(texts, targetLangs, retryCount + 1);
-      }
-
-      if (isAuthError) {
-        throw new Error(err.message || 'DeepSeek API Key 驗證失敗，請檢查設定是否正確。');
-      }
-
-      console.error(`DeepSeek Batch translation error:`, err);
-      // Fallback: return error placeholders for each text
-      return texts.map(() => {
-        const errorResult: Record<string, string> = {};
-        targetLangs.forEach(lang => errorResult[lang] = `(翻譯出錯: ${err?.message || 'API 錯誤'})`);
-        return errorResult;
-      });
-    }
-  };
-
-  const cancelTranslation = () => {
-    isCancelledRef.current = true;
-    setStatus('idle');
-    setProgress(0);
-    setError('翻譯已取消');
-  };
-
-  const processDocx = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
-    updateProgress(5, 'processing');
-    const arrayBuffer = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(arrayBuffer);
-    
-    // 1. Read the main document XML
-    const documentXmlPath = 'word/document.xml';
-    const documentXmlContent = await zip.file(documentXmlPath)?.async('string');
-    if (!documentXmlContent) throw new Error('無法讀取 Word 文件內容');
-
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(documentXmlContent, 'application/xml');
-    const ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-
-    // 2. Find all paragraphs
-    const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS(ns, 'p'));
-    const totalParagraphs = paragraphs.length;
-    
-    updateProgress(10, 'translating');
-    const BATCH_SIZE = 5;
-    
-    for (let i = 0; i < totalParagraphs; i += BATCH_SIZE) {
-      if (isCancelledRef.current) throw new Error('翻譯已取消');
-      
-      const batchParas = paragraphs.slice(i, i + BATCH_SIZE);
-      const paraData = batchParas.map(p => {
-        // Get all runs in this paragraph to check for color
-        const runs = Array.from(p.getElementsByTagNameNS(ns, 'r'));
-        let taggedText = '';
-        runs.forEach(r => {
-          const t = r.getElementsByTagNameNS(ns, 't')[0];
-          if (!t) return;
-          const text = t.textContent || '';
-          const rPr = r.getElementsByTagNameNS(ns, 'rPr')[0];
-          const color = rPr?.getElementsByTagNameNS(ns, 'color')[0];
-          const hex = color?.getAttribute('w:val');
-          
-          // If color is present and not default black/auto, wrap it in tags
-          if (hex && hex !== '000000' && hex !== 'auto') {
-            taggedText += `<color hex="${hex}">${text}</color>`;
-          } else {
-            taggedText += text;
-          }
-        });
-        return { p, taggedText };
-      }).filter(data => data.taggedText.trim().length > 0);
-
-      if (paraData.length > 0) {
-        // Translating progress: 10% to 90%
-        const currentProgress = 10 + Math.round((Math.min(i + BATCH_SIZE, totalParagraphs) / totalParagraphs) * 80);
-        updateProgress(currentProgress, 'translating');
-        
-        const textsToTranslate = paraData.map(d => d.taggedText);
-        const batchTranslations = await translateBatch(textsToTranslate, selectedLanguages);
-        
-        paraData.forEach((data, idx) => {
-          const translations = batchTranslations[idx];
-          const p = data.p;
-          
-          // Find the first run to copy its properties
-          const firstRun = p.getElementsByTagNameNS(ns, 'r')[0];
-          const firstRunPr = firstRun?.getElementsByTagNameNS(ns, 'rPr')[0];
-
-          // Ensure paragraph spacing is consistent to prevent large gaps in wrapped text (especially for Vietnamese)
-          let pPr = p.getElementsByTagNameNS(ns, 'pPr')[0];
-          if (!pPr) {
-            pPr = xmlDoc.createElementNS(ns, 'w:pPr');
-            p.insertBefore(pPr, p.firstChild);
-          }
-          let spacing = pPr.getElementsByTagNameNS(ns, 'spacing')[0];
-          if (!spacing) {
-            spacing = xmlDoc.createElementNS(ns, 'w:spacing');
-            pPr.appendChild(spacing);
-          }
-          // Set line spacing to a tighter value (200 twips, approx 0.85x) and remove before/after spacing
-          spacing.setAttribute('w:line', '200');
-          spacing.setAttribute('w:lineRule', 'auto');
-          spacing.setAttribute('w:before', '0');
-          spacing.setAttribute('w:after', '0');
-          spacing.setAttribute('w:beforeAutospacing', '0');
-          spacing.setAttribute('w:afterAutospacing', '0');
-
-          selectedLanguages.forEach(lang => {
-            const translatedText = translations[lang];
-            if (!translatedText) return;
-
-            // Split by color tags
-            const parts = translatedText.split(/(<color hex="[0-9A-Fa-f]{6}">.*?<\/color>)/g);
-            
-            parts.forEach((part, pIdx) => {
-              // Create a new run for each part
-              const newRun = xmlDoc.createElementNS(ns, 'w:r');
-              
-              // Copy properties if they exist
-              if (firstRunPr) {
-                const newPr = firstRunPr.cloneNode(true) as Element;
-                // Remove properties that might cause weird spacing or incorrect colors in translations
-                const propsToRemove = ['spacing', 'w', 'kern', 'color'];
-                propsToRemove.forEach(prop => {
-                  const els = newPr.getElementsByTagNameNS(ns, prop);
-                  while (els.length > 0) {
-                    newPr.removeChild(els[0]);
-                  }
-                });
-                
-                // If this part is a color tag, apply the color
-                if (part.startsWith('<color')) {
-                  const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
-                  if (match) {
-                    const hex = match[1];
-                    const colorEl = xmlDoc.createElementNS(ns, 'w:color');
-                    colorEl.setAttribute('w:val', hex);
-                    newPr.appendChild(colorEl);
-                  }
-                }
-
-                // Force a standard font for translations to avoid metric issues with diacritics
-                let rFonts = newPr.getElementsByTagNameNS(ns, 'rFonts')[0];
-                if (!rFonts) {
-                  rFonts = xmlDoc.createElementNS(ns, 'w:rFonts');
-                  newPr.appendChild(rFonts);
-                }
-                rFonts.setAttribute('w:ascii', 'Arial');
-                rFonts.setAttribute('w:hAnsi', 'Arial');
-                rFonts.setAttribute('w:cs', 'Arial'); // Complex script font for Vietnamese
-                
-                // Set language to Vietnamese if applicable to improve rendering
-                if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
-                  let langEl = newPr.getElementsByTagNameNS(ns, 'lang')[0];
-                  if (!langEl) {
-                    langEl = xmlDoc.createElementNS(ns, 'w:lang');
-                    newPr.appendChild(langEl);
-                  }
-                  langEl.setAttribute('w:val', 'vi-VN');
-                  langEl.setAttribute('w:eastAsia', 'vi-VN');
-                  langEl.setAttribute('w:bidi', 'vi-VN');
-                }
-                
-                newRun.appendChild(newPr);
-              }
-
-              // Add a break before the translation (only for the first part of each language)
-              if (pIdx === 0) {
-                const br = xmlDoc.createElementNS(ns, 'w:br');
-                newRun.appendChild(br);
-              }
-
-              // Add the text
-              const t = xmlDoc.createElementNS(ns, 'w:t');
-              // Important: Preserve spaces in Word runs
-              t.setAttributeNS("http://www.w3.org/XML/1998/namespace", "xml:space", "preserve");
-              
-              if (part.startsWith('<color')) {
-                const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
-                t.textContent = match ? match[2] : part;
-              } else {
-                t.textContent = part;
-              }
-              newRun.appendChild(t);
-
-              // Append the translation to the paragraph
-              p.appendChild(newRun);
-            });
-          });
-        });
-      }
-    }
-
-    // 3. Save the modified XML back to the zip
-    updateProgress(95, 'generating');
-    const serializer = new XMLSerializer();
-    const modifiedXml = serializer.serializeToString(xmlDoc);
-    zip.file(documentXmlPath, modifiedXml);
-
-    // 4. Generate the new docx file
-    const content = await zip.generateAsync({ type: 'blob' });
-    const fileName = file.name.replace(/\.docx$/, `_translated.docx`);
-    saveAs(content, fileName);
-    updateProgress(100, 'generating');
-    return { blob: content, name: fileName };
-  };
-
-  const processExcel = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
-    updateProgress(5, 'processing');
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      const workbook = new ExcelJS.Workbook();
-      await workbook.xlsx.load(arrayBuffer);
-
-      updateProgress(10, 'translating');
-      
-      const sheetsToProcess: { sheet: ExcelJS.Worksheet, cells: any[] }[] = [];
-      
-      workbook.eachSheet((worksheet) => {
-        const cells: any[] = [];
-        // Iterate over all rows that have values
-        worksheet.eachRow({ includeEmpty: false }, (row) => {
-          row.eachCell({ includeEmpty: false }, (cell) => {
-            let text = '';
-            const val = cell.value;
-            let originalFont = cell.font;
-            
-            if (typeof val === 'string') {
-              text = val;
-            } else if (val && typeof val === 'object') {
-              if ('richText' in val) {
-                const rt = (val as any).richText;
-                text = rt.map((rtPart: any) => rtPart.text || '').join('');
-                if (rt.length > 0 && rt[0].font) {
-                  originalFont = rt[0].font;
-                }
-              } else if ('result' in val) {
-                text = (val as any).result?.toString() || '';
-              } else if ('text' in val) {
-                text = (val as any).text?.toString() || '';
-              } else {
-                // Fallback to cell.text which is a getter in exceljs
-                text = cell.text;
-              }
-            } else if (val !== null && val !== undefined) {
-              text = val.toString();
-            }
-
-            if (text && text.trim()) {
-              cells.push({ 
-                r: row.number, 
-                c: cell.col, 
-                text: text.trim(),
-                address: cell.address,
-                font: originalFont ? JSON.parse(JSON.stringify(originalFont)) : undefined
-              });
-            }
-          });
-        });
-        
-        if (cells.length > 0) {
-          sheetsToProcess.push({ sheet: worksheet, cells });
-        }
-      });
-
-      if (sheetsToProcess.length === 0) {
-        throw new Error('找不到可翻譯的文字內容');
-      }
-
-      const totalSheets = sheetsToProcess.length;
-      for (let s = 0; s < totalSheets; s++) {
-        if (isCancelledRef.current) throw new Error('翻譯已取消');
-        
-        const { sheet, cells } = sheetsToProcess[s];
-        const BATCH_SIZE = 10;
-        
-        for (let i = 0; i < cells.length; i += BATCH_SIZE) {
-          if (isCancelledRef.current) throw new Error('翻譯已取消');
-          
-          const currentProgress = 10 + Math.round(((s * cells.length + i) / (totalSheets * Math.max(1, cells.length))) * 80);
-          updateProgress(currentProgress, 'translating');
-          
-          const batch = cells.slice(i, i + BATCH_SIZE);
-          const batchTexts = batch.map(c => c.text);
-          
-          const batchTranslations = await translateBatch(batchTexts, selectedLanguages);
-          
-          // Debug: Show first translation in status
-          if (batchTranslations.length > 0) {
-            const first = batchTranslations[0];
-            const firstLang = selectedLanguages[0];
-            if (first[firstLang]) {
-              setStatusMessage(`已翻譯: ${batchTexts[0].substring(0, 10)}... -> ${first[firstLang].substring(0, 10)}...`);
-            }
-          }
-
-          batch.forEach((cellInfo, idx) => {
-            const translations = batchTranslations[idx];
-            const cell = sheet.getCell(cellInfo.address);
-            const row = sheet.getRow(cellInfo.r);
-            
-            // Use original font for the original text
-            const originalFont = cellInfo.font || {};
-            const richText: any[] = [
-              { text: cellInfo.text, font: { ...originalFont } }
-            ];
-            
-            let hasTranslation = false;
-            for (const lang of selectedLanguages) {
-              const translatedText = translations[lang];
-              if (translatedText && !translatedText.includes('翻譯出錯')) {
-                // Use original font including color for translation
-                richText.push({ 
-                  text: `\n${translatedText}`, 
-                  font: { ...originalFont } 
-                });
-                hasTranslation = true;
-              } else {
-                richText.push({ 
-                  text: `\n(待翻譯: ${lang})`, 
-                  font: { ...originalFont, size: (originalFont.size || 11) - 1, italic: true, color: { argb: 'FF888888' } } 
-                });
-              }
-            }
-            
-            // Update the cell value with RichText
-            cell.value = { richText };
-            
-            // Preserve original alignment but ensure wrapText is true
-            const originalAlignment = cell.alignment || {};
-            cell.alignment = { 
-              ...originalAlignment,
-              wrapText: true, 
-              vertical: 'top'
-            };
-
-            // Increase row height to accommodate multiple lines (approx 15pt per line)
-            const minHeight = (selectedLanguages.length + 1) * 18;
-            if (!row.height || row.height < minHeight) {
-              row.height = minHeight;
-            }
-          });
-        }
-      }
-
-      // Add a summary sheet as a backup
-      const summarySheet = workbook.addWorksheet('翻譯對照表');
-      summarySheet.columns = [
-        { header: '工作表', key: 'sheetName', width: 15 },
-        { header: '儲存格', key: 'address', width: 10 },
-        { header: '原始內容', key: 'original', width: 40 },
-        ...selectedLanguages.map(lang => ({ header: lang, key: lang, width: 40 }))
-      ];
-
-      sheetsToProcess.forEach(({ sheet, cells }) => {
-        cells.forEach(cellInfo => {
-          // We need to find the translations for this cell again or store them
-          // For simplicity, let's just add the original content to the summary
-          // Actually, let's skip the summary if it's too complex to re-map
-        });
-      });
-
-      updateProgress(95, 'generating');
-      const buffer = await workbook.xlsx.writeBuffer();
-      const excelBlob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-      const fileName = `translated_${file.name}`;
-      saveAs(excelBlob, fileName);
-      updateProgress(100, 'generating');
-      return { blob: excelBlob, name: fileName };
-    } catch (err: any) {
-      console.error('Excel processing error:', err);
-      throw err;
-    }
-  };
-
-  const processPdf = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
-    updateProgress(5, 'processing');
-    const arrayBuffer = await file.arrayBuffer();
-    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-    const doc = new jsPDF();
-    
-    updateProgress(10, 'translating');
-    const totalPages = pdf.numPages;
-
-    // Helper to render text using canvas to avoid CJK font issues in jsPDF
-    const renderText = (text: string, x: number, y: number, maxWidth: number, fontSize: number, isBold = false, color = '#000000'): { nextY: number; remainingText: string } => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return { nextY: y, remainingText: '' };
-
-      const scale = 4;
-      const fontStack = '"Microsoft JhengHei", "微軟正黑體", "Noto Sans TC", "PingFang TC", sans-serif';
-      ctx.font = `${isBold ? 'bold ' : ''}${fontSize * scale}px ${fontStack}`;
-      
-      const words = text.split('');
-      let line = '';
-      let currentY = y;
-      const lineHeight = fontSize * 1.2;
-
-      const renderLine = (lineText: string, ty: number) => {
-        const lineCanvas = document.createElement('canvas');
-        const lineCtx = lineCanvas.getContext('2d');
-        if (!lineCtx) return;
-        
-        const metrics = ctx.measureText(lineText);
-        // Use a more precise height to avoid squashing and extra whitespace
-        const canvasHeight = fontSize * scale * 1.4;
-        lineCanvas.width = metrics.width;
-        lineCanvas.height = canvasHeight;
-        
-        lineCtx.font = `${isBold ? 'bold ' : ''}${fontSize * scale}px ${fontStack}`;
-        lineCtx.fillStyle = color;
-        lineCtx.textBaseline = 'top';
-        lineCtx.fillText(lineText, 0, 0);
-        
-        const imgData = lineCanvas.toDataURL('image/png');
-        // The height in PDF should be (canvasHeight / scale) to maintain aspect ratio
-        doc.addImage(imgData, 'PNG', x, ty, metrics.width / scale, canvasHeight / scale);
-      };
-
-      for (let n = 0; n < words.length; n++) {
-        const testLine = line + words[n];
-        const metrics = ctx.measureText(testLine);
-        const testWidth = metrics.width / scale;
-        
-        if (testWidth > maxWidth && n > 0) {
-          renderLine(line, currentY);
-          line = words[n];
-          currentY += lineHeight;
-          
-          if (currentY > 275) {
-            doc.addPage();
-            currentY = 20;
-            return { nextY: currentY, remainingText: words.slice(n).join('') };
-          }
-        } else {
-          line = testLine;
-        }
-      }
-      
-      if (line) {
-        renderLine(line, currentY);
-        currentY += lineHeight;
-      }
-      
-      return { nextY: currentY, remainingText: '' };
-    };
-
-    const safeRenderText = (text: string, x: number, y: number, maxWidth: number, fontSize: number, isBold = false, color = '#000000') => {
-      let result = renderText(text, x, y, maxWidth, fontSize, isBold, color);
-      while (result.remainingText) {
-        result = renderText(result.remainingText, x, result.nextY, maxWidth, fontSize, isBold, color);
-      }
-      return result.nextY;
-    };
-
-    for (let i = 1; i <= totalPages; i++) {
-      if (isCancelledRef.current) throw new Error('翻譯已取消');
-      
-      const currentProgress = 10 + Math.round((i / totalPages) * 80);
-      updateProgress(currentProgress, 'translating');
-      
-      const page = await pdf.getPage(i);
-      const textContent = await page.getTextContent();
-      const strings = textContent.items.map((item: any) => item.str);
-      const fullText = strings.join(' ').trim();
-
-      if (fullText) {
-        const chunks = fullText.match(/.{1,500}/g) || [fullText];
-        const batchTranslations = await translateBatch(chunks, selectedLanguages);
-        
-        if (i > 1) doc.addPage();
-        
-        let yPos = 20;
-        const margin = 15;
-        const pageWidth = doc.internal.pageSize.getWidth();
-        const contentWidth = pageWidth - (margin * 2);
-
-        // Original Text (Restored as requested, but without green headers)
-        yPos = safeRenderText(fullText, margin, yPos, contentWidth, 10, false, '#1E293B');
-        yPos += 10;
-
-        // Translations - Only render the translated text to remove extra green headers/labels
-        for (const lang of selectedLanguages) {
-          if (yPos > 260) {
-            doc.addPage();
-            yPos = 20;
-          }
-          
-          const combinedTrans = batchTranslations.map(t => t[lang] || '').join(' ');
-          yPos = safeRenderText(combinedTrans, margin, yPos, contentWidth, 10, false, '#000000');
-          yPos += 6;
-        }
-      }
-    }
-
-    updateProgress(95, 'generating');
-    const pdfBlob = doc.output('blob');
-    const fileName = `translated_${file.name}`;
-    saveAs(pdfBlob, fileName);
-    updateProgress(100, 'generating');
-    return { blob: pdfBlob, name: fileName };
-  };
-
-  const processPptx = async (file: File, updateProgress: (p: number, status?: TranslationStatus) => void) => {
-    updateProgress(5, 'processing');
-    const arrayBuffer = await file.arrayBuffer();
-    const zip = await JSZip.loadAsync(arrayBuffer);
-    
-    // 1. Find all slide files
-    const slideFiles = Object.keys(zip.files).filter(path => path.startsWith('ppt/slides/slide') && path.endsWith('.xml'));
-    const totalSlides = slideFiles.length;
-    
-    updateProgress(10, 'translating');
-    const nsA = "http://schemas.openxmlformats.org/drawingml/2006/main";
-
-    for (let i = 0; i < totalSlides; i++) {
-      if (isCancelledRef.current) throw new Error('翻譯已取消');
-      
-      // Translating progress: 10% to 90%
-      const currentProgress = 10 + Math.round((i / totalSlides) * 80);
-      updateProgress(currentProgress, 'translating');
-      
-      const slidePath = slideFiles[i];
-      const slideXmlContent = await zip.file(slidePath)?.async('string');
-      if (!slideXmlContent) continue;
-
-      const parser = new DOMParser();
-      const xmlDoc = parser.parseFromString(slideXmlContent, 'application/xml');
-      
-      // Find all paragraphs in the slide
-      const paragraphs = Array.from(xmlDoc.getElementsByTagNameNS(nsA, 'p'));
-      
-      const paraData = paragraphs.map(p => {
-        // Get all runs in this paragraph to check for color
-        const runs = Array.from(p.getElementsByTagNameNS(nsA, 'r'));
-        let taggedText = '';
-        runs.forEach(r => {
-          const t = r.getElementsByTagNameNS(nsA, 't')[0];
-          if (!t) return;
-          const text = t.textContent || '';
-          const rPr = r.getElementsByTagNameNS(nsA, 'rPr')[0];
-          const solidFill = rPr?.getElementsByTagNameNS(nsA, 'solidFill')[0];
-          const srgbClr = solidFill?.getElementsByTagNameNS(nsA, 'srgbClr')[0];
-          const hex = srgbClr?.getAttribute('val');
-          
-          // If color is present and not default black/auto, wrap it in tags
-          if (hex && hex !== '000000') {
-            taggedText += `<color hex="${hex}">${text}</color>`;
-          } else {
-            taggedText += text;
-          }
-        });
-        return { p, taggedText };
-      }).filter(data => data.taggedText.trim().length > 0);
-
-      if (paraData.length > 0) {
-        const textsToTranslate = paraData.map(d => d.taggedText);
-        const batchTranslations = await translateBatch(textsToTranslate, selectedLanguages);
-        
-        paraData.forEach((data, idx) => {
-          const translations = batchTranslations[idx];
-          const p = data.p;
-          
-          // Find the first run to copy its properties
-          const firstRun = p.getElementsByTagNameNS(nsA, 'r')[0];
-          const firstRunPr = firstRun?.getElementsByTagNameNS(nsA, 'rPr')[0];
-
-          // Set tighter line spacing for PPTX (85% of standard)
-          let pPr = p.getElementsByTagNameNS(nsA, 'pPr')[0];
-          if (!pPr) {
-            pPr = xmlDoc.createElementNS(nsA, 'a:pPr');
-            p.insertBefore(pPr, p.firstChild);
-          }
-          let lnSpc = pPr.getElementsByTagNameNS(nsA, 'lnSpc')[0];
-          if (!lnSpc) {
-            lnSpc = xmlDoc.createElementNS(nsA, 'a:lnSpc');
-            pPr.appendChild(lnSpc);
-          }
-          let spcPct = lnSpc.getElementsByTagNameNS(nsA, 'spcPct')[0];
-          if (!spcPct) {
-            spcPct = xmlDoc.createElementNS(nsA, 'a:spcPct');
-            lnSpc.appendChild(spcPct);
-          }
-          spcPct.setAttribute('val', '85000'); // 85% line spacing
-
-          selectedLanguages.forEach(lang => {
-            const translatedText = translations[lang];
-            if (!translatedText) return;
-
-            // Split by color tags
-            const parts = translatedText.split(/(<color hex="[0-9A-Fa-f]{6}">.*?<\/color>)/g);
-            
-            parts.forEach((part, pIdx) => {
-              // Add a break (a:br) only before the first part of each language
-              if (pIdx === 0) {
-                const br = xmlDoc.createElementNS(nsA, 'a:br');
-                if (firstRunPr) {
-                  br.appendChild(firstRunPr.cloneNode(true));
-                }
-                p.appendChild(br);
-              }
-
-              // Create a new run for each part
-              const newRun = xmlDoc.createElementNS(nsA, 'a:r');
-              
-              // Copy properties if they exist
-              if (firstRunPr) {
-                const newPr = firstRunPr.cloneNode(true) as Element;
-                
-                // Remove color/fill properties to prevent entire translation from being colored
-                // if only part of the original was colored (since we copy from the first run)
-                const propsToRemove = ['solidFill', 'gradFill', 'blipFill', 'pattFill', 'grpFill'];
-                propsToRemove.forEach(prop => {
-                  const els = newPr.getElementsByTagNameNS(nsA, prop);
-                  while (els.length > 0) {
-                    newPr.removeChild(els[0]);
-                  }
-                });
-
-                // If this part is a color tag, apply the color
-                if (part.startsWith('<color')) {
-                  const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
-                  if (match) {
-                    const hex = match[1];
-                    const solidFill = xmlDoc.createElementNS(nsA, 'a:solidFill');
-                    const srgbClr = xmlDoc.createElementNS(nsA, 'a:srgbClr');
-                    srgbClr.setAttribute('val', hex);
-                    solidFill.appendChild(srgbClr);
-                    newPr.appendChild(solidFill);
-                  }
-                }
-
-                // Force Arial for Vietnamese in PPTX to avoid metric issues
-                if (lang === '越南文' || lang === 'Vietnamese' || lang === 'vi') {
-                  let latin = newPr.getElementsByTagNameNS(nsA, 'latin')[0];
-                  if (!latin) {
-                    latin = xmlDoc.createElementNS(nsA, 'a:latin');
-                    newPr.appendChild(latin);
-                  }
-                  latin.setAttribute('typeface', 'Arial');
-                  
-                  let cs = newPr.getElementsByTagNameNS(nsA, 'cs')[0];
-                  if (!cs) {
-                    cs = xmlDoc.createElementNS(nsA, 'a:cs');
-                    newPr.appendChild(cs);
-                  }
-                  cs.setAttribute('typeface', 'Arial');
-                }
-                newRun.appendChild(newPr);
-              }
-
-              // Add the text
-              const t = xmlDoc.createElementNS(nsA, 'a:t');
-              // PowerPoint text nodes generally preserve spaces, but we ensure the content is clean
-              if (part.startsWith('<color')) {
-                const match = part.match(/<color hex="([0-9A-Fa-f]{6})">(.*?)<\/color>/);
-                t.textContent = match ? match[2] : part;
-              } else {
-                t.textContent = part;
-              }
-              newRun.appendChild(t);
-
-              // Append the translation to the paragraph
-              p.appendChild(newRun);
-            });
-          });
-        });
-
-        // Save the modified slide XML back to the zip
-        const serializer = new XMLSerializer();
-        const modifiedXml = serializer.serializeToString(xmlDoc);
-        zip.file(slidePath, modifiedXml);
-      }
-    }
-
-    updateProgress(95, 'generating');
-    const content = await zip.generateAsync({ type: 'blob' });
-    const fileName = file.name.replace(/\.pptx$/, `_translated.pptx`);
-    saveAs(content, fileName);
-    updateProgress(100, 'generating');
-    return { blob: content, name: fileName };
-  };
-
   const processFiles = async () => {
     if (files.length === 0 || selectedLanguages.length === 0) return;
+    
+    if (!user) {
+      setError('請先登入以使用翻譯功能');
+      return;
+    }
+
+    try {
+      await user.reload();
+    } catch (e) {
+      console.error("Failed to reload user", e);
+    }
+
+    if (!auth.currentUser?.emailVerified && !userProfile?.isManuallyAdded) {
+      setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
+      return;
+    }
+
+    // Check usage limit for free users
+    const isAdmin = userProfile?.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com';
+    const isPaid = userProfile?.isPaid;
+    const quota = userProfile?.quota || 2;
+
+    if (!isAdmin) {
+      if (dbHistory.length >= quota) {
+        setError(`額度已達上限 (${quota}份檔案)，請升級以繼續使用`);
+        return;
+      }
+      if (dbHistory.length + files.length > quota) {
+        setError(`剩餘額度 ${quota - dbHistory.length} 份，請減少上傳檔案數量或升級額度`);
+        return;
+      }
+    }
 
     try {
       setStatus('processing');
@@ -914,6 +650,7 @@ export default function App() {
       isCancelledRef.current = false;
 
       const filesToProcess = [...files];
+      setProcessingFiles(filesToProcess);
       for (let i = 0; i < filesToProcess.length; i++) {
         if (isCancelledRef.current) break;
         
@@ -933,32 +670,36 @@ export default function App() {
         };
 
         try {
-          let result: { blob: Blob, name: string } | undefined;
+          let results: { blob: Blob, name: string }[] = [];
           switch (extension) {
             case 'docx':
-              result = await processDocx(currentFile, updateFileProgress);
+              results = await processDocx(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
               break;
             case 'xlsx':
-              result = await processExcel(currentFile, updateFileProgress);
+              results = await processExcel(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
               break;
             case 'pdf':
-              result = await processPdf(currentFile, updateFileProgress);
+              results = await processPdf(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
               break;
             case 'pptx':
-              result = await processPptx(currentFile, updateFileProgress);
+              results = await processPptx(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
               break;
             default:
               console.warn(`不支援的檔案格式: ${currentFile.name}`);
           }
           
-          if (result) {
-            const newEntry = { 
-              name: result.name, 
-              date: new Date().toLocaleTimeString(), 
-              blob: result.blob, 
-              type: extension || 'unknown' 
-            };
-            setHistory(prev => [newEntry, ...prev].slice(0, 3));
+          if (results && results.length > 0) {
+            for (const result of results) {
+              saveAs(result.blob, result.name);
+              const newEntry = { 
+                name: result.name, 
+                date: new Date().toLocaleTimeString(), 
+                blob: result.blob, 
+                type: extension || 'unknown' 
+              };
+              setHistory(prev => [newEntry, ...prev].slice(0, 3));
+              await saveToFirestore(currentFile.name, result.name, extension || 'unknown', selectedLanguages, industry);
+            }
           }
 
           // Remove file from list after successful processing
@@ -984,55 +725,171 @@ export default function App() {
     }
   };
 
+  const isUploading = files.some(f => uploadStatus[f.name] === 'uploading');
+
   return (
-    <div className="min-h-screen bg-[#FAFAFA] font-sans text-[#1A1A1A] relative overflow-hidden">
-      {/* Background Accents */}
-      <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-emerald-50/50 to-transparent -z-10" />
-      <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-100/20 blur-[120px] rounded-full -z-10" />
-      <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100/20 blur-[120px] rounded-full -z-10" />
-
-      <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 relative z-10">
-        {/* Header */}
-        <header className="mb-8 md:mb-12 text-center">
-          <motion.div 
-            initial={{ opacity: 0, y: -10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5 }}
-            className="inline-flex items-center justify-center mb-4"
-          >
-            <div className="relative">
-              <div className="absolute inset-0 bg-emerald-500/10 blur-xl rounded-full" />
-              <div className="relative w-12 h-12 bg-white rounded-2xl shadow-sm border border-gray-100 flex items-center justify-center">
-                <Languages className="w-6 h-6 text-emerald-600" />
+    <ErrorBoundary>
+      <div className="min-h-screen bg-[#FAFAFA] font-sans text-[#1A1A1A] relative overflow-hidden">
+        {/* Auth Bar */}
+        <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+          {isAuthReady && (
+            user ? (
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={() => setShowHistory(!showHistory)}
+                  className="p-2 bg-white rounded-full shadow-sm border border-gray-100 text-gray-600 hover:text-emerald-600 transition-colors"
+                  title="翻譯紀錄"
+                >
+                  <Clock className="w-5 h-5" />
+                </button>
+                {userProfile?.role === 'admin' && (
+                  <button 
+                    onClick={() => setShowAdminPanel(true)}
+                    className="p-2 bg-white rounded-full shadow-sm border border-gray-100 text-gray-600 hover:text-purple-600 transition-colors"
+                    title="管理後台"
+                  >
+                    <Shield className="w-5 h-5" />
+                  </button>
+                )}
+                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-100">
+                  {user.photoURL ? (
+                    <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
+                  ) : (
+                    <UserIcon className="w-4 h-4 text-gray-400" />
+                  )}
+                  <span className="text-sm font-medium text-gray-700 inline-block max-w-[100px] truncate sm:max-w-[200px]">
+                    {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
+                  </span>
+                  {userProfile && (
+                    <div className="flex items-center gap-1.5 ml-1">
+                      {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
+                        <span className="px-2 py-0.5 bg-purple-100 text-purple-600 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
+                      ) : userProfile.isPaid ? (
+                        <div className="flex items-center gap-1">
+                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
+                          <span className="text-[10px] text-emerald-600 font-bold">{userProfile.quota}次</span>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-1">
+                          <span className="px-2 py-0.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                            {userProfile.isPaid ? 'Pro' : 'Free'}
+                          </span>
+                          <span className="text-[10px] text-gray-400 font-medium">({dbHistory.length}/{userProfile.quota})</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!user.emailVerified && !userProfile?.isManuallyAdded && (
+                    <button 
+                      onClick={async () => {
+                        try {
+                          await sendEmailVerification(user);
+                          setError('驗證信已重新發送，請檢查您的信箱。');
+                        } catch (e) {
+                          setError('發送驗證信失敗，請稍後再試。');
+                        }
+                      }}
+                      className="ml-2 px-2 py-0.5 bg-amber-100 text-amber-600 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
+                    >
+                      重發驗證信
+                    </button>
+                  )}
+                  <button onClick={handleLogout} className="ml-2 text-gray-400 hover:text-red-500 transition-colors">
+                    <LogOut className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
+            ) : (
+              <button 
+                onClick={handleLogin}
+                className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-100 text-gray-700 font-medium hover:bg-gray-50 transition-colors"
+              >
+                <LogIn className="w-4 h-4 text-emerald-600" />
+                <span>登入</span>
+              </button>
+            )
+          )}
+        </div>
+
+        {/* Background Accents */}
+        <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-emerald-50/50 to-transparent -z-10" />
+        <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-100/20 blur-[120px] rounded-full -z-10" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100/20 blur-[120px] rounded-full -z-10" />
+
+        {/* Deleted Account Modal */}
+        <DeletedModal 
+          isOpen={showDeletedModal} 
+          onClose={() => setShowDeletedModal(false)} 
+        />
+
+        {/* Auth Modal */}
+        <AuthModal 
+          isOpen={showAuthModal} 
+          onClose={() => setShowAuthModal(false)} 
+          onSuccess={(msg) => {
+            if (msg) setError(msg);
+          }}
+        />
+
+        <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 relative z-10">
+          {/* Header */}
+          <header className="mb-8 md:mb-12 text-center">
+            <div className="space-y-2">
+              <motion.h1 
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1, duration: 0.5 }}
+                className="text-2xl md:text-4xl font-bold tracking-tight text-gray-900 flex items-center justify-center gap-4"
+              >
+                <div className="relative flex-shrink-0">
+                  <div className="absolute inset-0 bg-emerald-500/20 blur-xl rounded-full" />
+                  <div className="relative w-10 h-10 md:w-12 md:h-12 bg-gradient-to-tr from-emerald-600 to-emerald-400 rounded-xl shadow-[0_8px_20px_-6px_rgba(16,185,129,0.5)] flex items-center justify-center transform -rotate-6 hover:rotate-0 transition-all duration-300">
+                    <Languages className="w-6 h-6 md:w-7 md:h-7 text-white" />
+                  </div>
+                </div>
+                <span>全能文件<span className="text-emerald-600">多語翻譯器</span></span>
+              </motion.h1>
+
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.2, duration: 0.5 }}
+                className="text-gray-400 text-xs md:text-sm font-medium tracking-wide"
+              >
+                Professional AI-powered document translation
+              </motion.p>
             </div>
-          </motion.div>
+          </header>
 
-          <div className="space-y-1">
-            <motion.h1 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1, duration: 0.5 }}
-              className="text-2xl md:text-4xl font-bold tracking-tight text-gray-900"
-            >
-              全能文件<span className="text-emerald-600">多語翻譯器</span>
-            </motion.h1>
+          {/* History Panel Overlay */}
+          <HistoryPanel 
+            isOpen={showHistory} 
+            onClose={() => setShowHistory(false)} 
+            dbHistory={dbHistory} 
+          />
 
-            <motion.p
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: 0.2, duration: 0.5 }}
-              className="text-gray-400 text-xs md:text-sm font-medium tracking-wide"
-            >
-              Professional AI-powered document translation
-            </motion.p>
-          </div>
-        </header>
+          {/* Upgrade Modal */}
+          <UpgradeModal 
+            isOpen={showUpgradeModal} 
+            onClose={() => setShowUpgradeModal(false)} 
+            user={user} 
+            setStatus={setStatus} 
+            setStatusMessage={setStatusMessage} 
+            setError={setError} 
+          />
+
+          {/* Admin Panel Overlay */}
+          <AdminPanel 
+            isOpen={showAdminPanel} 
+            onClose={() => setShowAdminPanel(false)} 
+            userProfile={userProfile} 
+            user={user} 
+          />
 
         {/* Instructions */}
         <div className="mb-16 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
           {[
-            { title: "上傳文件", desc: "支援 Word, Excel, PDF, PPTX 格式，自動提取內容。" },
+            { title: "上傳文件", desc: "支援 Word, Excel 格式，自動提取內容。" },
             { title: "智能翻譯", desc: "使用 AI 進行語境感知翻譯，確保翻譯品質。" },
             { title: "多語對照", desc: "翻譯結果以對照形式呈現，並生成新文件。" }
           ].map((item, idx) => (
@@ -1057,12 +914,12 @@ export default function App() {
           transition={{ delay: 0.6 }}
           className="bg-white rounded-[40px] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.08)] border border-black/5 overflow-hidden"
         >
-          <div className="p-6 md:p-16">
+          <div className="p-6 md:p-8">
             {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
               className={`
-                relative group cursor-pointer border-2 border-dashed rounded-[32px] p-8 md:p-12 transition-all duration-500
+                relative group cursor-pointer border-2 border-dashed rounded-[32px] p-8 md:p-8 transition-all duration-500
                 ${files.length > 0 ? 'border-emerald-200 bg-emerald-50/20' : 'border-gray-200 hover:border-emerald-400 hover:bg-gray-50/50'}
               `}
             >
@@ -1070,7 +927,7 @@ export default function App() {
                 type="file" 
                 ref={fileInputRef}
                 onChange={handleFileChange}
-                accept=".docx,.xlsx,.pdf,.pptx"
+                accept=".docx,.xlsx,.pdf,.pptx,.doc,.xls,.ppt"
                 multiple
                 className="hidden"
               />
@@ -1085,7 +942,7 @@ export default function App() {
                 
                 <div className="max-w-xs">
                   <p className="text-lg font-medium text-gray-800 mb-2">點擊或拖拽上傳文件</p>
-                  <p className="text-sm text-gray-400 font-light">支援 .docx, .xlsx, .pdf, .pptx 格式 (可多選)</p>
+                  <p className="text-sm text-gray-400 font-light">支援 .docx, .xlsx 格式 (可多選)</p>
                 </div>
               </div>
             </div>
@@ -1098,6 +955,15 @@ export default function App() {
                   animate={{ opacity: 1, y: 0 }}
                   className="mt-6 space-y-2"
                 >
+                  {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
+                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3 mb-4">
+                      <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                      <div className="text-sm text-amber-800">
+                        <p className="font-bold mb-1">PDF 翻譯注意事項</p>
+                        <p>系統目前僅能擷取 PDF 中的「純文字」進行翻譯，將會**遺失原有的表格與排版**。若為掃描檔或圖片 PDF，系統會自動啟用 OCR (光學字元辨識) 進行處理，但辨識可能需要較長時間。若您的 PDF 包含表格或特殊字體（可能導致亂碼），強烈建議您先將其轉換為 Word 或 Excel 檔案後再進行翻譯。</p>
+                      </div>
+                    </div>
+                  )}
                   <div className="flex justify-between items-center px-1 mb-2">
                     <span className="text-[11px] uppercase tracking-wider font-semibold text-gray-400">待處理檔案 ({files.length})</span>
                     {status === 'idle' && (
@@ -1131,6 +997,7 @@ export default function App() {
                       </div>
                       
                       <div className="flex items-center gap-4">
+                        {/* Translation Progress */}
                         {status !== 'idle' && status !== 'error' && (
                           <div className="flex flex-col items-end gap-1.5">
                             <span className="text-[10px] font-mono font-bold text-emerald-600">
@@ -1144,7 +1011,40 @@ export default function App() {
                             </div>
                           </div>
                         )}
-                        {status === 'idle' && (
+                        
+                        {/* Upload Progress */}
+                        {status === 'idle' && uploadStatus[f.name] === 'uploading' && (
+                          <div className="flex flex-col items-end gap-1.5">
+                            <span className="text-[10px] font-mono font-bold text-blue-500">
+                              {Math.round(uploadProgress[f.name] || 0)}%
+                            </span>
+                            <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                              <div 
+                                className="h-full bg-blue-500 transition-all duration-200" 
+                                style={{ width: `${uploadProgress[f.name] || 0}%` }}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Upload Success Visual Feedback */}
+                        {status === 'idle' && uploadStatus[f.name] === 'success' && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[10px] text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded-full flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              上傳成功
+                            </span>
+                            <button 
+                              onClick={() => removeFile(idx)}
+                              className="p-2 hover:bg-red-50 rounded-full text-gray-300 hover:text-red-500 transition-all"
+                            >
+                              <AlertCircle className="w-4 h-4 rotate-45" />
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Fallback for idle without upload state */}
+                        {status === 'idle' && !uploadStatus[f.name] && (
                           <button 
                             onClick={() => removeFile(idx)}
                             className="p-2 hover:bg-red-50 rounded-full text-gray-300 hover:text-red-500 transition-all"
@@ -1152,6 +1052,7 @@ export default function App() {
                             <AlertCircle className="w-4 h-4 rotate-45" />
                           </button>
                         )}
+
                         {status === 'completed' && fileProgress[f.name] === 100 && (
                           <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center">
                             <CheckCircle2 className="w-4 h-4 text-emerald-500" />
@@ -1208,45 +1109,106 @@ export default function App() {
                   ))}
                 </div>
               </div>
+
+              {selectedLanguages.length > 1 && (
+                <div>
+                  <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400 mb-4 ml-1">
+                    輸出檔案模式
+                  </label>
+                  <div className="flex gap-4">
+                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'combined' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-100 bg-white hover:border-emerald-200'}`}>
+                      <input 
+                        type="radio" 
+                        name="outputMode" 
+                        value="combined" 
+                        checked={outputMode === 'combined'} 
+                        onChange={() => setOutputMode('combined')}
+                        className="w-4 h-4 text-emerald-600 border-gray-300 focus:ring-emerald-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">合併為單一檔案</span>
+                    </label>
+                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'separate' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-100 bg-white hover:border-emerald-200'}`}>
+                      <input 
+                        type="radio" 
+                        name="outputMode" 
+                        value="separate" 
+                        checked={outputMode === 'separate'} 
+                        onChange={() => setOutputMode('separate')}
+                        className="w-4 h-4 text-emerald-600 border-gray-300 focus:ring-emerald-500"
+                      />
+                      <span className="text-sm font-medium text-gray-700">分開為多個檔案</span>
+                    </label>
+                  </div>
+                </div>
+              )}
               
               <div className="flex flex-col gap-3 pt-4">
-                <button
-                  disabled={files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'}
-                  onClick={processFiles}
-                  className={`
-                    w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
-                    ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating'
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-gray-900 text-white hover:bg-black hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]'}
-                  `}
-                >
-                  {status === 'idle' && (
-                    <>
-                      <span className="truncate">
-                        開始翻譯 {files.length > 0 && `${files.length} 份`} {selectedLanguages.length > 0 && `(${selectedLanguages.length} 種語言)`}
-                      </span>
-                      <ArrowRight className="w-4 h-4 shrink-0" />
-                    </>
-                  )}
-                  {(status === 'processing' || status === 'translating' || status === 'generating') && (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin shrink-0" />
-                      <span className="truncate">正在處理 {Object.keys(fileProgress).length} / {files.length}...</span>
-                    </>
-                  )}
-                  {status === 'completed' && (
-                    <>
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>全部翻譯完成</span>
-                    </>
-                  )}
-                  {status === 'error' && (
-                    <>
-                      <AlertCircle className="w-4 h-4" />
-                      <span>重試</span>
-                    </>
-                  )}
-                </button>
+                {!user ? (
+                  <button
+                    onClick={handleLogin}
+                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]"
+                  >
+                    <LogIn className="w-5 h-5 shrink-0" />
+                    <span className="truncate">請先登入以開始翻譯</span>
+                  </button>
+                ) : (!user.emailVerified && !userProfile?.isManuallyAdded) ? (
+                  <button
+                    onClick={async () => {
+                      try {
+                        await user.reload();
+                        if (auth.currentUser?.emailVerified) {
+                          setReloadCounter(c => c + 1);
+                        } else {
+                          setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
+                        }
+                      } catch (e) {
+                        setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。');
+                      }
+                    }}
+                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-amber-500 text-white hover:bg-amber-600 hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]"
+                  >
+                    <AlertCircle className="w-5 h-5 shrink-0" />
+                    <span className="truncate">請先驗證 Email 以開始翻譯</span>
+                  </button>
+                ) : (
+                  <button
+                    disabled={files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading}
+                    onClick={processFiles}
+                    className={`
+                      w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
+                      ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                        : 'bg-gray-900 text-white hover:bg-black hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]'}
+                    `}
+                  >
+                    {status === 'idle' && (
+                      <>
+                        <span className="truncate">
+                          {isUploading ? '檔案上傳中...' : `開始翻譯 ${files.length > 0 ? `${files.length} 份` : ''} ${selectedLanguages.length > 0 ? `(${selectedLanguages.length} 種語言)` : ''}`}
+                        </span>
+                        {!isUploading && <ArrowRight className="w-4 h-4 shrink-0" />}
+                      </>
+                    )}
+                    {(status === 'processing' || status === 'translating' || status === 'generating') && (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                        <span className="truncate">正在處理 {Object.keys(fileProgress).length} / {files.length}...</span>
+                      </>
+                    )}
+                    {status === 'completed' && (
+                      <>
+                        <CheckCircle2 className="w-4 h-4" />
+                        <span>全部翻譯完成</span>
+                      </>
+                    )}
+                    {status === 'error' && (
+                      <>
+                        <AlertCircle className="w-4 h-4" />
+                        <span>重試</span>
+                      </>
+                    )}
+                  </button>
+                )}
                 
                 {(status === 'processing' || status === 'translating' || status === 'generating') && (
                   <button
@@ -1260,32 +1222,13 @@ export default function App() {
             </div>
 
             {/* Progress & Status */}
-            <AnimatePresence>
-              {(status !== 'idle' && status !== 'error') && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="mt-8 pt-8 border-top border-gray-100"
-                >
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="text-sm font-medium text-gray-600">
-                      {statusMessage}
-                    </span>
-                    {(status === 'processing' || status === 'translating' || status === 'generating') && (
-                      <span className="text-xs font-mono text-emerald-600">{progress}%</span>
-                    )}
-                  </div>
-                  <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                    <motion.div 
-                      initial={{ width: 0 }}
-                      animate={{ width: `${progress}%` }}
-                      className="h-full bg-emerald-500"
-                    />
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <TranslationProgress 
+              status={status} 
+              statusMessage={statusMessage} 
+              progress={progress} 
+              files={processingFiles}
+              fileProgress={fileProgress}
+            />
 
             {/* Error Message */}
             {error && (
@@ -1302,60 +1245,9 @@ export default function App() {
         </motion.div>
 
         {/* Translation History */}
-        <AnimatePresence>
-          {history.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="mt-12 bg-white rounded-[32px] shadow-[0_20px_40px_-12px_rgba(0,0,0,0.04)] border border-black/5 overflow-hidden"
-            >
-              <div className="p-6 md:p-8 border-b border-gray-50 flex items-center justify-between bg-gray-50/30">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center">
-                    <History className="w-5 h-5 text-emerald-600" />
-                  </div>
-                  <div>
-                    <h2 className="text-sm font-semibold text-gray-800">最近翻譯</h2>
-                    <p className="text-[10px] text-gray-400 uppercase tracking-wider font-medium">Translation History</p>
-                  </div>
-                </div>
-              </div>
-              <div className="divide-y divide-gray-50">
-                {history.map((item, idx) => (
-                  <div key={idx} className="p-5 md:p-6 flex items-center justify-between hover:bg-gray-50/50 transition-all group">
-                    <div className="flex items-center gap-5">
-                      <div className="w-12 h-12 rounded-2xl bg-gray-50 flex items-center justify-center text-gray-400 group-hover:bg-white group-hover:shadow-sm transition-all">
-                        {item.type === 'docx' && <FileText className="w-6 h-6 text-blue-500/70" />}
-                        {item.type === 'xlsx' && <FileSpreadsheet className="w-6 h-6 text-emerald-500/70" />}
-                        {item.type === 'pdf' && <FileIcon className="w-6 h-6 text-red-500/70" />}
-                        {item.type === 'pptx' && <Presentation className="w-6 h-6 text-orange-500/70" />}
-                        {!['docx', 'xlsx', 'pdf', 'pptx'].includes(item.type) && <FileIcon className="w-6 h-6" />}
-                      </div>
-                      <div>
-                        <h3 className="text-sm font-medium text-gray-700 truncate max-w-[180px] sm:max-w-[400px]">
-                          {item.name}
-                        </h3>
-                        <div className="flex items-center gap-2 mt-1">
-                          <span className="text-[10px] text-gray-400 font-light">{item.date}</span>
-                          <span className="w-1 h-1 rounded-full bg-gray-200" />
-                          <span className="text-[10px] text-emerald-600 font-medium uppercase tracking-tighter">Success</span>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => saveAs(item.blob, item.name)}
-                      className="w-10 h-10 rounded-full flex items-center justify-center hover:bg-emerald-50 text-emerald-600 transition-all group/btn border border-transparent hover:border-emerald-100"
-                      title="重新下載"
-                    >
-                      <Download className="w-4 h-4 group-hover/btn:scale-110 transition-transform" />
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+        <TranslationHistory history={history} />
       </div>
     </div>
+    </ErrorBoundary>
   );
 }
