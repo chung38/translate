@@ -17,7 +17,9 @@ import {
   runTransaction, 
   serverTimestamp 
 } from 'firebase/firestore';
-import * as admin from 'firebase-admin';
+import { initializeApp as initializeAdminApp } from 'firebase-admin/app';
+import { getAuth as getAdminAuth } from 'firebase-admin/auth';
+import { getFirestore as getAdminFirestore } from 'firebase-admin/firestore';
 
 console.log("SERVER STARTING UP...");
 
@@ -31,7 +33,7 @@ const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
 // Initialize Firebase Admin
 try {
-  admin.initializeApp({
+  initializeAdminApp({
     projectId: firebaseConfig.projectId,
   });
   console.log("Firebase Admin initialized");
@@ -119,10 +121,10 @@ async function startServer() {
       }
       
       const idToken = authHeader.split('Bearer ')[1];
-      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const decodedToken = await getAdminAuth().verifyIdToken(idToken);
       
       // Check if the requester is an admin
-      const adminDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
+      const adminDoc = await getAdminFirestore().collection('users').doc(decodedToken.uid).get();
       const isAdmin = adminDoc.exists && adminDoc.data()?.role === 'admin';
       const isDefaultAdmin = decodedToken.email === 'chen.chung.shih@gmail.com';
       
@@ -134,7 +136,7 @@ async function startServer() {
 
       // Delete from Firebase Auth
       try {
-        await admin.auth().deleteUser(uid);
+        await getAdminAuth().deleteUser(uid);
         console.log(`Successfully deleted user ${uid} from Firebase Auth`);
       } catch (authError: any) {
         if (authError.code === 'auth/user-not-found') {
@@ -145,11 +147,11 @@ async function startServer() {
       }
 
       // Delete from Firestore
-      const userRef = admin.firestore().collection('users').doc(uid);
+      const userRef = getAdminFirestore().collection('users').doc(uid);
       
       // Delete history subcollection
       const historySnapshot = await userRef.collection('history').get();
-      const batch = admin.firestore().batch();
+      const batch = getAdminFirestore().batch();
       historySnapshot.docs.forEach((doc) => {
         batch.delete(doc.ref);
       });
