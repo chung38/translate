@@ -729,7 +729,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen bg-[#FAFAFA] font-sans text-[#1A1A1A] relative overflow-hidden">
+      <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative overflow-hidden">
         {/* Auth Bar */}
         <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
           {isAuthReady && (
@@ -737,7 +737,7 @@ export default function App() {
               <div className="flex items-center gap-2">
                 <button 
                   onClick={() => setShowHistory(!showHistory)}
-                  className="p-2 bg-white rounded-full shadow-sm border border-gray-100 text-gray-600 hover:text-emerald-600 transition-colors"
+                  className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-indigo-600 transition-colors"
                   title="翻譯紀錄"
                 >
                   <Clock className="w-5 h-5" />
@@ -745,36 +745,36 @@ export default function App() {
                 {userProfile?.role === 'admin' && (
                   <button 
                     onClick={() => setShowAdminPanel(true)}
-                    className="p-2 bg-white rounded-full shadow-sm border border-gray-100 text-gray-600 hover:text-purple-600 transition-colors"
+                    className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-violet-600 transition-colors"
                     title="管理後台"
                   >
                     <Shield className="w-5 h-5" />
                   </button>
                 )}
-                <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-full shadow-sm border border-gray-100">
+                <div className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-white">
                   {user.photoURL ? (
                     <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
                   ) : (
-                    <UserIcon className="w-4 h-4 text-gray-400" />
+                    <UserIcon className="w-4 h-4 text-slate-400" />
                   )}
-                  <span className="text-sm font-medium text-gray-700 inline-block max-w-[100px] truncate sm:max-w-[200px]">
+                  <span className="text-sm font-medium text-slate-800 inline-block max-w-[100px] truncate sm:max-w-[200px]">
                     {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
                   </span>
                   {userProfile && (
                     <div className="flex items-center gap-1.5 ml-1">
                       {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
-                        <span className="px-2 py-0.5 bg-purple-100 text-purple-600 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
+                        <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
                       ) : userProfile.isPaid ? (
                         <div className="flex items-center gap-1">
-                          <span className="px-2 py-0.5 bg-emerald-100 text-emerald-600 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
-                          <span className="text-[10px] text-emerald-600 font-bold">{userProfile.quota}次</span>
+                          <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
+                          <span className="text-[10px] text-indigo-700 font-bold">{userProfile.quota}次</span>
                         </div>
                       ) : (
                         <div className="flex items-center gap-1">
-                          <span className="px-2 py-0.5 bg-gray-100 text-gray-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                          <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
                             {userProfile.isPaid ? 'Pro' : 'Free'}
                           </span>
-                          <span className="text-[10px] text-gray-400 font-medium">({dbHistory.length}/{userProfile.quota})</span>
+                          <span className="text-[10px] text-slate-500 font-medium">({dbHistory.length}/{userProfile.quota})</span>
                         </div>
                       )}
                     </div>
@@ -789,12 +789,12 @@ export default function App() {
                           setError('發送驗證信失敗，請稍後再試。');
                         }
                       }}
-                      className="ml-2 px-2 py-0.5 bg-amber-100 text-amber-600 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
+                      className="ml-2 px-2 py-0.5 bg-amber-100 border border-amber-200 text-amber-700 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
                     >
                       重發驗證信
                     </button>
                   )}
-                  <button onClick={handleLogout} className="ml-2 text-gray-400 hover:text-red-500 transition-colors">
+                  <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition-colors">
                     <LogOut className="w-4 h-4" />
                   </button>
                 </div>
@@ -802,9 +802,9 @@ export default function App() {
             ) : (
               <button 
                 onClick={handleLogin}
-                className="flex items-center gap-2 bg-white px-4 py-2 rounded-full shadow-sm border border-gray-100 text-gray-700 font-medium hover:bg-gray-50 transition-colors"
+                className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-white text-slate-800 font-medium hover:bg-white transition-colors"
               >
-                <LogIn className="w-4 h-4 text-emerald-600" />
+                <LogIn className="w-4 h-4 text-indigo-600" />
                 <span>登入</span>
               </button>
             )
@@ -812,9 +812,9 @@ export default function App() {
         </div>
 
         {/* Background Accents */}
-        <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-emerald-50/50 to-transparent -z-10" />
-        <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-emerald-100/20 blur-[120px] rounded-full -z-10" />
-        <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-100/20 blur-[120px] rounded-full -z-10" />
+        <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-indigo-50 to-transparent -z-10" />
+        <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-300/30 blur-[120px] rounded-full -z-10 pointer-events-none" />
+        <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-fuchsia-300/30 blur-[120px] rounded-full -z-10 pointer-events-none" />
 
         {/* Deleted Account Modal */}
         <DeletedModal 
@@ -839,22 +839,22 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1, duration: 0.5 }}
-                className="text-2xl md:text-4xl font-bold tracking-tight text-gray-900 flex items-center justify-center gap-4"
+                className="text-2xl md:text-4xl font-bold tracking-tight text-slate-900 flex items-center justify-center gap-4"
               >
                 <div className="relative flex-shrink-0">
-                  <div className="absolute inset-0 bg-emerald-500/20 blur-xl rounded-full" />
-                  <div className="relative w-10 h-10 md:w-12 md:h-12 bg-gradient-to-tr from-emerald-600 to-emerald-400 rounded-xl shadow-[0_8px_20px_-6px_rgba(16,185,129,0.5)] flex items-center justify-center transform -rotate-6 hover:rotate-0 transition-all duration-300">
+                  <div className="absolute inset-0 bg-indigo-200 blur-xl rounded-full" />
+                  <div className="relative w-10 h-10 md:w-12 md:h-12 bg-gradient-to-tr from-indigo-500 to-violet-600 rounded-xl shadow-[0_8px_20px_-6px_rgba(79,70,229,0.5)] flex items-center justify-center transform -rotate-6 hover:rotate-0 transition-all duration-300">
                     <Languages className="w-6 h-6 md:w-7 md:h-7 text-white" />
                   </div>
                 </div>
-                <span>全能文件<span className="text-emerald-600">多語翻譯器</span></span>
+                <span>全能文件<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">多語翻譯器</span></span>
               </motion.h1>
 
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.2, duration: 0.5 }}
-                className="text-gray-400 text-xs md:text-sm font-medium tracking-wide"
+                className="text-indigo-600/80 text-xs md:text-sm font-medium tracking-wide"
               >
                 Professional AI-powered document translation
               </motion.p>
@@ -898,11 +898,11 @@ export default function App() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 + idx * 0.1 }}
-              className="relative p-6 rounded-2xl bg-white/50 border border-white shadow-sm hover:shadow-md transition-all group"
+              className="relative p-6 rounded-2xl bg-white/70 backdrop-blur-md border border-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:bg-white transition-all group"
             >
-              <div className="text-3xl font-serif italic text-emerald-600/20 mb-3 group-hover:text-emerald-600/40 transition-colors">0{idx + 1}</div>
-              <h3 className="font-semibold text-gray-800 mb-2">{item.title}</h3>
-              <p className="text-xs text-gray-500 leading-relaxed font-light">{item.desc}</p>
+              <div className="text-3xl font-tech italic text-indigo-500/20 mb-3 group-hover:text-indigo-400/40 transition-colors">0{idx + 1}</div>
+              <h3 className="font-semibold text-slate-800 mb-2">{item.title}</h3>
+              <p className="text-xs text-slate-500 leading-relaxed font-light">{item.desc}</p>
             </motion.div>
           ))}
         </div>
@@ -912,7 +912,7 @@ export default function App() {
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6 }}
-          className="bg-white rounded-[40px] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.08)] border border-black/5 overflow-hidden"
+          className="bg-white/70 backdrop-blur-xl rounded-[40px] shadow-[0_8px_32px_0_rgba(0,0,0,0.05)] border border-white overflow-hidden"
         >
           <div className="p-6 md:p-8">
             {/* Upload Section */}
@@ -920,7 +920,7 @@ export default function App() {
               onClick={() => fileInputRef.current?.click()}
               className={`
                 relative group cursor-pointer border-2 border-dashed rounded-[32px] p-8 md:p-8 transition-all duration-500
-                ${files.length > 0 ? 'border-emerald-200 bg-emerald-50/20' : 'border-gray-200 hover:border-emerald-400 hover:bg-gray-50/50'}
+                ${files.length > 0 ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-400 hover:bg-white/50'}
               `}
             >
               <input 
@@ -935,14 +935,14 @@ export default function App() {
               <div className="flex flex-col items-center text-center">
                 <div className={`
                   w-16 h-16 rounded-full flex items-center justify-center mb-4 transition-all duration-500 group-hover:scale-110
-                  ${files.length > 0 ? 'bg-emerald-100 text-emerald-600 shadow-inner' : 'bg-gray-50 text-gray-400'}
+                  ${files.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-[0_0_15px_rgba(79,70,229,0.2)]' : 'bg-slate-100 text-slate-400'}
                 `}>
                   <Upload className="w-7 h-7" />
                 </div>
                 
                 <div className="max-w-xs">
-                  <p className="text-lg font-medium text-gray-800 mb-2">點擊或拖拽上傳文件</p>
-                  <p className="text-sm text-gray-400 font-light">支援 .docx, .xlsx 格式 (可多選)</p>
+                  <p className="text-lg font-medium text-slate-800 mb-2">點擊或拖拽上傳文件</p>
+                  <p className="text-sm text-slate-500 font-light">支援 .docx, .xlsx 格式 (可多選)</p>
                 </div>
               </div>
             </div>
@@ -965,7 +965,7 @@ export default function App() {
                     </div>
                   )}
                   <div className="flex justify-between items-center px-1 mb-2">
-                    <span className="text-[11px] uppercase tracking-wider font-semibold text-gray-400">待處理檔案 ({files.length})</span>
+                    <span className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">待處理檔案 ({files.length})</span>
                     {status === 'idle' && (
                       <button 
                         onClick={() => setFiles([])}
@@ -981,18 +981,18 @@ export default function App() {
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: 10 }}
-                      className="flex items-center justify-between p-4 bg-gray-50/50 rounded-2xl border border-gray-100/50 hover:bg-white hover:shadow-sm transition-all"
+                      className="flex items-center justify-between p-4 bg-white/60 rounded-2xl border border-white hover:bg-white hover:shadow-sm transition-all"
                     >
                       <div className="flex items-center gap-4 min-w-0">
-                        <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-emerald-600 shadow-sm">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shadow-sm">
                           {f.name.endsWith('.docx') && <FileText className="w-5 h-5" />}
                           {f.name.endsWith('.xlsx') && <FileSpreadsheet className="w-5 h-5" />}
                           {f.name.endsWith('.pdf') && <FileIcon className="w-5 h-5" />}
                           {f.name.endsWith('.pptx') && <Presentation className="w-5 h-5" />}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-medium text-gray-700 truncate">{f.name}</p>
-                          <p className="text-[10px] text-gray-400 font-light">{(f.size / 1024).toFixed(1)} KB</p>
+                          <p className="text-sm font-medium text-slate-800 truncate">{f.name}</p>
+                          <p className="text-[10px] text-slate-500 font-light">{(f.size / 1024).toFixed(1)} KB</p>
                         </div>
                       </div>
                       
@@ -1000,12 +1000,12 @@ export default function App() {
                         {/* Translation Progress */}
                         {status !== 'idle' && status !== 'error' && (
                           <div className="flex flex-col items-end gap-1.5">
-                            <span className="text-[10px] font-mono font-bold text-emerald-600">
+                            <span className="text-[10px] font-mono font-bold text-indigo-600">
                               {fileProgress[f.name] || 0}%
                             </span>
-                            <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                            <div className="w-16 h-1 bg-slate-200 rounded-full overflow-hidden">
                               <div 
-                                className="h-full bg-emerald-500 transition-all duration-500" 
+                                className="h-full bg-indigo-500 transition-all duration-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]" 
                                 style={{ width: `${fileProgress[f.name] || 0}%` }}
                               />
                             </div>
@@ -1018,9 +1018,9 @@ export default function App() {
                             <span className="text-[10px] font-mono font-bold text-blue-500">
                               {Math.round(uploadProgress[f.name] || 0)}%
                             </span>
-                            <div className="w-16 h-1 bg-gray-200 rounded-full overflow-hidden">
+                            <div className="w-16 h-1 bg-slate-200 rounded-full overflow-hidden">
                               <div 
-                                className="h-full bg-blue-500 transition-all duration-200" 
+                                className="h-full bg-blue-500 transition-all duration-200 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
                                 style={{ width: `${uploadProgress[f.name] || 0}%` }}
                               />
                             </div>
@@ -1036,7 +1036,7 @@ export default function App() {
                             </span>
                             <button 
                               onClick={() => removeFile(idx)}
-                              className="p-2 hover:bg-red-50 rounded-full text-gray-300 hover:text-red-500 transition-all"
+                              className="p-2 hover:bg-red-50 rounded-full text-slate-400 hover:text-red-500 transition-all"
                             >
                               <AlertCircle className="w-4 h-4 rotate-45" />
                             </button>
@@ -1047,7 +1047,7 @@ export default function App() {
                         {status === 'idle' && !uploadStatus[f.name] && (
                           <button 
                             onClick={() => removeFile(idx)}
-                            className="p-2 hover:bg-red-50 rounded-full text-gray-300 hover:text-red-500 transition-all"
+                            className="p-2 hover:bg-red-50 rounded-full text-slate-400 hover:text-red-500 transition-all"
                           >
                             <AlertCircle className="w-4 h-4 rotate-45" />
                           </button>
@@ -1068,7 +1068,7 @@ export default function App() {
             {/* Settings */}
             <div className="mt-12 space-y-10">
               <div>
-                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400 mb-4 ml-1">
+                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-slate-400 mb-4 ml-1">
                   工廠行業 (可選，使翻譯更精準)
                 </label>
                 <div className="relative">
@@ -1077,13 +1077,13 @@ export default function App() {
                     value={industry}
                     onChange={(e) => setIndustry(e.target.value)}
                     placeholder="例如：電子、紡織、汽車..."
-                    className="w-full px-5 py-4 rounded-[20px] border border-gray-100 bg-gray-50/30 focus:bg-white focus:border-emerald-400 focus:ring-4 focus:ring-emerald-400/5 outline-none transition-all text-sm placeholder:text-gray-300"
+                    className="w-full px-5 py-4 rounded-[20px] border border-slate-200 bg-white/50 focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10 outline-none transition-all text-sm text-slate-800 placeholder:text-slate-400"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400 mb-6 ml-1">
+                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-slate-400 mb-6 ml-1">
                   選擇目標語言 (可多選)
                 </label>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
@@ -1094,8 +1094,8 @@ export default function App() {
                       className={`
                         group relative flex items-center justify-between px-5 py-4 rounded-[20px] border transition-all duration-300
                         ${selectedLanguages.includes(lang.name) 
-                          ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_8px_20px_-6px_rgba(16,185,129,0.4)]' 
-                          : 'border-gray-100 bg-white hover:border-emerald-200 hover:bg-emerald-50/30 text-gray-600'}
+                          ? 'border-indigo-400 bg-indigo-50 text-indigo-700 shadow-[0_0_15px_rgba(99,102,241,0.15)]' 
+                          : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/50 text-slate-600'}
                       `}
                     >
                       <div className="flex items-center gap-3">
@@ -1103,7 +1103,7 @@ export default function App() {
                         <span className="text-xs font-medium tracking-wide">{lang.name}</span>
                       </div>
                       {selectedLanguages.includes(lang.name) && (
-                        <CheckCircle2 className="w-4 h-4 text-white" />
+                        <CheckCircle2 className="w-4 h-4 text-indigo-500" />
                       )}
                     </button>
                   ))}
@@ -1112,31 +1112,31 @@ export default function App() {
 
               {selectedLanguages.length > 1 && (
                 <div>
-                  <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-gray-400 mb-4 ml-1">
+                  <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-slate-400 mb-4 ml-1">
                     輸出檔案模式
                   </label>
                   <div className="flex gap-4">
-                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'combined' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-100 bg-white hover:border-emerald-200'}`}>
+                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'combined' ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white/50 hover:border-indigo-300'}`}>
                       <input 
                         type="radio" 
                         name="outputMode" 
                         value="combined" 
                         checked={outputMode === 'combined'} 
                         onChange={() => setOutputMode('combined')}
-                        className="w-4 h-4 text-emerald-600 border-gray-300 focus:ring-emerald-500"
+                        className="w-4 h-4 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
                       />
-                      <span className="text-sm font-medium text-gray-700">合併為單一檔案</span>
+                      <span className="text-sm font-medium text-slate-700">合併為單一檔案</span>
                     </label>
-                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'separate' ? 'border-emerald-500 bg-emerald-50/50' : 'border-gray-100 bg-white hover:border-emerald-200'}`}>
+                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'separate' ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white/50 hover:border-indigo-300'}`}>
                       <input 
                         type="radio" 
                         name="outputMode" 
                         value="separate" 
                         checked={outputMode === 'separate'} 
                         onChange={() => setOutputMode('separate')}
-                        className="w-4 h-4 text-emerald-600 border-gray-300 focus:ring-emerald-500"
+                        className="w-4 h-4 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
                       />
-                      <span className="text-sm font-medium text-gray-700">分開為多個檔案</span>
+                      <span className="text-sm font-medium text-slate-700">分開為多個檔案</span>
                     </label>
                   </div>
                 </div>
@@ -1146,7 +1146,7 @@ export default function App() {
                 {!user ? (
                   <button
                     onClick={handleLogin}
-                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-emerald-600 text-white hover:bg-emerald-700 hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]"
+                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-500 to-violet-600 text-white hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] hover:-translate-y-1 active:scale-[0.98]"
                   >
                     <LogIn className="w-5 h-5 shrink-0" />
                     <span className="truncate">請先登入以開始翻譯</span>
@@ -1165,7 +1165,7 @@ export default function App() {
                         setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。');
                       }
                     }}
-                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-amber-500 text-white hover:bg-amber-600 hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]"
+                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white hover:shadow-[0_0_20px_rgba(245,158,11,0.4)] hover:-translate-y-1 active:scale-[0.98]"
                   >
                     <AlertCircle className="w-5 h-5 shrink-0" />
                     <span className="truncate">請先驗證 Email 以開始翻譯</span>
@@ -1177,8 +1177,8 @@ export default function App() {
                     className={`
                       w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
                       ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading
-                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                        : 'bg-gray-900 text-white hover:bg-black hover:shadow-2xl hover:-translate-y-1 active:scale-[0.98]'}
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
+                        : 'bg-gradient-to-r from-indigo-500 to-violet-600 text-white hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] hover:-translate-y-1 active:scale-[0.98]'}
                     `}
                   >
                     {status === 'idle' && (
@@ -1213,7 +1213,7 @@ export default function App() {
                 {(status === 'processing' || status === 'translating' || status === 'generating') && (
                   <button
                     onClick={cancelTranslation}
-                    className="w-full h-[48px] rounded-[20px] font-medium text-red-500 hover:bg-red-50 transition-all text-sm border border-red-100"
+                    className="w-full h-[48px] rounded-[20px] font-medium text-red-500 hover:bg-red-50 transition-all text-sm border border-red-200"
                   >
                     取消翻譯
                   </button>
@@ -1235,7 +1235,7 @@ export default function App() {
               <motion.div 
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                className="mt-6 p-4 bg-red-50 rounded-xl flex items-start gap-3 text-red-600 text-sm"
+                className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-600 text-sm"
               >
                 <AlertCircle className="w-5 h-5 shrink-0" />
                 <p>{error}</p>

@@ -1,11 +1,27 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+TC:wght@300;400;500;700&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Noto+Sans+TC:wght@300;400;500;700&family=Space+Grotesk:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 @theme {
   --font-sans: "Inter", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
-  --font-serif: "Playfair Display", serif;
+  --font-tech: "Space Grotesk", "Noto Sans TC", ui-sans-serif, system-ui, sans-serif;
 }
 
 body {
-  @apply antialiased;
+  @apply antialiased bg-slate-50 text-slate-800;
+}
+
+/* Custom scrollbar for light glassmorphism */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.02);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
 }

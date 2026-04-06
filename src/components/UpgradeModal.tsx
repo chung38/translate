@@ -96,29 +96,29 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[110] flex items-center justify-center p-4"
+          className="fixed inset-0 bg-black/60 backdrop-blur-md z-[110] flex items-center justify-center p-4"
         >
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
-            className="bg-white w-full max-w-md rounded-[32px] shadow-2xl overflow-hidden"
+            className="bg-white/90 backdrop-blur-2xl w-full max-w-md rounded-[32px] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white overflow-hidden"
           >
             <div className="p-8 text-center">
-              <div className="w-20 h-20 bg-emerald-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                <Languages className="w-10 h-10 text-emerald-600" />
+              <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-6 border border-indigo-100">
+                <Languages className="w-10 h-10 text-indigo-600" />
               </div>
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">升級專業版</h2>
-              <p className="text-gray-500 mb-8">解鎖更多翻譯額度，享受流暢體驗</p>
+              <h2 className="text-2xl font-bold text-slate-800 mb-2">升級專業版</h2>
+              <p className="text-slate-500 mb-8">解鎖更多翻譯額度，享受流暢體驗</p>
               
-              <div className="bg-gray-50 rounded-2xl p-6 mb-8 border border-gray-100">
+              <div className="bg-slate-50 rounded-2xl p-6 mb-8 border border-slate-200">
                 <div className="flex items-center justify-between mb-4">
-                  <span className="text-gray-600 font-medium">方案內容</span>
-                  <span className="text-emerald-600 font-bold">20 份檔案額度</span>
+                  <span className="text-slate-600 font-medium">方案內容</span>
+                  <span className="text-indigo-600 font-bold">20 份檔案額度</span>
                 </div>
                 <div className="flex items-center justify-between">
-                  <span className="text-gray-600 font-medium">價格</span>
-                  <span className="text-2xl font-black text-gray-900">$200 <span className="text-sm font-normal text-gray-400">TWD</span></span>
+                  <span className="text-slate-600 font-medium">價格</span>
+                  <span className="text-2xl font-black text-slate-800">$200 <span className="text-sm font-normal text-slate-400">TWD</span></span>
                 </div>
               </div>
 
@@ -126,7 +126,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 {isPaying && (
                   <button 
                     onClick={checkPaymentStatusManually}
-                    className="w-full py-4 bg-emerald-50 text-emerald-600 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-100 transition-all"
+                    className="w-full py-4 bg-indigo-50 text-indigo-700 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-100 transition-all border border-indigo-200"
                   >
                     <RefreshCw className="w-5 h-5" />
                     手動檢查支付狀態
@@ -135,7 +135,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 <button 
                   onClick={handleNewebPay}
                   disabled={isPaying}
-                  className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 transition-all disabled:opacity-50"
+                  className="w-full py-4 bg-gradient-to-r from-indigo-500 to-violet-600 text-white rounded-2xl font-bold flex items-center justify-center gap-2 hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] transition-all disabled:opacity-50"
                 >
                   {isPaying ? (
                     <Loader2 className="w-5 h-5 animate-spin" />
@@ -147,7 +147,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 </button>
                 <button 
                   onClick={onClose}
-                  className="w-full py-4 text-gray-400 font-medium hover:text-gray-600 transition-colors"
+                  className="w-full py-4 text-slate-500 font-medium hover:text-slate-800 transition-colors"
                 >
                   稍後再說
                 </button>
@@ -159,3 +159,4 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
     </AnimatePresence>
   );
 };
+
