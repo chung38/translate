@@ -108,13 +108,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
 
   const deleteUser = async (userId: string) => {
     try {
-      const userRef = doc(db, 'users', userId);
-      await setDoc(userRef, { isPendingDeletion: true }, { merge: true });
+      if (!user) return;
+      const idToken = await user.getIdToken();
+      
+      const response = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${idToken}`
+        }
+      });
+      
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.error || 'Failed to delete user');
+      }
+      
       setAllUsers(prev => prev.filter(u => u.uid !== userId));
       setDeletingUserId(null);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Delete user error:", error);
-      handleFirestoreError(error, OperationType.UPDATE, `users/${userId}`, user);
+      alert(`刪除使用者失敗: ${error.message}`);
     }
   };
 

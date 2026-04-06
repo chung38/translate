@@ -17,6 +17,7 @@ import {
   runTransaction, 
   serverTimestamp 
 } from 'firebase/firestore';
+import * as admin from 'firebase-admin';
 
 console.log("SERVER STARTING UP...");
 
@@ -27,6 +28,16 @@ console.log("Firebase Config Loaded:", { ...firebaseConfig, apiKey: "REDACTED" }
 // Initialize Firebase Client SDK on server
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
+
+// Initialize Firebase Admin
+try {
+  admin.initializeApp({
+    projectId: firebaseConfig.projectId,
+  });
+  console.log("Firebase Admin initialized");
+} catch (error) {
+  console.error("Firebase Admin initialization error:", error);
+}
 
 // Test Firestore connection on startup
 async function testFirestore() {
@@ -96,6 +107,64 @@ async function startServer() {
   // concurrency: 10 means max 10 requests at the same time
   // intervalCap: 30, interval: 1000 means max 30 requests per second
   const translationQueue = new PQueue({ concurrency: 10, intervalCap: 30, interval: 1000 });
+
+  // Admin API: Delete user immediately
+  app.delete('/api/admin/users/:uid', async (req, res) => {
+    try {
+      const { uid } = req.params;
+      const authHeader = req.headers.authorization;
+      
+      if (!authHeader || !authHeader.startsWith('Bearer ')) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      
+      const idToken = authHeader.split('Bearer ')[1];
+      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      
+      // Check if the requester is an admin
+      const adminDoc = await admin.firestore().collection('users').doc(decodedToken.uid).get();
+      const isAdmin = adminDoc.exists && adminDoc.data()?.role === 'admin';
+      const isDefaultAdmin = decodedToken.email === 'chen.chung.shih@gmail.com';
+      
+      if (!isAdmin && !isDefaultAdmin) {
+        return res.status(403).json({ error: 'Forbidden: Admin access required' });
+      }
+
+      console.log(`Admin ${decodedToken.email} is deleting user ${uid}`);
+
+      // Delete from Firebase Auth
+      try {
+        await admin.auth().deleteUser(uid);
+        console.log(`Successfully deleted user ${uid} from Firebase Auth`);
+      } catch (authError: any) {
+        if (authError.code === 'auth/user-not-found') {
+          console.log(`User ${uid} not found in Firebase Auth, proceeding to delete from Firestore`);
+        } else {
+          throw authError;
+        }
+      }
+
+      // Delete from Firestore
+      const userRef = admin.firestore().collection('users').doc(uid);
+      
+      // Delete history subcollection
+      const historySnapshot = await userRef.collection('history').get();
+      const batch = admin.firestore().batch();
+      historySnapshot.docs.forEach((doc) => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+      
+      // Delete user document
+      await userRef.delete();
+      console.log(`Successfully deleted user ${uid} and their history from Firestore`);
+
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error('Error deleting user:', error);
+      res.status(500).json({ error: error.message || 'Failed to delete user' });
+    }
+  });
 
   // DeepSeek Proxy API
   app.post("/api/translate", apiLimiter, async (req, res) => {
