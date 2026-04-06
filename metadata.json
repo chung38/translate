@@ -1,5 +1,5 @@
 {
-  "name": "Word 文書雙語翻譯器",
+  "name": "全能文件多語翻譯器",
   "description": "上傳 Word 檔案，自動將每一句中文翻譯成指定語言並插入下方，完成後可直接下載雙語對照文件。",
   "requestFramePermissions": []
 }
