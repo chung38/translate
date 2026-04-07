@@ -125,9 +125,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
       
       setAllUsers(prev => prev.filter(u => u.uid !== userId));
       setDeletingUserId(null);
+      setAddUserMessage({ type: 'success', text: '用戶已成功刪除！' });
+      setTimeout(() => setAddUserMessage(null), 3000);
     } catch (error: any) {
       console.error("Delete user error:", error);
-      alert(`刪除使用者失敗: ${error.message}`);
+      setAddUserMessage({ type: 'error', text: `刪除使用者失敗: ${error.message} (若在 Render 等外部平台部署，請確保已設定 GOOGLE_APPLICATION_CREDENTIALS 環境變數)` });
+      setDeletingUserId(null);
     }
   };
 
@@ -268,7 +271,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-black/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
         >
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}

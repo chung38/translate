@@ -498,7 +498,7 @@ export default function App() {
     }
   }, []);
 
-  const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB
+  const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
   const MAX_FILE_COUNT = 10;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -540,7 +540,7 @@ export default function App() {
         if (hasLegacy) {
           setError('系統不支援舊版 .doc, .xls, .ppt 格式，請先使用 Office 另存為 .docx, .xlsx, .pptx 後再上傳。');
         } else if (hasOversized) {
-          setError('部分檔案超過 15MB 限制，已跳過');
+          setError('部分檔案超過 100MB 限制，已跳過');
         } else if (hasInvalid) {
           setError('部分檔案格式不支援，已跳過');
         } else {
@@ -569,7 +569,7 @@ export default function App() {
       } else if (hasLegacy) {
         setError('系統不支援舊版 .doc, .xls, .ppt 格式，請先使用 Office 另存為 .docx, .xlsx, .pptx 後再上傳。');
       } else if (hasOversized) {
-        setError('檔案大小不能超過 15MB');
+        setError('檔案大小不能超過 100MB');
       } else if (hasInvalid) {
         setError('請上傳有效的 .docx, .xlsx, .pdf 或 .pptx 檔案');
       }
@@ -731,7 +731,7 @@ export default function App() {
     <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative overflow-hidden">
         {/* Auth Bar */}
-        <div className="absolute top-4 right-4 z-50 flex items-center gap-3">
+        <div className="relative z-50 flex justify-end p-4 sm:p-6 w-full">
           {isAuthReady && (
             user ? (
               <div className="flex items-center gap-2">
@@ -831,6 +831,31 @@ export default function App() {
           }}
         />
 
+        {/* History Panel Overlay */}
+        <HistoryPanel 
+          isOpen={showHistory} 
+          onClose={() => setShowHistory(false)} 
+          dbHistory={dbHistory} 
+        />
+
+        {/* Upgrade Modal */}
+        <UpgradeModal 
+          isOpen={showUpgradeModal} 
+          onClose={() => setShowUpgradeModal(false)} 
+          user={user} 
+          setStatus={setStatus} 
+          setStatusMessage={setStatusMessage} 
+          setError={setError} 
+        />
+
+        {/* Admin Panel */}
+        <AdminPanel 
+          isOpen={showAdminPanel} 
+          onClose={() => setShowAdminPanel(false)} 
+          user={user}
+          userProfile={userProfile}
+        />
+
         <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 relative z-10">
           {/* Header */}
           <header className="mb-8 md:mb-12 text-center">
@@ -860,31 +885,6 @@ export default function App() {
               </motion.p>
             </div>
           </header>
-
-          {/* History Panel Overlay */}
-          <HistoryPanel 
-            isOpen={showHistory} 
-            onClose={() => setShowHistory(false)} 
-            dbHistory={dbHistory} 
-          />
-
-          {/* Upgrade Modal */}
-          <UpgradeModal 
-            isOpen={showUpgradeModal} 
-            onClose={() => setShowUpgradeModal(false)} 
-            user={user} 
-            setStatus={setStatus} 
-            setStatusMessage={setStatusMessage} 
-            setError={setError} 
-          />
-
-          {/* Admin Panel Overlay */}
-          <AdminPanel 
-            isOpen={showAdminPanel} 
-            onClose={() => setShowAdminPanel(false)} 
-            userProfile={userProfile} 
-            user={user} 
-          />
 
         {/* Instructions */}
         <div className="mb-16 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
