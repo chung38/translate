@@ -86,7 +86,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
         return historySnap.docs.map(hDoc => {
           const data = hDoc.data();
           return {
-            id: hDoc.id,
+            id: `${userDoc.id}-${hDoc.id}`,
             userEmail: userDoc.data().email,
             userDisplayName: userDoc.data().displayName,
             fileName: data.fileName,
@@ -111,16 +111,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
       if (!user) return;
       const idToken = await user.getIdToken();
       
-      const response = await fetch(`/api/admin/users/${userId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${idToken}`
+      let backendSuccess = false;
+      try {
+        const response = await fetch(`/api/admin/users/${userId}`, {
+          method: 'DELETE',
+          headers: {
+            'Authorization': `Bearer ${idToken}`
+          }
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          if (data.firestoreDeleted) {
+            backendSuccess = true;
+          }
         }
-      });
-      
-      if (!response.ok) {
-        const data = await response.json();
-        throw new Error(data.error || 'Failed to delete user');
+      } catch (e) {
+        console.warn("Backend delete failed, falling back to client SDK", e);
+      }
+
+      if (!backendSuccess) {
+        // Fallback: Soft delete from Firestore using client SDK
+        const userRef = doc(db, 'users', userId);
+        await setDoc(userRef, { isPendingDeletion: true }, { merge: true });
       }
       
       setAllUsers(prev => prev.filter(u => u.uid !== userId));
@@ -129,7 +142,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
       setTimeout(() => setAddUserMessage(null), 3000);
     } catch (error: any) {
       console.error("Delete user error:", error);
-      setAddUserMessage({ type: 'error', text: `刪除使用者失敗: ${error.message} (若在 Render 等外部平台部署，請確保已設定 GOOGLE_APPLICATION_CREDENTIALS 環境變數)` });
+      setAddUserMessage({ type: 'error', text: `刪除使用者失敗: ${error.message}` });
       setDeletingUserId(null);
     }
   };
@@ -365,11 +378,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                     確認新增
                   </button>
                 </div>
-                {addUserMessage && (
-                  <div className={`p-3 rounded-xl text-sm font-medium ${addUserMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
-                    {addUserMessage.text}
-                  </div>
-                )}
+              </div>
+            )}
+
+            {addUserMessage && (
+              <div className={`mx-6 mt-6 p-3 rounded-xl text-sm font-medium ${addUserMessage.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-red-50 text-red-700 border border-red-200'}`}>
+                {addUserMessage.text}
               </div>
             )}
 

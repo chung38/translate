@@ -542,28 +542,60 @@ export const processPdf = async (
     
     let pageText = '';
     
-    // Always use OCR for PDFs to ensure accurate text extraction and avoid garbage text from broken encodings
     updateProgress(10 + ((i - 0.5) / totalPages) * 10, 'processing');
     
-    const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
-    const canvas = document.createElement('canvas');
-    const context = canvas.getContext('2d');
-    if (context) {
-      canvas.height = viewport.height;
-      canvas.width = viewport.width;
-      
-      await page.render({ canvasContext: context, viewport: viewport }).promise;
-      
-      if (!tesseractWorker) {
-        const { createWorker } = await import('tesseract.js');
-        tesseractWorker = await createWorker('chi_tra+eng'); // Load Traditional Chinese and English
-        await tesseractWorker.setParameters({
-          tessedit_pageseg_mode: '11', // Sparse text. Find as much text as possible in no particular order. Better for tables with empty cells.
-        });
+    // Try native text extraction first
+    const textContent = await page.getTextContent();
+    const textItems = textContent.items as any[];
+    
+    let extractedText = '';
+    let lastY = null;
+    
+    // Sort items by Y (descending) and X (ascending) to handle basic layout
+    textItems.sort((a, b) => {
+      const yDiff = b.transform[5] - a.transform[5];
+      if (Math.abs(yDiff) > 5) return yDiff;
+      return a.transform[4] - b.transform[4];
+    });
+
+    for (const item of textItems) {
+      if (!item.str) continue;
+      if (lastY !== null && Math.abs(lastY - item.transform[5]) > 5) {
+        extractedText += '\n';
+      } else if (lastY !== null) {
+        extractedText += ' ';
       }
-      
-      const { data: { text } } = await tesseractWorker.recognize(canvas);
-      pageText = text;
+      extractedText += item.str;
+      lastY = item.transform[5];
+    }
+    
+    extractedText = extractedText.replace(/ {2,}/g, ' ').trim();
+
+    // If native extraction yields meaningful text, use it. Otherwise, fallback to OCR.
+    if (extractedText.length > 20) {
+      pageText = extractedText;
+    } else {
+      console.log(`Page ${i} has little/no text, falling back to OCR...`);
+      const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (context) {
+        canvas.height = viewport.height;
+        canvas.width = viewport.width;
+        
+        await page.render({ canvasContext: context, viewport: viewport, canvas: canvas }).promise;
+        
+        if (!tesseractWorker) {
+          const { createWorker } = await import('tesseract.js');
+          tesseractWorker = await createWorker('chi_tra+eng'); // Load Traditional Chinese and English
+          await tesseractWorker.setParameters({
+            tessedit_pageseg_mode: '11', // Sparse text. Find as much text as possible in no particular order. Better for tables with empty cells.
+          });
+        }
+        
+        const { data: { text } } = await tesseractWorker.recognize(canvas);
+        pageText = text;
+      }
     }
     
     fullText += pageText + '\n\n';
@@ -679,7 +711,18 @@ export const processPdf = async (
       const pdfWidth = doc.internal.pageSize.getWidth();
       
       for (let i = 0; i < pages.length; i++) {
-        const canvas = await html2canvas(pages[i], { scale: 2, useCORS: true, logging: false });
+        const canvas = await html2canvas(pages[i], { 
+          scale: 2, 
+          useCORS: true, 
+          logging: false,
+          onclone: (clonedDoc) => {
+            // Remove all stylesheets in the cloned document to prevent html2canvas 
+            // from parsing unsupported CSS functions like "oklch" from Tailwind v4.
+            // Since our PDF pages use inline styles exclusively, this won't affect the output.
+            const styles = clonedDoc.querySelectorAll('style, link[rel="stylesheet"]');
+            styles.forEach(s => s.remove());
+          }
+        });
         const imgData = canvas.toDataURL('image/jpeg', 0.95);
         
         if (i > 0) {

@@ -30,7 +30,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { TranslationProgress } from './components/TranslationProgress';
-import { TranslationHistory } from './components/TranslationHistory';
 import { HistoryPanel } from './components/HistoryPanel';
 import { AuthModal } from './components/AuthModal';
 import { AdminPanel } from './components/AdminPanel';
@@ -102,7 +101,6 @@ export default function App() {
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>(['英文']);
   const [outputMode, setOutputMode] = useState<'combined' | 'separate'>('combined');
   const [industry, setIndustry] = useState('');
-  const [history, setHistory] = useState<{ name: string, date: string, blob: Blob, type: string }[]>([]);
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [uploadStatus, setUploadStatus] = useState<Record<string, 'uploading' | 'success' | 'error'>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -122,7 +120,7 @@ export default function App() {
     saveToFirestore,
     translateBatch,
     cancelTranslation
-  } = useTranslation(user, setDbHistory);
+  } = useTranslation(user);
 
   const [reloadCounter, setReloadCounter] = useState(0);
 
@@ -691,13 +689,6 @@ export default function App() {
           if (results && results.length > 0) {
             for (const result of results) {
               saveAs(result.blob, result.name);
-              const newEntry = { 
-                name: result.name, 
-                date: new Date().toLocaleTimeString(), 
-                blob: result.blob, 
-                type: extension || 'unknown' 
-              };
-              setHistory(prev => [newEntry, ...prev].slice(0, 3));
               await saveToFirestore(currentFile.name, result.name, extension || 'unknown', selectedLanguages, industry);
             }
           }
@@ -731,7 +722,7 @@ export default function App() {
     <ErrorBoundary>
       <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative overflow-hidden">
         {/* Auth Bar */}
-        <div className="relative z-50 flex justify-end p-4 sm:p-6 w-full">
+        <div className="relative md:absolute z-50 flex justify-end md:justify-start p-4 sm:p-6 md:p-8 w-full md:w-auto top-0 left-0">
           {isAuthReady && (
             user ? (
               <div className="flex items-center gap-2">
@@ -812,9 +803,9 @@ export default function App() {
         </div>
 
         {/* Background Accents */}
-        <div className="absolute top-0 left-0 w-full h-[500px] bg-gradient-to-b from-indigo-50 to-transparent -z-10" />
-        <div className="absolute top-[-10%] right-[-10%] w-[40%] h-[40%] bg-indigo-300/30 blur-[120px] rounded-full -z-10 pointer-events-none" />
-        <div className="absolute bottom-[-10%] left-[-10%] w-[40%] h-[40%] bg-fuchsia-300/30 blur-[120px] rounded-full -z-10 pointer-events-none" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-100/40 via-slate-50 to-slate-50 -z-10" />
+        <div className="absolute top-[-10%] right-[-5%] w-[500px] h-[500px] bg-indigo-400/10 blur-[100px] rounded-full -z-10 pointer-events-none" />
+        <div className="absolute bottom-[-10%] left-[-5%] w-[500px] h-[500px] bg-violet-400/10 blur-[100px] rounded-full -z-10 pointer-events-none" />
 
         {/* Deleted Account Modal */}
         <DeletedModal 
@@ -856,7 +847,7 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 relative z-10">
+        <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 md:pt-24 relative z-10">
           {/* Header */}
           <header className="mb-8 md:mb-12 text-center">
             <div className="space-y-2">
@@ -864,63 +855,42 @@ export default function App() {
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.1, duration: 0.5 }}
-                className="text-2xl md:text-4xl font-bold tracking-tight text-slate-900 flex items-center justify-center gap-4"
+                className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900 flex items-center justify-center gap-4"
               >
                 <div className="relative flex-shrink-0">
                   <div className="absolute inset-0 bg-indigo-200 blur-xl rounded-full" />
-                  <div className="relative w-10 h-10 md:w-12 md:h-12 bg-gradient-to-tr from-indigo-500 to-violet-600 rounded-xl shadow-[0_8px_20px_-6px_rgba(79,70,229,0.5)] flex items-center justify-center transform -rotate-6 hover:rotate-0 transition-all duration-300">
-                    <Languages className="w-6 h-6 md:w-7 md:h-7 text-white" />
+                  <div className="relative w-12 h-12 md:w-14 md:h-14 bg-gradient-to-tr from-indigo-600 to-violet-600 rounded-2xl shadow-[0_8px_20px_-6px_rgba(79,70,229,0.5)] flex items-center justify-center transform -rotate-3 hover:rotate-0 transition-all duration-300">
+                    <Languages className="w-7 h-7 md:w-8 md:h-8 text-white" />
                   </div>
                 </div>
-                <span>全能文件<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">多語翻譯器</span></span>
+                <span className="font-tech">全能文件<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">多語翻譯器</span></span>
               </motion.h1>
 
               <motion.p
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.2, duration: 0.5 }}
-                className="text-indigo-600/80 text-xs md:text-sm font-medium tracking-wide"
+                className="text-indigo-600/80 text-sm md:text-base font-medium tracking-wide uppercase"
               >
                 Professional AI-powered document translation
               </motion.p>
             </div>
           </header>
 
-        {/* Instructions */}
-        <div className="mb-16 grid grid-cols-1 md:grid-cols-3 gap-6 md:gap-8">
-          {[
-            { title: "上傳文件", desc: "支援 Word, Excel 格式，自動提取內容。" },
-            { title: "智能翻譯", desc: "使用 AI 進行語境感知翻譯，確保翻譯品質。" },
-            { title: "多語對照", desc: "翻譯結果以對照形式呈現，並生成新文件。" }
-          ].map((item, idx) => (
-            <motion.div 
-              key={idx} 
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.3 + idx * 0.1 }}
-              className="relative p-6 rounded-2xl bg-white/70 backdrop-blur-md border border-white shadow-[0_8px_30px_rgb(0,0,0,0.04)] hover:bg-white transition-all group"
-            >
-              <div className="text-3xl font-tech italic text-indigo-500/20 mb-3 group-hover:text-indigo-400/40 transition-colors">0{idx + 1}</div>
-              <h3 className="font-semibold text-slate-800 mb-2">{item.title}</h3>
-              <p className="text-xs text-slate-500 leading-relaxed font-light">{item.desc}</p>
-            </motion.div>
-          ))}
-        </div>
-
         {/* Main Card */}
         <motion.div 
           initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6 }}
-          className="bg-white/70 backdrop-blur-xl rounded-[40px] shadow-[0_8px_32px_0_rgba(0,0,0,0.05)] border border-white overflow-hidden"
+          transition={{ delay: 0.3 }}
+          className="bg-white/90 backdrop-blur-2xl rounded-3xl shadow-xl shadow-slate-200/50 border border-white overflow-hidden"
         >
-          <div className="p-6 md:p-8">
+          <div className="p-6 md:p-10">
             {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
               className={`
-                relative group cursor-pointer border-2 border-dashed rounded-[32px] p-8 md:p-8 transition-all duration-500
-                ${files.length > 0 ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-400 hover:bg-white/50'}
+                relative group cursor-pointer border-2 border-dashed rounded-2xl p-10 md:p-12 transition-all duration-300
+                ${files.length > 0 ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-400 hover:bg-slate-50/50'}
               `}
             >
               <input 
@@ -1066,10 +1036,10 @@ export default function App() {
             </AnimatePresence>
 
             {/* Settings */}
-            <div className="mt-12 space-y-10">
+            <div className="mt-10 space-y-8">
               <div>
-                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-slate-400 mb-4 ml-1">
-                  工廠行業 (可選，使翻譯更精準)
+                <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-3 ml-1">
+                  工廠行業 <span className="text-slate-400 font-normal normal-case tracking-normal">(可選，使翻譯更精準)</span>
                 </label>
                 <div className="relative">
                   <input
@@ -1077,25 +1047,25 @@ export default function App() {
                     value={industry}
                     onChange={(e) => setIndustry(e.target.value)}
                     placeholder="例如：電子、紡織、汽車..."
-                    className="w-full px-5 py-4 rounded-[20px] border border-slate-200 bg-white/50 focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10 outline-none transition-all text-sm text-slate-800 placeholder:text-slate-400"
+                    className="w-full px-5 py-3.5 rounded-xl border border-slate-200 bg-white/50 focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10 outline-none transition-all text-sm text-slate-800 placeholder:text-slate-400"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-slate-400 mb-6 ml-1">
-                  選擇目標語言 (可多選)
+                <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-4 ml-1">
+                  選擇目標語言 <span className="text-slate-400 font-normal normal-case tracking-normal">(可多選)</span>
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   {AVAILABLE_LANGUAGES.map((lang) => (
                     <button
                       key={lang.id}
                       onClick={() => toggleLanguage(lang.name)}
                       className={`
-                        group relative flex items-center justify-between px-5 py-4 rounded-[20px] border transition-all duration-300
+                        group relative flex items-center justify-between px-4 py-3.5 rounded-xl border transition-all duration-300
                         ${selectedLanguages.includes(lang.name) 
-                          ? 'border-indigo-400 bg-indigo-50 text-indigo-700 shadow-[0_0_15px_rgba(99,102,241,0.15)]' 
-                          : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/50 text-slate-600'}
+                          ? 'border-indigo-400 bg-indigo-50/80 text-indigo-700 shadow-sm' 
+                          : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30 text-slate-600'}
                       `}
                     >
                       <div className="flex items-center gap-3">
@@ -1112,11 +1082,11 @@ export default function App() {
 
               {selectedLanguages.length > 1 && (
                 <div>
-                  <label className="block text-[10px] uppercase tracking-[0.2em] font-bold text-slate-400 mb-4 ml-1">
+                  <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-4 ml-1">
                     輸出檔案模式
                   </label>
-                  <div className="flex gap-4">
-                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'combined' ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white/50 hover:border-indigo-300'}`}>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <label className={`flex items-center gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'combined' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
                       <input 
                         type="radio" 
                         name="outputMode" 
@@ -1127,7 +1097,7 @@ export default function App() {
                       />
                       <span className="text-sm font-medium text-slate-700">合併為單一檔案</span>
                     </label>
-                    <label className={`flex items-center gap-3 px-5 py-4 rounded-[20px] border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'separate' ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white/50 hover:border-indigo-300'}`}>
+                    <label className={`flex items-center gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'separate' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
                       <input 
                         type="radio" 
                         name="outputMode" 
@@ -1142,11 +1112,11 @@ export default function App() {
                 </div>
               )}
               
-              <div className="flex flex-col gap-3 pt-4">
+              <div className="flex flex-col gap-3 pt-6">
                 {!user ? (
                   <button
                     onClick={handleLogin}
-                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-500 to-violet-600 text-white hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] hover:-translate-y-1 active:scale-[0.98]"
+                    className="w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:shadow-[0_8px_20px_rgba(99,102,241,0.3)] hover:-translate-y-0.5 active:scale-[0.98]"
                   >
                     <LogIn className="w-5 h-5 shrink-0" />
                     <span className="truncate">請先登入以開始翻譯</span>
@@ -1165,7 +1135,7 @@ export default function App() {
                         setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。');
                       }
                     }}
-                    className="w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white hover:shadow-[0_0_20px_rgba(245,158,11,0.4)] hover:-translate-y-1 active:scale-[0.98]"
+                    className="w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white hover:shadow-[0_8px_20px_rgba(245,158,11,0.3)] hover:-translate-y-0.5 active:scale-[0.98]"
                   >
                     <AlertCircle className="w-5 h-5 shrink-0" />
                     <span className="truncate">請先驗證 Email 以開始翻譯</span>
@@ -1175,10 +1145,10 @@ export default function App() {
                     disabled={files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading}
                     onClick={processFiles}
                     className={`
-                      w-full h-[56px] md:h-[64px] rounded-[24px] font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
+                      w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
                       ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading
                         ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
-                        : 'bg-gradient-to-r from-indigo-500 to-violet-600 text-white hover:shadow-[0_0_20px_rgba(99,102,241,0.4)] hover:-translate-y-1 active:scale-[0.98]'}
+                        : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:shadow-[0_8px_20px_rgba(99,102,241,0.3)] hover:-translate-y-0.5 active:scale-[0.98]'}
                     `}
                   >
                     {status === 'idle' && (
@@ -1243,9 +1213,6 @@ export default function App() {
             )}
           </div>
         </motion.div>
-
-        {/* Translation History */}
-        <TranslationHistory history={history} />
       </div>
     </div>
     </ErrorBoundary>

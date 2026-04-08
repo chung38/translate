@@ -11,8 +11,7 @@ const DEEPSEEK_PROXY_URL = '/api/translate';
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export const useTranslation = (
-  user: User | null,
-  setDbHistory: React.Dispatch<React.SetStateAction<any[]>>
+  user: User | null
 ) => {
   const [status, setStatus] = useState<TranslationStatus>('idle');
   const [statusMessage, setStatusMessage] = useState('');
@@ -36,7 +35,6 @@ export const useTranslation = (
         status: 'completed'
       };
       await setDoc(historyRef, newRecord);
-      setDbHistory(prev => [{ id: historyRef.id, ...newRecord }, ...prev]);
     } catch (err) {
       console.error("Error saving to Firestore:", err);
     }

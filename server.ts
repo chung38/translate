@@ -32,10 +32,13 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
 // Initialize Firebase Admin
+let adminApp;
+let adminDb: any;
 try {
-  initializeAdminApp({
+  adminApp = initializeAdminApp({
     projectId: firebaseConfig.projectId,
   });
+  adminDb = getAdminFirestore(adminApp, firebaseConfig.firestoreDatabaseId);
   console.log("Firebase Admin initialized");
 } catch (error) {
   console.error("Firebase Admin initialization error:", error);
@@ -124,9 +127,18 @@ async function startServer() {
       const decodedToken = await getAdminAuth().verifyIdToken(idToken);
       
       // Check if the requester is an admin
-      const adminDoc = await getAdminFirestore().collection('users').doc(decodedToken.uid).get();
-      const isAdmin = adminDoc.exists && adminDoc.data()?.role === 'admin';
+      let isAdmin = false;
       const isDefaultAdmin = decodedToken.email === 'chen.chung.shih@gmail.com';
+      
+      try {
+        const adminDoc = await adminDb.collection('users').doc(decodedToken.uid).get();
+        isAdmin = adminDoc.exists && adminDoc.data()?.role === 'admin';
+      } catch (adminCheckError: any) {
+        if (!adminCheckError.message?.includes('PERMISSION_DENIED')) {
+          console.warn(`Failed to check admin status in Firestore: ${adminCheckError.message}`);
+        }
+        // If we can't check Firestore (e.g. PERMISSION_DENIED), we rely solely on isDefaultAdmin
+      }
       
       if (!isAdmin && !isDefaultAdmin) {
         return res.status(403).json({ error: 'Forbidden: Admin access required' });
@@ -135,33 +147,59 @@ async function startServer() {
       console.log(`Admin ${decodedToken.email} is deleting user ${uid}`);
 
       // Delete from Firebase Auth
+      let authDeleted = false;
       try {
         await getAdminAuth().deleteUser(uid);
         console.log(`Successfully deleted user ${uid} from Firebase Auth`);
+        authDeleted = true;
       } catch (authError: any) {
         if (authError.code === 'auth/user-not-found') {
           console.log(`User ${uid} not found in Firebase Auth, proceeding to delete from Firestore`);
+          authDeleted = true;
+        } else if (authError.message?.includes('Identity Toolkit API has not been used')) {
+          console.log(`[Preview Environment] Skipping backend Auth deletion due to missing API permissions. Proceeding with soft delete.`);
         } else {
-          throw authError;
+          console.warn(`Failed to delete user from Firebase Auth: ${authError.message}. Proceeding with soft delete.`);
         }
       }
 
+      let firestoreDeleted = false;
       // Delete from Firestore
-      const userRef = getAdminFirestore().collection('users').doc(uid);
-      
-      // Delete history subcollection
-      const historySnapshot = await userRef.collection('history').get();
-      const batch = getAdminFirestore().batch();
-      historySnapshot.docs.forEach((doc) => {
-        batch.delete(doc.ref);
-      });
-      await batch.commit();
-      
-      // Delete user document
-      await userRef.delete();
-      console.log(`Successfully deleted user ${uid} and their history from Firestore`);
+      try {
+        const userRef = adminDb.collection('users').doc(uid);
+        
+        if (authDeleted) {
+          // Hard delete history subcollection
+          const historySnapshot = await userRef.collection('history').get();
+          if (!historySnapshot.empty) {
+            const batch = adminDb.batch();
+            historySnapshot.docs.forEach((doc: any) => {
+              batch.delete(doc.ref);
+            });
+            await batch.commit();
+          }
+          
+          // Hard delete user document
+          await userRef.delete();
+          console.log(`Successfully deleted user ${uid} and their history from Firestore`);
+        } else {
+          // Soft delete user document so client SDK can delete Auth on next login
+          await userRef.set({ isPendingDeletion: true }, { merge: true });
+          console.log(`Soft deleted user ${uid} in Firestore`);
+        }
+        firestoreDeleted = true;
+      } catch (firestoreError: any) {
+        if (firestoreError.code === 5 || firestoreError.message?.includes('NOT_FOUND')) {
+          console.log(`User ${uid} or history not found in Firestore, proceeding`);
+          firestoreDeleted = true;
+        } else if (firestoreError.code === 7 || firestoreError.message?.includes('PERMISSION_DENIED')) {
+          console.log(`[Preview Environment] Skipping backend Firestore deletion due to missing permissions. Proceeding with client SDK fallback.`);
+        } else {
+          throw firestoreError;
+        }
+      }
 
-      res.json({ success: true });
+      res.json({ success: true, firestoreDeleted });
     } catch (error: any) {
       console.error('Error deleting user:', error);
       res.status(500).json({ error: error.message || 'Failed to delete user' });
