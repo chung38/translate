@@ -67,7 +67,7 @@ export const processDocx = async (
                 
                 if (runText) {
                   runs.push({ rPr, text: runText });
-                  taggedText += `<f id="${runIndex}">${runText}</f>`;
+                  taggedText += runText;
                   runIndex++;
                 }
               }
@@ -144,57 +144,7 @@ export const processDocx = async (
               }
               const defaultRPr = longestRun.rPr;
 
-              const fRegex = /<f id="(\d+)">([\s\S]*?)<\/f>/g;
-              let match;
-              let lastIndex = 0;
-              let hasTags = false;
-              
-              while ((match = fRegex.exec(translatedText)) !== null) {
-                hasTags = true;
-                const id = parseInt(match[1], 10);
-                const text = match[2];
-                const rPr = currentItem.runs[id]?.rPr || defaultRPr;
-                
-                if (match.index > lastIndex) {
-                   const betweenText = translatedText.substring(lastIndex, match.index);
-                   if (betweenText) {
-                     appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(betweenText)}</w:t></w:r>`;
-                   }
-                } else if (lastIndex > 0 && match.index === lastIndex) {
-                   // If tags are adjacent, add a space for languages that need it (like English, Indonesian, Vietnamese, Thai)
-                   // This handles cases where original Chinese text didn't need spaces between runs, but translated text does.
-                   const prevRunText = currentItem.runs[id - 1]?.text || '';
-                   const currentRunText = currentItem.runs[id]?.text || '';
-                   // Simple heuristic: if it's not Chinese/Japanese/Korean, it probably needs a space
-                   const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
-                   if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
-                      appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve"> </w:t></w:r>`;
-                   }
-                }
-                
-                if (text) {
-                  let finalText = text;
-                  const originalText = currentItem.runs[id]?.text || '';
-                  if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
-                    finalText += ' ';
-                  }
-                  if (originalText.startsWith(' ') && !finalText.startsWith(' ')) {
-                    finalText = ' ' + finalText;
-                  }
-                  appendedRuns += `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(finalText)}</w:t></w:r>`;
-                }
-                lastIndex = fRegex.lastIndex;
-              }
-              
-              if (!hasTags) {
-                const cleanText = translatedText.replace(/<[^>]+>/g, '');
-                appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
-              } else if (lastIndex < translatedText.length) {
-                const remainingText = translatedText.substring(lastIndex);
-                if (remainingText) {
-                  appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(remainingText)}</w:t></w:r>`;
-                }
-              }
+              appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(translatedText)}</w:t></w:r>`;
             } else {
               appendedRuns += `<w:r><w:t xml:space="preserve">${escapeXml(translatedText)}</w:t></w:r>`;
             }
@@ -249,14 +199,14 @@ export const processExcel = async (
             textsToTranslate.push({ row: rowNumber, col: colNumber, text: cell.value, type: 'string' });
           } else if (typeof cell.value === 'object' && (cell.value as any).richText) {
             const richTextArr = (cell.value as any).richText;
-            let taggedText = '';
-            richTextArr.forEach((rt: any, i: number) => {
+            let plainText = '';
+            richTextArr.forEach((rt: any) => {
               if (rt.text) {
-                taggedText += `<f id="${i}">${rt.text}</f>`;
+                plainText += rt.text;
               }
             });
-            if (taggedText.trim().length > 0) {
-              textsToTranslate.push({ row: rowNumber, col: colNumber, text: taggedText, type: 'richText', richText: richTextArr });
+            if (plainText.trim().length > 0) {
+              textsToTranslate.push({ row: rowNumber, col: colNumber, text: plainText, type: 'richText', richText: richTextArr });
             }
           }
         }
@@ -328,52 +278,7 @@ export const processExcel = async (
           }
           const defaultFont = longestRun.font;
 
-          const fRegex = /<f id="(\d+)">([\s\S]*?)<\/f>/g;
-          let match;
-          let lastIndex = 0;
-          let hasTags = false;
-          
-          while ((match = fRegex.exec(translatedText)) !== null) {
-            hasTags = true;
-            const id = parseInt(match[1], 10);
-            const text = match[2];
-            const font = item.richText![id]?.font || defaultFont;
-            
-            if (match.index > lastIndex) {
-               const betweenText = translatedText.substring(lastIndex, match.index);
-               if (betweenText) {
-                 newRichText.push({ text: betweenText, font: defaultFont });
-               }
-            } else if (lastIndex > 0 && match.index === lastIndex) {
-               const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
-               if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
-                  newRichText.push({ text: ' ', font: defaultFont });
-               }
-            }
-            
-            if (text) {
-              let finalText = text;
-              const originalText = item.richText![id]?.text || '';
-              if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
-                finalText += ' ';
-              }
-              if (originalText.startsWith(' ') && !finalText.startsWith(' ')) {
-                finalText = ' ' + finalText;
-              }
-              newRichText.push({ text: finalText, font });
-            }
-            lastIndex = fRegex.lastIndex;
-          }
-          
-          if (!hasTags) {
-            const cleanText = translatedText.replace(/<[^>]+>/g, '');
-            newRichText.push({ text: cleanText, font: defaultFont });
-          } else if (lastIndex < translatedText.length) {
-            const remainingText = translatedText.substring(lastIndex);
-            if (remainingText) {
-              newRichText.push({ text: remainingText, font: defaultFont });
-            }
-          }
+          newRichText.push({ text: translatedText, font: defaultFont });
         });
         cell.value = { richText: newRichText };
       }
@@ -385,18 +290,6 @@ export const processExcel = async (
     
     processedWorksheets++;
   }
-
-  // Add summary sheet
-  const summarySheet = workbook.addWorksheet('翻譯總結');
-  summarySheet.addRow(['工作表', '列', '欄', '原始文字', ...targetLanguages]);
-  
-  allTranslations.forEach(item => {
-    const row = [item.sheet, item.row, item.col, item.original];
-    targetLanguages.forEach(lang => {
-      row.push(item.translations[lang] || '');
-    });
-    summarySheet.addRow(row);
-  });
 
   updateProgress(90, 'generating');
   
@@ -427,49 +320,7 @@ export const processExcel = async (
 
             langs.forEach(lang => {
               const translatedText = translationItem.translations[lang] || '(翻譯失敗)';
-              
-              if (typeof cell.value === 'object' && (cell.value as any).richText) {
-                const originalRichText = (cell.value as any).richText;
-                const fRegex = /<f id="(\d+)">([\s\S]*?)<\/f>/g;
-                let match;
-                let lastIndex = 0;
-                let hasTags = false;
-                
-                while ((match = fRegex.exec(translatedText)) !== null) {
-                  hasTags = true;
-                  const id = parseInt(match[1], 10);
-                  let text = match[2];
-                  
-                  const originalRt = originalRichText[id] || originalRichText[0];
-                  const font = originalRt.font || defaultFont;
-                  
-                  const originalText = originalRt.text || '';
-                  if (originalText.endsWith(' ') && !text.endsWith(' ')) {
-                    text += ' ';
-                  }
-                  if (originalText.startsWith(' ') && !text.startsWith(' ')) {
-                    text = ' ' + text;
-                  }
-                  newRichText.push({ text: text, font });
-                }
-                lastIndex = fRegex.lastIndex;
-                
-                if (!hasTags) {
-                  const cleanText = translatedText.replace(/<[^>]+>/g, '');
-                  newRichText.push({ text: cleanText + '\n', font: defaultFont });
-                } else if (lastIndex < translatedText.length) {
-                  const remainingText = translatedText.substring(lastIndex);
-                  if (remainingText) {
-                    newRichText.push({ text: remainingText + '\n', font: defaultFont });
-                  } else {
-                    newRichText.push({ text: '\n', font: defaultFont });
-                  }
-                } else {
-                  newRichText.push({ text: '\n', font: defaultFont });
-                }
-              } else {
-                newRichText.push({ text: translatedText + '\n', font: defaultFont });
-              }
+              newRichText.push({ text: translatedText + '\n', font: defaultFont });
             });
             
             // Remove the last newline
@@ -486,18 +337,6 @@ export const processExcel = async (
         });
       });
     }
-
-    // Add summary sheet
-    const summarySheet = newWorkbook.addWorksheet('翻譯總結');
-    summarySheet.addRow(['工作表', '列', '欄', '原始文字', ...langs]);
-    
-    allTranslations.forEach(item => {
-      const row = [item.sheet, item.row, item.col, item.original];
-      langs.forEach(lang => {
-        row.push(item.translations[lang] || '');
-      });
-      summarySheet.addRow(row);
-    });
 
     const buffer = await newWorkbook.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
@@ -794,7 +633,7 @@ export const processPptx = async (
                 
                 if (text) {
                   runs.push({ rPr, text });
-                  taggedText += `<f id="${runIndex}">${text}</f>`;
+                  taggedText += text;
                   runIndex++;
                 }
               }
@@ -871,52 +710,7 @@ export const processPptx = async (
               }
               const defaultRPr = longestRun.rPr;
 
-              const fRegex = /<f id="(\d+)">([\s\S]*?)<\/f>/g;
-              let match;
-              let lastIndex = 0;
-              let hasTags = false;
-              
-              while ((match = fRegex.exec(translatedText)) !== null) {
-                hasTags = true;
-                const id = parseInt(match[1], 10);
-                const text = match[2];
-                const rPr = currentItem.runs[id]?.rPr || defaultRPr;
-                
-                if (match.index > lastIndex) {
-                   const betweenText = translatedText.substring(lastIndex, match.index);
-                   if (betweenText) {
-                     appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(betweenText)}</a:t></a:r>`;
-                   }
-                } else if (lastIndex > 0 && match.index === lastIndex) {
-                   const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
-                   if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
-                      appendedRuns += `<a:r>${defaultRPr}<a:t> </a:t></a:r>`;
-                   }
-                }
-                
-                if (text) {
-                  let finalText = text;
-                  const originalText = currentItem.runs[id]?.text || '';
-                  if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
-                    finalText += ' ';
-                  }
-                  if (originalText.startsWith(' ') && !finalText.startsWith(' ')) {
-                    finalText = ' ' + finalText;
-                  }
-                  appendedRuns += `<a:r>${rPr}<a:t>${escapeXml(finalText)}</a:t></a:r>`;
-                }
-                lastIndex = fRegex.lastIndex;
-              }
-              
-              if (!hasTags) {
-                const cleanText = translatedText.replace(/<[^>]+>/g, '');
-                appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
-              } else if (lastIndex < translatedText.length) {
-                const remainingText = translatedText.substring(lastIndex);
-                if (remainingText) {
-                  appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(remainingText)}</a:t></a:r>`;
-                }
-              }
+              appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(translatedText)}</a:t></a:r>`;
             } else {
                appendedRuns += `<a:r><a:t>${escapeXml(translatedText)}</a:t></a:r>`;
             }
