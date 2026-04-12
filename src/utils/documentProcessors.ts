@@ -67,7 +67,7 @@ export const processDocx = async (
                 
                 if (runText) {
                   runs.push({ rPr, text: runText });
-                  taggedText += runText;
+                  taggedText += `[f${runIndex}]${runText}[/f${runIndex}]`;
                   runIndex++;
                 }
               }
@@ -144,7 +144,54 @@ export const processDocx = async (
               }
               const defaultRPr = longestRun.rPr;
 
-              appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(translatedText)}</w:t></w:r>`;
+              const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
+              let match;
+              let lastIndex = 0;
+              let hasTags = false;
+              
+              while ((match = fRegex.exec(translatedText)) !== null) {
+                hasTags = true;
+                const id = parseInt(match[1], 10);
+                const text = match[2];
+                const rPr = currentItem.runs[id]?.rPr || defaultRPr;
+                
+                if (match.index > lastIndex) {
+                   const betweenText = translatedText.substring(lastIndex, match.index);
+                   if (betweenText) {
+                     const cleanBetween = betweenText.replace(/\[\/?f\d+\]/g, '');
+                     appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanBetween)}</w:t></w:r>`;
+                   }
+                } else if (lastIndex > 0 && match.index === lastIndex) {
+                   const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
+                   if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
+                      appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve"> </w:t></w:r>`;
+                   }
+                }
+                
+                if (text) {
+                  let finalText = text;
+                  const originalText = currentItem.runs[id]?.text || '';
+                  if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
+                    finalText += ' ';
+                  }
+                  if (originalText.startsWith(' ') && !finalText.startsWith(' ')) {
+                    finalText = ' ' + finalText;
+                  }
+                  appendedRuns += `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(finalText)}</w:t></w:r>`;
+                }
+                lastIndex = fRegex.lastIndex;
+              }
+              
+              if (!hasTags) {
+                const cleanText = translatedText.replace(/\[\/?f\d+\]/g, '');
+                appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
+              } else if (lastIndex < translatedText.length) {
+                const remainingText = translatedText.substring(lastIndex);
+                if (remainingText) {
+                  const cleanText = remainingText.replace(/\[\/?f\d+\]/g, '');
+                  appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
+                }
+              }
             } else {
               appendedRuns += `<w:r><w:t xml:space="preserve">${escapeXml(translatedText)}</w:t></w:r>`;
             }
@@ -194,19 +241,21 @@ export const processExcel = async (
     
     worksheet.eachRow((row, rowNumber) => {
       row.eachCell((cell, colNumber) => {
+        if (cell.type === 1) return; // Skip merged slave cells (ValueType.Merge = 1)
+        
         if (cell.value) {
           if (typeof cell.value === 'string' && cell.value.trim().length > 0) {
             textsToTranslate.push({ row: rowNumber, col: colNumber, text: cell.value, type: 'string' });
           } else if (typeof cell.value === 'object' && (cell.value as any).richText) {
             const richTextArr = (cell.value as any).richText;
-            let plainText = '';
-            richTextArr.forEach((rt: any) => {
+            let taggedText = '';
+            richTextArr.forEach((rt: any, idx: number) => {
               if (rt.text) {
-                plainText += rt.text;
+                taggedText += `[f${idx}]${rt.text}[/f${idx}]`;
               }
             });
-            if (plainText.trim().length > 0) {
-              textsToTranslate.push({ row: rowNumber, col: colNumber, text: plainText, type: 'richText', richText: richTextArr });
+            if (taggedText.trim().length > 0) {
+              textsToTranslate.push({ row: rowNumber, col: colNumber, text: taggedText, type: 'richText', richText: richTextArr });
             }
           }
         }
@@ -242,7 +291,6 @@ export const processExcel = async (
     updateProgress(30 + ((processedWorksheets + 1) / totalWorksheets) * 60, 'generating');
 
     textsToTranslate.forEach((item, index) => {
-      const cell = worksheet.getCell(item.row, item.col);
       const originalText = item.text;
       const translations = translatedResults[index] || {};
       
@@ -253,39 +301,6 @@ export const processExcel = async (
         original: originalText,
         translations
       });
-      
-      if (item.type === 'string') {
-        let combinedText = originalText + '\n';
-        targetLanguages.forEach(lang => {
-          const translatedText = translations[lang] || '(翻譯失敗)';
-          combinedText += `${translatedText}\n`;
-        });
-        cell.value = combinedText.trim();
-      } else if (item.type === 'richText' && item.richText) {
-        const newRichText = [...item.richText];
-        
-        targetLanguages.forEach(lang => {
-          const translatedText = translations[lang] || '(翻譯失敗)';
-          
-          newRichText.push({ text: '\n', font: item.richText![0]?.font });
-          
-          // Find the run with the longest text to use as the default formatting
-          let longestRun = item.richText![0];
-          for (const run of item.richText!) {
-            if (run.text && run.text.length > (longestRun.text?.length || 0)) {
-              longestRun = run;
-            }
-          }
-          const defaultFont = longestRun.font;
-
-          newRichText.push({ text: translatedText, font: defaultFont });
-        });
-        cell.value = { richText: newRichText };
-      }
-      cell.alignment = { 
-        ...(cell.alignment || {}), 
-        wrapText: true 
-      };
     });
     
     processedWorksheets++;
@@ -304,6 +319,8 @@ export const processExcel = async (
     for (const worksheet of newWorkbook.worksheets) {
       worksheet.eachRow((row, rowNumber) => {
         row.eachCell((cell, colNumber) => {
+          if (cell.type === 1) return; // Skip merged slave cells
+          
           const translationItem = allTranslations.find(t => t.sheet === worksheet.name && t.row === rowNumber && t.col === colNumber);
           if (translationItem) {
             const originalText = translationItem.original;
@@ -316,19 +333,83 @@ export const processExcel = async (
               defaultFont = cell.font;
             }
 
-            newRichText.push({ text: originalText + '\n', font: defaultFont });
+            // Restore original text
+            if (typeof cell.value === 'object' && (cell.value as any).richText) {
+              const originalRichText = (cell.value as any).richText;
+              originalRichText.forEach((rt: any) => {
+                newRichText.push({ text: rt.text, font: rt.font || defaultFont });
+              });
+            } else {
+              newRichText.push({ text: String(cell.value), font: defaultFont });
+            }
 
             langs.forEach(lang => {
               const translatedText = translationItem.translations[lang] || '(翻譯失敗)';
-              newRichText.push({ text: translatedText + '\n', font: defaultFont });
+              
+              if (translationItem.original.includes('[f0]')) {
+                // It was a rich text item
+                newRichText.push({ text: '\n', font: defaultFont });
+                
+                const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
+                let match;
+                let lastIndex = 0;
+                let hasTags = false;
+                
+                while ((match = fRegex.exec(translatedText)) !== null) {
+                  hasTags = true;
+                  const id = parseInt(match[1], 10);
+                  const text = match[2];
+                  
+                  // Find original font
+                  let originalFont = defaultFont;
+                  if (typeof cell.value === 'object' && (cell.value as any).richText) {
+                    originalFont = (cell.value as any).richText[id]?.font || defaultFont;
+                  }
+                  
+                  if (match.index > lastIndex) {
+                     const betweenText = translatedText.substring(lastIndex, match.index);
+                     if (betweenText) {
+                       const cleanBetween = betweenText.replace(/\[\/?f\d+\]/g, '');
+                       newRichText.push({ text: cleanBetween, font: defaultFont });
+                     }
+                  } else if (lastIndex > 0 && match.index === lastIndex) {
+                     const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
+                     if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
+                        newRichText.push({ text: ' ', font: defaultFont });
+                     }
+                  }
+                  
+                  if (text) {
+                    let finalText = text;
+                    newRichText.push({ text: finalText, font: originalFont });
+                  }
+                  lastIndex = fRegex.lastIndex;
+                }
+                
+                if (!hasTags) {
+                  const cleanText = translatedText.replace(/\[\/?f\d+\]/g, '');
+                  newRichText.push({ text: cleanText, font: defaultFont });
+                } else if (lastIndex < translatedText.length) {
+                  const remainingText = translatedText.substring(lastIndex);
+                  if (remainingText) {
+                    const cleanText = remainingText.replace(/\[\/?f\d+\]/g, '');
+                    newRichText.push({ text: cleanText, font: defaultFont });
+                  }
+                }
+              } else {
+                newRichText.push({ text: '\n' + translatedText, font: defaultFont });
+              }
             });
             
-            // Remove the last newline
-            if (newRichText.length > 0 && newRichText[newRichText.length - 1].text.endsWith('\n')) {
-              newRichText[newRichText.length - 1].text = newRichText[newRichText.length - 1].text.slice(0, -1);
+            if (typeof cell.value === 'object' && (cell.value as any).richText) {
+              cell.value = { richText: newRichText };
+            } else {
+              let combinedText = '';
+              newRichText.forEach(rt => {
+                combinedText += rt.text;
+              });
+              cell.value = combinedText;
             }
-            
-            cell.value = { richText: newRichText };
           }
           cell.alignment = { 
             ...(cell.alignment || {}), 
@@ -633,7 +714,7 @@ export const processPptx = async (
                 
                 if (text) {
                   runs.push({ rPr, text });
-                  taggedText += text;
+                  taggedText += `[f${runIndex}]${text}[/f${runIndex}]`;
                   runIndex++;
                 }
               }
@@ -710,7 +791,54 @@ export const processPptx = async (
               }
               const defaultRPr = longestRun.rPr;
 
-              appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(translatedText)}</a:t></a:r>`;
+              const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
+              let match;
+              let lastIndex = 0;
+              let hasTags = false;
+              
+              while ((match = fRegex.exec(translatedText)) !== null) {
+                hasTags = true;
+                const id = parseInt(match[1], 10);
+                const text = match[2];
+                const rPr = currentItem.runs[id]?.rPr || defaultRPr;
+                
+                if (match.index > lastIndex) {
+                   const betweenText = translatedText.substring(lastIndex, match.index);
+                   if (betweenText) {
+                     const cleanBetween = betweenText.replace(/\[\/?f\d+\]/g, '');
+                     appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanBetween)}</a:t></a:r>`;
+                   }
+                } else if (lastIndex > 0 && match.index === lastIndex) {
+                   const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
+                   if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
+                      appendedRuns += `<a:r>${defaultRPr}<a:t> </a:t></a:r>`;
+                   }
+                }
+                
+                if (text) {
+                  let finalText = text;
+                  const originalText = currentItem.runs[id]?.text || '';
+                  if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
+                    finalText += ' ';
+                  }
+                  if (originalText.startsWith(' ') && !finalText.startsWith(' ')) {
+                    finalText = ' ' + finalText;
+                  }
+                  appendedRuns += `<a:r>${rPr}<a:t>${escapeXml(finalText)}</a:t></a:r>`;
+                }
+                lastIndex = fRegex.lastIndex;
+              }
+              
+              if (!hasTags) {
+                const cleanText = translatedText.replace(/\[\/?f\d+\]/g, '');
+                appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
+              } else if (lastIndex < translatedText.length) {
+                const remainingText = translatedText.substring(lastIndex);
+                if (remainingText) {
+                  const cleanText = remainingText.replace(/\[\/?f\d+\]/g, '');
+                  appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
+                }
+              }
             } else {
                appendedRuns += `<a:r><a:t>${escapeXml(translatedText)}</a:t></a:r>`;
             }
