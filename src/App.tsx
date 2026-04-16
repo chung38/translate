@@ -555,8 +555,8 @@ export default function App() {
           let progress = 0;
           const interval = setInterval(() => {
             progress += Math.random() * 30 + 10;
-            if (progress >= 100) {
-              progress = 100;
+            if (progress >= 250) {
+              progress =250;
               clearInterval(interval);
               setUploadStatus(prev => ({ ...prev, [file.name]: 'success' }));
             }
