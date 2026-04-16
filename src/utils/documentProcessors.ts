@@ -3,6 +3,137 @@ import type { Worksheet } from 'exceljs';
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
+const stripTags = (text: string) => {
+  if (!text) return text;
+  return text.replace(/\[\/?f\d+\]/g, '').replace(/<\/?f[^>]*>/g, '');
+};
+
+const isChineseFont = (fontName: string | undefined) => {
+  if (!fontName) return false;
+  if (/[\u4e00-\u9fff]/.test(fontName)) return true;
+  const knownChineseFonts = [
+    'mingliu', 'pmingliu', 'dfkai-sb', 'simsun', 'nsimsun', 'simhei', 
+    'microsoft jhenghei', 'microsoft yahei', 'biaukai', 'kaiti', 'fangsong',
+    'times new roman' // Sometimes Times New Roman is used as a default for Chinese in older documents but doesn't render Vietnamese well
+  ];
+  const lowerName = fontName.toLowerCase();
+  return knownChineseFonts.some(f => lowerName.includes(f));
+};
+
+const adjustFontForLanguage = (font: any, lang: string) => {
+  const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
+  let newFont = font ? { ...font } : {};
+  
+  // For Vietnamese and Thai, we strongly prefer Arial because many default fonts 
+  // (even non-Chinese ones) have poor support for their specific diacritics in Excel.
+  const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
+  
+  if (!isAsianLang) {
+    if (needsStrongFontAdjustment || !newFont.name || isChineseFont(newFont.name)) {
+      newFont.name = 'Arial';
+      // CRITICAL: If a font has a 'scheme' (like 'minor' or 'major') or 'theme', Excel will ignore the 'name'
+      // and use the theme's default font instead. We must delete it to force Arial.
+      delete newFont.scheme;
+      delete newFont.family;
+      delete newFont.theme;
+    }
+  }
+  
+  // If we didn't change anything and it was originally undefined, return undefined
+  if (!font && !newFont.name) return undefined;
+  
+  return newFont;
+};
+
+const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType: 'docx' | 'pptx') => {
+  const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
+  const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
+  
+  if (isAsianLang) return rPr || '';
+  
+  let newRPr = rPr || '';
+  let shouldAdjust = needsStrongFontAdjustment;
+  
+  if (!shouldAdjust && newRPr) {
+    // Check if it contains Chinese fonts
+    const fontRegex = /(?:w:ascii|w:hAnsi|w:eastAsia|w:cs|typeface)="([^"]*)"/g;
+    let match;
+    while ((match = fontRegex.exec(newRPr)) !== null) {
+      if (isChineseFont(match[1])) {
+        shouldAdjust = true;
+        break;
+      }
+    }
+  }
+  
+  if (shouldAdjust) {
+    const langCode = lang === 'vi' ? 'vi-VN' : (lang === 'th' ? 'th-TH' : 'en-US');
+    
+    if (docType === 'docx') {
+      const safeRegexMatch = (str: string, regex: RegExp) => (str.match(regex) || [])[0] || '';
+      
+      const rPrSafe = newRPr;
+      const style = safeRegexMatch(rPrSafe, /<w:rStyle[^>]*(?:\/>|<\/w:rStyle>)/);
+      const b = safeRegexMatch(rPrSafe, /<w:b(?: \/>|>|<\/w:b>| [^>]*\/>)/);
+      const bCs = safeRegexMatch(rPrSafe, /<w:bCs[^>]*(?:\/>|<\/w:bCs>)/);
+      const i = safeRegexMatch(rPrSafe, /<w:i(?: \/>|>|<\/w:i>| [^>]*\/>)/);
+      const iCs = safeRegexMatch(rPrSafe, /<w:iCs[^>]*(?:\/>|<\/w:iCs>)/);
+      const caps = safeRegexMatch(rPrSafe, /<w:caps[^>]*(?:\/>|<\/w:caps>)/);
+      const strike = safeRegexMatch(rPrSafe, /<w:strike[^>]*(?:\/>|<\/w:strike>)/);
+      const color = safeRegexMatch(rPrSafe, /<w:color[^>]*(?:\/>|<\/w:color>)/);
+      const sz = safeRegexMatch(rPrSafe, /<w:sz(?: |>|\/>)[^>]*(?:\/>|<\/w:sz>)/);
+      const szCs = safeRegexMatch(rPrSafe, /<w:szCs[^>]*(?:\/>|<\/w:szCs>)/);
+      const highlight = safeRegexMatch(rPrSafe, /<w:highlight[^>]*(?:\/>|<\/w:highlight>)/);
+      const u = safeRegexMatch(rPrSafe, /<w:u(?: |>|\/>)[^>]*(?:\/>|<\/w:u>)/);
+      const vertAlign = safeRegexMatch(rPrSafe, /<w:vertAlign[^>]*(?:\/>|<\/w:vertAlign>)/);
+      const shd = safeRegexMatch(rPrSafe, /<w:shd[^>]*(?:\/>|<\/w:shd>)/);
+      const spacing = safeRegexMatch(rPrSafe, /<w:spacing[^>]*(?:\/>|<\/w:spacing>)/);
+      
+      const arialFonts = `<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/>`;
+      const langTag = `<w:lang w:val="${langCode}"/>`;
+      
+      newRPr = `<w:rPr>${style}${arialFonts}${b}${bCs}${i}${iCs}${caps}${strike}${color}${spacing}${sz}${szCs}${highlight}${u}${shd}${vertAlign}${langTag}</w:rPr>`;
+    } else if (docType === 'pptx') {
+      const arialLatin = `<a:latin typeface="Arial"/>`;
+      const arialEa = `<a:ea typeface="Arial"/>`;
+      const arialCs = `<a:cs typeface="Arial"/>`;
+      
+      if (!newRPr) {
+        newRPr = `<a:rPr lang="${langCode}" dirty="0" smtClean="0">${arialLatin}${arialEa}${arialCs}</a:rPr>`;
+      } else {
+        // Remove existing font tags
+        newRPr = newRPr.replace(/<a:latin[\s\S]*?(?:\/>|<\/a:latin>)/g, '');
+        newRPr = newRPr.replace(/<a:ea[\s\S]*?(?:\/>|<\/a:ea>)/g, '');
+        newRPr = newRPr.replace(/<a:cs[\s\S]*?(?:\/>|<\/a:cs>)/g, '');
+        
+        // Update lang attribute if exists
+        if (newRPr.includes(' lang="')) {
+          newRPr = newRPr.replace(/ lang="[^"]*"/, ` lang="${langCode}"`);
+        } else {
+          newRPr = newRPr.replace('<a:rPr', `<a:rPr lang="${langCode}"`);
+        }
+        
+        // Insert new font tags
+        if (newRPr.match(/<a:rPr[^>]*\/>/)) {
+          newRPr = newRPr.replace(/(<a:rPr[^>]*)\/>/, `$1></a:rPr>`);
+        }
+
+        if (newRPr.includes('</a:rPr>')) {
+          newRPr = newRPr.replace('</a:rPr>', `${arialLatin}${arialEa}${arialCs}</a:rPr>`);
+        } else if (newRPr.includes('<a:rPr>')) {
+          newRPr = newRPr.replace('<a:rPr>', `<a:rPr>${arialLatin}${arialEa}${arialCs}`);
+        } else if (newRPr.includes('<a:rPr ')) {
+          newRPr = newRPr.replace(/<a:rPr([^>]*)>/, `<a:rPr$1>${arialLatin}${arialEa}${arialCs}`);
+        } else {
+          newRPr = `<a:rPr lang="${langCode}">${arialLatin}${arialEa}${arialCs}</a:rPr>`;
+        }
+      }
+    }
+  }
+  
+  return newRPr;
+};
+
 export const processDocx = async (
   file: File, 
   targetLanguages: string[],
@@ -66,11 +197,19 @@ export const processDocx = async (
                 });
                 
                 if (runText) {
-                  runs.push({ rPr, text: runText });
-                  taggedText += `[f${runIndex}]${runText}[/f${runIndex}]`;
-                  runIndex++;
+                  const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
+                  // Merge runs if they have identical formatting to prevent AI translation fragmentation
+                  if (lastRun && lastRun.rPr === rPr) {
+                    lastRun.text += runText;
+                  } else {
+                    runs.push({ rPr, text: runText });
+                  }
                 }
               }
+            });
+            
+            runs.forEach((run, idx) => {
+              taggedText += `[f${idx}]${run.text}[/f${idx}]`;
             });
             
             if (taggedText.trim().length > 0) {
@@ -142,7 +281,7 @@ export const processDocx = async (
                   longestRun = run;
                 }
               }
-              const defaultRPr = longestRun.rPr;
+              const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'docx');
 
               const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
               let match;
@@ -153,23 +292,19 @@ export const processDocx = async (
                 hasTags = true;
                 const id = parseInt(match[1], 10);
                 const text = match[2];
-                const rPr = currentItem.runs[id]?.rPr || defaultRPr;
+                const originalRPr = currentItem.runs[id] ? currentItem.runs[id].rPr : longestRun.rPr;
+                const rPr = adjustXmlRPrForLanguage(originalRPr, lang, 'docx');
                 
                 if (match.index > lastIndex) {
                    const betweenText = translatedText.substring(lastIndex, match.index);
                    if (betweenText) {
-                     const cleanBetween = betweenText.replace(/\[\/?f\d+\]/g, '');
+                     const cleanBetween = stripTags(betweenText);
                      appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanBetween)}</w:t></w:r>`;
-                   }
-                } else if (lastIndex > 0 && match.index === lastIndex) {
-                   const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
-                   if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
-                      appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve"> </w:t></w:r>`;
                    }
                 }
                 
                 if (text) {
-                  let finalText = text;
+                  let finalText = stripTags(text);
                   const originalText = currentItem.runs[id]?.text || '';
                   if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
                     finalText += ' ';
@@ -183,17 +318,18 @@ export const processDocx = async (
               }
               
               if (!hasTags) {
-                const cleanText = translatedText.replace(/\[\/?f\d+\]/g, '');
+                const cleanText = stripTags(translatedText);
                 appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
               } else if (lastIndex < translatedText.length) {
                 const remainingText = translatedText.substring(lastIndex);
                 if (remainingText) {
-                  const cleanText = remainingText.replace(/\[\/?f\d+\]/g, '');
+                  const cleanText = stripTags(remainingText);
                   appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
                 }
               }
             } else {
-              appendedRuns += `<w:r><w:t xml:space="preserve">${escapeXml(translatedText)}</w:t></w:r>`;
+               const fallbackRPr = adjustXmlRPrForLanguage('', lang, 'docx');
+               appendedRuns += `<w:r>${fallbackRPr}<w:t xml:space="preserve">${escapeXml(stripTags(translatedText))}</w:t></w:r>`;
             }
           });
           
@@ -346,9 +482,11 @@ export const processExcel = async (
             langs.forEach(lang => {
               const translatedText = translationItem.translations[lang] || '(翻譯失敗)';
               
+              const adjustedDefaultFont = adjustFontForLanguage(defaultFont, lang);
+
               if (translationItem.original.includes('[f0]')) {
                 // It was a rich text item
-                newRichText.push({ text: '\n', font: defaultFont });
+                newRichText.push({ text: '\n', font: adjustedDefaultFont });
                 
                 const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
                 let match;
@@ -365,51 +503,47 @@ export const processExcel = async (
                   if (typeof cell.value === 'object' && (cell.value as any).richText) {
                     originalFont = (cell.value as any).richText[id]?.font || defaultFont;
                   }
+                  const adjustedOriginalFont = adjustFontForLanguage(originalFont, lang);
                   
                   if (match.index > lastIndex) {
                      const betweenText = translatedText.substring(lastIndex, match.index);
                      if (betweenText) {
-                       const cleanBetween = betweenText.replace(/\[\/?f\d+\]/g, '');
-                       newRichText.push({ text: cleanBetween, font: defaultFont });
-                     }
-                  } else if (lastIndex > 0 && match.index === lastIndex) {
-                     const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
-                     if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
-                        newRichText.push({ text: ' ', font: defaultFont });
+                       const cleanBetween = stripTags(betweenText);
+                       newRichText.push({ text: cleanBetween, font: adjustedDefaultFont });
                      }
                   }
                   
                   if (text) {
-                    let finalText = text;
-                    newRichText.push({ text: finalText, font: originalFont });
+                    let finalText = stripTags(text);
+                    newRichText.push({ text: finalText, font: adjustedOriginalFont });
                   }
                   lastIndex = fRegex.lastIndex;
                 }
                 
                 if (!hasTags) {
-                  const cleanText = translatedText.replace(/\[\/?f\d+\]/g, '');
-                  newRichText.push({ text: cleanText, font: defaultFont });
+                  const cleanText = stripTags(translatedText);
+                  newRichText.push({ text: cleanText, font: adjustedDefaultFont });
                 } else if (lastIndex < translatedText.length) {
                   const remainingText = translatedText.substring(lastIndex);
                   if (remainingText) {
-                    const cleanText = remainingText.replace(/\[\/?f\d+\]/g, '');
-                    newRichText.push({ text: cleanText, font: defaultFont });
+                    const cleanText = stripTags(remainingText);
+                    newRichText.push({ text: cleanText, font: adjustedDefaultFont });
                   }
                 }
               } else {
-                newRichText.push({ text: '\n' + translatedText, font: defaultFont });
+                newRichText.push({ text: '\n' + stripTags(translatedText), font: adjustedDefaultFont });
               }
             });
             
-            if (typeof cell.value === 'object' && (cell.value as any).richText) {
-              cell.value = { richText: newRichText };
-            } else {
-              let combinedText = '';
-              newRichText.forEach(rt => {
-                combinedText += rt.text;
-              });
-              cell.value = combinedText;
-            }
+            // Always convert to richText to ensure font adjustments are applied correctly
+            // even for originally plain text cells
+            const cleanedRichText = newRichText.map(rt => {
+              if (rt.font === undefined) {
+                return { text: rt.text };
+              }
+              return rt;
+            });
+            cell.value = { richText: cleanedRichText };
           }
           cell.alignment = { 
             ...(cell.alignment || {}), 
@@ -713,11 +847,19 @@ export const processPptx = async (
                 const rPr = rPrMatch ? rPrMatch[0] : '';
                 
                 if (text) {
-                  runs.push({ rPr, text });
-                  taggedText += `[f${runIndex}]${text}[/f${runIndex}]`;
-                  runIndex++;
+                  const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
+                  // Merge runs if they have identical formatting to prevent AI translation fragmentation
+                  if (lastRun && lastRun.rPr === rPr) {
+                    lastRun.text += text;
+                  } else {
+                    runs.push({ rPr, text });
+                  }
                 }
               }
+            });
+            
+            runs.forEach((run, idx) => {
+              taggedText += `[f${idx}]${run.text}[/f${idx}]`;
             });
             
             if (taggedText.trim().length > 0) {
@@ -789,7 +931,7 @@ export const processPptx = async (
                   longestRun = run;
                 }
               }
-              const defaultRPr = longestRun.rPr;
+              const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'pptx');
 
               const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
               let match;
@@ -800,23 +942,19 @@ export const processPptx = async (
                 hasTags = true;
                 const id = parseInt(match[1], 10);
                 const text = match[2];
-                const rPr = currentItem.runs[id]?.rPr || defaultRPr;
+                const originalRPr = currentItem.runs[id] ? currentItem.runs[id].rPr : longestRun.rPr;
+                const rPr = adjustXmlRPrForLanguage(originalRPr, lang, 'pptx');
                 
                 if (match.index > lastIndex) {
                    const betweenText = translatedText.substring(lastIndex, match.index);
                    if (betweenText) {
-                     const cleanBetween = betweenText.replace(/\[\/?f\d+\]/g, '');
+                     const cleanBetween = stripTags(betweenText);
                      appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanBetween)}</a:t></a:r>`;
-                   }
-                } else if (lastIndex > 0 && match.index === lastIndex) {
-                   const isAsianLang = /[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\uFAFF\uFF66-\uFF9F]/.test(text);
-                   if (!isAsianLang && !text.startsWith(' ') && !text.startsWith('.') && !text.startsWith(',') && !text.startsWith(':') && !text.startsWith(')') && !text.startsWith(']')) {
-                      appendedRuns += `<a:r>${defaultRPr}<a:t> </a:t></a:r>`;
                    }
                 }
                 
                 if (text) {
-                  let finalText = text;
+                  let finalText = stripTags(text);
                   const originalText = currentItem.runs[id]?.text || '';
                   if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
                     finalText += ' ';
@@ -830,17 +968,18 @@ export const processPptx = async (
               }
               
               if (!hasTags) {
-                const cleanText = translatedText.replace(/\[\/?f\d+\]/g, '');
+                const cleanText = stripTags(translatedText);
                 appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
               } else if (lastIndex < translatedText.length) {
                 const remainingText = translatedText.substring(lastIndex);
                 if (remainingText) {
-                  const cleanText = remainingText.replace(/\[\/?f\d+\]/g, '');
+                  const cleanText = stripTags(remainingText);
                   appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
                 }
               }
             } else {
-               appendedRuns += `<a:r><a:t>${escapeXml(translatedText)}</a:t></a:r>`;
+               const fallbackRPr = adjustXmlRPrForLanguage('', lang, 'pptx');
+               appendedRuns += `<a:r>${fallbackRPr}<a:t>${escapeXml(stripTags(translatedText))}</a:t></a:r>`;
             }
           });
           

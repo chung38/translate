@@ -73,8 +73,8 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
 
   // 限制請求的 payload 大小，避免傳送過大的檔案或內容
-  app.use(express.json({ limit: '250mb' }));
-  app.use(express.urlencoded({ extended: true, limit: '250mb' }));
+  app.use(express.json({ limit: '100mb' }));
+  app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
   // 設定 API 請求次數限制 (Rate Limiting)
   // 限制每個 IP 在 15 分鐘內最多只能發送 100 次請求

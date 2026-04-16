@@ -496,7 +496,7 @@ export default function App() {
     }
   }, []);
 
-  const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
+  const MAX_FILE_SIZE = 250 * 1024 * 1024; // 250MB
   const MAX_FILE_COUNT = 10;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -538,7 +538,7 @@ export default function App() {
         if (hasLegacy) {
           setError('系統不支援舊版 .doc, .xls, .ppt 格式，請先使用 Office 另存為 .docx, .xlsx, .pptx 後再上傳。');
         } else if (hasOversized) {
-          setError('部分檔案超過 100MB 限制，已跳過');
+          setError('部分檔案超過 250MB 限制，已跳過');
         } else if (hasInvalid) {
           setError('部分檔案格式不支援，已跳過');
         } else {
@@ -555,8 +555,8 @@ export default function App() {
           let progress = 0;
           const interval = setInterval(() => {
             progress += Math.random() * 30 + 10;
-            if (progress >= 250) {
-              progress =250;
+            if (progress >= 100) {
+              progress = 100;
               clearInterval(interval);
               setUploadStatus(prev => ({ ...prev, [file.name]: 'success' }));
             }
@@ -567,7 +567,7 @@ export default function App() {
       } else if (hasLegacy) {
         setError('系統不支援舊版 .doc, .xls, .ppt 格式，請先使用 Office 另存為 .docx, .xlsx, .pptx 後再上傳。');
       } else if (hasOversized) {
-        setError('檔案大小不能超過 100MB');
+        setError('檔案大小不能超過 250MB');
       } else if (hasInvalid) {
         setError('請上傳有效的 .docx, .xlsx, .pdf 或 .pptx 檔案');
       }
