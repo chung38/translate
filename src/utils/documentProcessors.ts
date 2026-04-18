@@ -51,72 +51,86 @@ const adjustFontForLanguage = (font: any, lang: string) => {
  *   3. Strip theme/scheme font references that bypass the name attribute.
  *   4. Add <w:lang> so spell-check / glyph selection uses the correct locale.
  */
+/**
+ * 為越南文/泰文翻譯 run 重建 rPr。
+ *
+ * 【核心策略】：對 vi/th，完全不繼承原始 rPr 的任何字體設定，
+ * 只萃取「顏色、大小、粗體、斜體、底線」等視覺樣式後重新組裝，
+ * 字體一律設為 Arial（含 w:cs complex-script slot）。
+ *
+ * 為何不能只移除 w:hint 或替換 w:rFonts：
+ *  - Word 的字體選擇有多個 fallback 層（run → 段落 → 樣式 → 主題）
+ *  - 只要段落/樣式層有東亞字體，run 層的修改可能被 override
+ *  - 最可靠的方式是從頭建立乾淨的 rPr，不留任何東亞字體殘留
+ */
 const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType: 'docx' | 'pptx') => {
   const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
-  const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
+  const needsCleanFont = ['vi', 'th'].includes(lang);
 
   if (isAsianLang) return rPr || '';
 
-  let newRPr = rPr || '';
-  let shouldAdjust = needsStrongFontAdjustment;
-
-  // Also adjust if the existing rPr contains a Chinese font
-  if (!shouldAdjust && newRPr) {
+  // 非越南/泰文：只在含中文字體時才調整
+  if (!needsCleanFont) {
+    if (!rPr) return '';
     const fontRegex = /(?:w:ascii|w:hAnsi|w:eastAsia|w:cs|typeface)="([^"]*)"/g;
-    let match;
-    while ((match = fontRegex.exec(newRPr)) !== null) {
-      if (isChineseFont(match[1])) {
-        shouldAdjust = true;
-        break;
-      }
+    let hasChinese = false;
+    let m;
+    while ((m = fontRegex.exec(rPr)) !== null) {
+      if (isChineseFont(m[1])) { hasChinese = true; break; }
     }
+    if (!hasChinese) return rPr;
   }
-
-  if (!shouldAdjust) return newRPr;
 
   if (docType === 'docx') {
     const langCode = lang === 'vi' ? 'vi-VN' : lang === 'th' ? 'th-TH' : 'en-US';
-
-    if (!newRPr) {
-      // Build minimal rPr from scratch
-      return [
-        '<w:rPr>',
-        '<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/>',
-        `<w:lang w:val="${langCode}" w:eastAsia="${langCode}" w:bidi="${langCode}"/>`,
-        '</w:rPr>',
-      ].join('');
-    }
-
-    // ── Step 1: remove ALL font-related tags that could override our choice ──
-    // Remove w:rFonts (any form: self-closing or with children)
-    newRPr = newRPr.replace(/<w:rFonts[\s\S]*?(?:\/>|<\/w:rFonts>)/g, '');
-    // Remove w:hint (the main culprit — tells Word to use East-Asian slot)
-    newRPr = newRPr.replace(/\s*w:hint="[^"]*"/g, '');
-    // Remove existing w:lang tags
-    newRPr = newRPr.replace(/<w:lang[\s\S]*?(?:\/>|<\/w:lang>)/g, '');
-    // Remove theme/scheme attributes that can survive on other tags
-    newRPr = newRPr.replace(/\s*w:theme(Shade|Tint)?="[^"]*"/g, '');
-
-    // ── Step 2: ensure the tag is in open form, not self-closing ──
-    if (/<w:rPr\s*\/>/.test(newRPr)) {
-      newRPr = newRPr.replace(/<w:rPr\s*\/>/, '<w:rPr></w:rPr>');
-    }
-
-    // ── Step 3: insert Arial fonts right after <w:rPr> (or after <w:rStyle>) ──
     const arialFonts = '<w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="Arial" w:cs="Arial"/>';
     const langTag = `<w:lang w:val="${langCode}" w:eastAsia="${langCode}" w:bidi="${langCode}"/>`;
 
-    if (newRPr.includes('<w:rStyle')) {
-      // Insert fonts right after rStyle so they take priority
-      newRPr = newRPr.replace(/(<w:rStyle[^>]*(?:\/>|<\/w:rStyle>))/, `$1${arialFonts}`);
-    } else {
-      newRPr = newRPr.replace(/(<w:rPr[^>]*>)/, `$1${arialFonts}`);
+    if (!rPr) {
+      return `<w:rPr>${arialFonts}${langTag}</w:rPr>`;
     }
 
-    // ── Step 4: append lang tag before closing </w:rPr> ──
-    newRPr = newRPr.replace('</w:rPr>', `${langTag}</w:rPr>`);
+    // 從原始 rPr 萃取與字體無關的視覺樣式標籤
+    // （這些標籤需要保留：顏色、字號、粗斜體、底線等）
+    const visualTags = [
+      'w:rStyle',    // 樣式引用（保留，但字體會被我們的 arialFonts override）
+      'w:b', 'w:bCs',
+      'w:i', 'w:iCs',
+      'w:caps', 'w:smallCaps',
+      'w:strike', 'w:dstrike',
+      'w:color',
+      'w:sz', 'w:szCs',
+      'w:highlight',
+      'w:u',
+      'w:vertAlign',
+      'w:shd',
+      'w:spacing',
+      'w:kern',
+      'w:position',
+      'w:effect',
+      'w:outline',
+      'w:shadow',
+      'w:emboss',
+      'w:imprint',
+      'w:noProof',
+    ];
 
-    return newRPr;
+    let preserved = '';
+    for (const tag of visualTags) {
+      // 匹配自閉合 <w:tag .../> 或展開形式 <w:tag ...>...</w:tag>
+      const re = new RegExp(`<${tag}(?:\\s[^>]*)?\\/?>(?:[\\s\\S]*?<\\/${tag}>)?`, 'g');
+      const found = rPr.match(re);
+      if (found) {
+        for (const f of found) {
+          // 過濾 w:b w:val="0" 等「關閉」屬性（這些會取消粗體）
+          if (/^<w:[bi]C?s?[\s>]/.test(f) && /w:val="0"/.test(f)) continue;
+          preserved += f;
+        }
+      }
+    }
+
+    // 重建：Arial 字體放最前面確保最高優先級，視覺樣式次之，lang 放最後
+    return `<w:rPr>${arialFonts}${preserved}${langTag}</w:rPr>`;
 
   } else if (docType === 'pptx') {
     const langCode = lang === 'vi' ? 'vi-VN' : lang === 'th' ? 'th-TH' : 'en-US';
@@ -124,38 +138,33 @@ const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType:
     const arialEa = '<a:ea typeface="Arial"/>';
     const arialCs = '<a:cs typeface="Arial"/>';
 
-    if (!newRPr) {
-      return `<a:rPr lang="${langCode}" dirty="0" smtClean="0">${arialLatin}${arialEa}${arialCs}</a:rPr>`;
+    if (!rPr) {
+      return `<a:rPr lang="${langCode}" dirty="0">${arialLatin}${arialEa}${arialCs}</a:rPr>`;
     }
 
-    // Remove existing font tags
+    let newRPr = rPr;
+    // 移除舊字體標籤
     newRPr = newRPr.replace(/<a:latin[\s\S]*?(?:\/>|<\/a:latin>)/g, '');
     newRPr = newRPr.replace(/<a:ea[\s\S]*?(?:\/>|<\/a:ea>)/g, '');
     newRPr = newRPr.replace(/<a:cs[\s\S]*?(?:\/>|<\/a:cs>)/g, '');
-
-    // Update lang attribute
+    // 更新 lang 屬性
     if (newRPr.includes(' lang="')) {
       newRPr = newRPr.replace(/ lang="[^"]*"/, ` lang="${langCode}"`);
     } else {
       newRPr = newRPr.replace('<a:rPr', `<a:rPr lang="${langCode}"`);
     }
-
-    // Ensure open form
-    if (/<a:rPr[^>]*\/>/.test(newRPr)) {
-      newRPr = newRPr.replace(/(<a:rPr[^>]*)\/>/, '$1></a:rPr>');
-    }
-
-    // Insert font tags before closing tag
+    // 確保展開形式
+    newRPr = newRPr.replace(/(<a:rPr[^>]*)\/>/, '$1></a:rPr>');
+    // 插入 Arial 字體
     if (newRPr.includes('</a:rPr>')) {
       newRPr = newRPr.replace('</a:rPr>', `${arialLatin}${arialEa}${arialCs}</a:rPr>`);
     } else {
       newRPr = `<a:rPr lang="${langCode}">${arialLatin}${arialEa}${arialCs}</a:rPr>`;
     }
-
     return newRPr;
   }
 
-  return newRPr;
+  return rPr || '';
 };
 
 export const processDocx = async (
