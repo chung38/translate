@@ -62,12 +62,13 @@ export const useTranslation = (
       3. **極度重要：翻譯後的文字內容中，絕對不要包含任何語言名稱的標籤或前綴（例如絕對不要出現 [英文]、[泰文]、English: 等字樣），只能有翻譯後的純文字。**
       4. 確保翻譯內容完全使用目標語言，不要夾雜原始語言。
       5. **標籤保留與對應：** 譯文必須原封不動地保留原文中的排版標籤 (如 [f0], [f1])。
-      6. **【絕對禁止切碎單字與字母間距】：** 越南文/泰文/英文中，一個單字絕對不可被拆卸分散在不同的標籤中。遇到標籤把詞彙切開的情況，請**把完整的翻譯單字全部集中放在其中一個標籤裡，並將相鄰的標籤內容清空**。
-         - ❌ 錯誤：\`[f1]đ[/f1][f2]ế[/f2][f3]n[/f3]\` 或 \`[f1]đi[/f1][f2]ều[/f2]\` 或 \`đ i ề u\` (字母之間絕對嚴禁加入空白)
-         - ✅ 正確：\`[f1]đến[/f1][f2][/f2][f3][/f3]\` 或 \`[f1]điều[/f1][f2][/f2]\`
-      7. **【主動插入必要空格】：** 中文原文兩字之間通常沒有空格（例如：\`[f1]扳至[/f1][f2]ON[/f2]\`），但當翻譯成有空白間距的語言時，**你必須強迫在「獨立單字」或「標籤」之間加上空白！**，但請維持單字的完整拼寫，不要模仿中文排版硬塞空格到字母中間。
-         - ❌ 錯誤：\`[f1]lên đến[/f1][f2]ON[/f2]\` (這會導致連字變成 lên đếnON)
-         - ✅ 正確：\`[f1]lên đến[/f1] [f2]ON[/f2]\` (標籤中間必須要有手動加入的空格，讓不同單字分開)
+      6. **防斷字原則：** 當原文的標籤切斷了同一個詞 (如 \`[f1]設[/f1][f2]備[/f2]\`)，翻譯後的目標語言「同一個音節/單字」內部**絕對不能有空格** (例如 \`[f1]thi[/f1][f2]ết bị[/f2]\`)。
+      7. **不同詞彙之間的必定空格 (Critical Spacing Rule)：** 當原文在沒有空格的狀態下切換標籤 (例如 \`[f0]打開[/f0][f1]總電源[/f1]\`)，當翻譯為越南文或英文時，**如果這兩個標籤代表的是兩個不同的單字，你必須在標籤內側或外側加上空格！**
+         **[極度重要範例]：**
+         ❌ 錯誤：\`[f0]Mở[/f0][f1]tủ điện số PB1[/f1]\` (單字會黏在一起變成 Mởtủ)
+         ✅ 正確：\`[f0]Mở [/f0][f1]tủ điện số PB1[/f1]\` (加上了空格，單字分離)
+         ❌ 錯誤：\`[f2], sau đó[/f2][f3]bật công tắc[/f3]\` (變成 đóbật)
+         ✅ 正確：\`[f2], sau đó [/f2][f3]bật công tắc[/f3]\`
       8. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
 
       待翻譯內容陣列：
@@ -139,6 +140,10 @@ export const useTranslation = (
         throw new Error('API 回傳格式不正確 (缺少 translations 陣列)');
       }
 
+      console.log("=== API RAW JSON OUTPUT ===");
+      console.log(JSON.stringify(parsed.translations, null, 2));
+      console.log("===========================");
+
       const normalizedTranslations = parsed.translations.map((item: any) => {
         const newItem: any = {};
         targetLangs.forEach(lang => {
@@ -161,7 +166,7 @@ export const useTranslation = (
     } catch (err: any) {
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
       const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
-      const isJsonError = err?.message?.includes('無法解析 API 回傳的 JSON 格式') || err?.message?.includes('API 回傳格式不正確');
+      const isJsonError = err?.message?.includes('無法解析 API 回傳的 JSON 格式') || err?.message?.includes('API 回傳格式不正確') || err?.message?.includes('Invalid JSON from server');
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
       
       if ((isRateLimit || isNetworkError || isJsonError) && retryCount < 10) {
