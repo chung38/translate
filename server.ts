@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from 'uuid';
 import fs from 'fs';
 import PQueue from 'p-queue';
-import rateLimit from 'express-rate-limit';
+import rateLimit, { ipKeyGenerator } from 'express-rate-limit';
 import { initializeApp } from 'firebase/app';
 import { 
   getFirestore, 
@@ -78,24 +78,21 @@ async function startServer() {
 
   // 設定 API 請求次數限制 (Rate Limiting)
   // 限制每個 IP 在 15 分鐘內最多只能發送 100 次請求
-  const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 100,
-    message: { error: { message: '請求次數過多，請稍後再試。' } },
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => {
-      // 處理 Forwarded header 警告
-      const forwarded = req.headers['forwarded'];
-      if (forwarded && typeof forwarded === 'string') {
-        const match = forwarded.match(/for="?([^;"]+)"?/);
-        if (match) return match[1];
-      }
-      // Fallback to Express's req.ip (which uses X-Forwarded-For because of trust proxy)
-      return req.ip || req.socket.remoteAddress || 'unknown';
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  message: { error: { message: '請求次數過多，請稍後再試。' } },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    const forwarded = req.headers['forwarded'];
+    if (forwarded && typeof forwarded === 'string') {
+      const match = forwarded.match(/for=\"?([^;\"]+)\"?/);
+      if (match) return ipKeyGenerator(match[1]);
     }
-  });
-
+    return ipKeyGenerator(req.ip || req.socket.remoteAddress || 'unknown');
+  }
+});
   // Request logger
   app.use((req, res, next) => {
     console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
