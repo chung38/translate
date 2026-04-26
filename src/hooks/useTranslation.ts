@@ -69,7 +69,10 @@ export const useTranslation = (
          ✅ 正確：\`[f0]Mở [/f0][f1]tủ điện số PB1[/f1]\` (加上了空格，單字分離)
          ❌ 錯誤：\`[f2], sau đó[/f2][f3]bật công tắc[/f3]\` (變成 đóbật)
          ✅ 正確：\`[f2], sau đó [/f2][f3]bật công tắc[/f3]\`
-      8. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
+      8. **表單填寫空格保留與字母防散（極度重要）：**
+         - 若原文中存在連續多個空白字元（例如做為排版或手寫填寫空間的 \`年   月   日\` 或 \`Name:      \`），你**必須**在翻譯結果中原封不動保留對應的大片空白（例如 \`Năm   Tháng   Ngày\`）。
+         - **但是！** 若原文是因為排版對齊，而在同一個詞彙的中文字之間插入了空格（例如 \`申  請  人:\` 或 \`工  作  地:\`），當翻譯成拼音語言（如英文、印文、越文）時，**絕對不准**將空格照抄分布到字母之間！請直接輸出正常拼寫的單字（例如輸出 \`Pemohon:\`，**嚴禁**輸出 \`P e m o h o n:\`；輸出 \`Người yêu cầu:\`，**嚴禁**輸出 \`N g ư ờ i  y ê u  c ầ u:\`）。
+      9. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
 
       待翻譯內容陣列：
       ${JSON.stringify(texts)}`;
@@ -110,7 +113,14 @@ export const useTranslation = (
       }
       const resultText = data.choices[0].message.content.trim();
       
-      const cleanJson = resultText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
+      // Extremely robust JSON extraction: find the first { and the last } 
+      // This bypasses any markdown blocks (```json) or conversational chatter entirely.
+      let cleanJson = resultText;
+      const firstBrace = cleanJson.indexOf('{');
+      const lastBrace = cleanJson.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+          cleanJson = cleanJson.substring(firstBrace, lastBrace + 1);
+      }
       
       let parsed;
       try {

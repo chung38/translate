@@ -158,21 +158,47 @@ export const sanitizeOutputText = (text: string, lang: string) => {
   if (lang === 'vi-VN' || lang === 'th-TH' || lang.toLowerCase().startsWith('en')) {
     cleaned = cleaned.replace(/\[f\d+\]\s*\[\/f\d+\]/g, '');
     
-    // We intentionally avoid blindly adding spaces around EVERY tag.
-    // However, if the AI output has two tags perfectly adjacent: `... word[/fX][fY]word ...`
-    // we programmatically inject a space to save the day from "stuck together" words like Mởtủ.
-    if (lang === 'vi-VN' || lang.toLowerCase().startsWith('en')) {
-      // Look for: letters -> [/fX][fY] -> letters. 
-      // We check for at least ONE letter before the first tag, and ONE after the second tag.
-      // But we DONT touch it if it looks like a short syllable break inside a word.
-      // e.g. "thi[/f1][f2]ế" -> "thi" and "ế".
-      // To be safe: we inject a space ONLY IF BOTH sides strictly have 2 or more letters. 
-      // `Mở` has 2 letters. `tủ` has 2 letters. This covers almost all distinct words while avoiding breaking syllables.
-      let prevCleaned;
-      do {
-        prevCleaned = cleaned;
-        cleaned = cleaned.replace(/([a-zA-ZÀ-ỹ]{2,})(\[\/f\d+\])(\[f\d+\])([a-zA-ZÀ-ỹ]{2,})/g, '$1$2 $3$4');
-      } while (prevCleaned !== cleaned);
+    if (lang === 'vi-VN') {
+       const VOWELS = /[aAáÁàÀãÃảẢạẠăĂắẮằẰẵẴẳẲặẶâÂấẤầẦẫẪẩẨậẬeEéÉèÈẽẼẻẺẹẸêÊếẾềỀễỄểỂệỆiIíÍìÌĩĨỉỈịỊoOóÓòÒõÕỏỎọỌôÔốỐồỒỗỖổỔộỘơƠớỚờỜỡỠởỞợỢuUúÚùÙũŨủỦụỤưƯứỨừỪữỮửỬựỰyYýÝỳỲỹỸỷỶỵỴ]/;
+       const CONSONANTS = /[bBcCdDđĐgGhHkKlLmMnNpPqQrRsStTvVxX]/;
+       const TONES = /[áÁàÀãÃảẢạẠắẮằẰẵẴẳẲặẶấẤầẦẫẪẩẨậẬéÉèÈẽẼẻẺẹẸếẾềỀễỄểỂệỆíÍìÌĩĨỉỈịỊóÓòÒõÕỏỎọỌốỐồỒỗỖổỔộỘớỚờỜỡỠởỞợỢúÚùÙũŨủỦụỤứỨừỪữỮửỬựỰýÝỳỲỹỸỷỶỵỴ]/;
+       
+       let prevCleaned;
+       do {
+         prevCleaned = cleaned;
+         cleaned = cleaned.replace(/([a-zA-ZÀ-ỹ]+[,\.\:\?!]?)(\[\/f\d+\])(\[f\d+\])([a-zA-ZÀ-ỹ]+)/g, (match, p1, closeTag, openTag, p2) => {
+             const cleanP1 = p1.replace(/[,\.\:\?!]/g, '');
+             const combined = cleanP1 + p2;
+             
+             let shouldSeparate = false;
+             
+             // 1. Two vowels separated by consonant
+             const vcv = new RegExp(VOWELS.source + '+' + CONSONANTS.source + '+' + VOWELS.source + '+');
+             if (vcv.test(combined)) shouldSeparate = true;
+             
+             // 2. Two tone marks
+             const toneMatch = combined.match(new RegExp(TONES.source, 'g'));
+             if (toneMatch && toneMatch.length >= 2) shouldSeparate = true;
+             
+             // 3. Combined length is implausibly long for a single Vietnamese syllable
+             if (combined.length >= 8) shouldSeparate = true;
+             
+             // 4. Always separate after punctuation
+             if (/[,\.\:\?!]$/.test(p1)) shouldSeparate = true;
+             
+             if (shouldSeparate) {
+                 return p1 + closeTag + ' ' + openTag + p2;
+             }
+             return match;
+         });
+       } while (prevCleaned !== cleaned);
+    } else if (lang.toLowerCase().startsWith('en')) {
+       let prevCleaned;
+       do {
+         prevCleaned = cleaned;
+         // For English, use heuristic: if both sides are >= 3 letters, they are likely distinct words.
+         cleaned = cleaned.replace(/([a-zA-Z]{3,}[,\.\:\?!]?)(\[\/f\d+\])(\[f\d+\])([a-zA-Z]{3,})/g, '$1$2 $3$4');
+       } while (prevCleaned !== cleaned);
     }
   }
   return cleaned;
