@@ -680,244 +680,309 @@ export const processExcel = async (
 };
 
 export const processPdf = async (
-  file: File, 
+  file: File,
   targetLanguages: string[],
   industry: string,
   translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
   updateProgress: (p: number, status?: TranslationStatus) => void,
   isCancelledRef: React.MutableRefObject<boolean>,
   outputMode: 'combined' | 'separate' = 'combined'
-) => {
-  updateProgress(10, 'processing');
+): Promise<{ blob: Blob; name: string }[]> => {
+  updateProgress(5, 'processing');
+ 
+  // ── 1. 載入 PDF ──────────────────────────────────────────────────
   const pdfjsLib = await import('pdfjs-dist');
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
-  
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
+ 
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ 
+  const pdf = await pdfjsLib.getDocument({
     data: arrayBuffer,
     cMapUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/cmaps/`,
     cMapPacked: true,
-    standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`
+    standardFontDataUrl: `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/standard_fonts/`,
   }).promise;
-  
-  let fullText = '';
+ 
   const totalPages = pdf.numPages;
-  
-  // Dynamic import for Tesseract to avoid blocking initial load
-  let tesseractWorker: any = null;
-  
-  for (let i = 1; i <= totalPages; i++) {
+ 
+  // ── 型別定義 ──────────────────────────────────────────────────────
+  interface TextLine {
+    y: number;       // pdfjs Y（左下原點）
+    x: number;       // 行首 X
+    text: string;    // 合併文字
+    fontSize: number;
+  }
+ 
+  interface PageData {
+    imageDataUrl: string;
+    pdfWidth: number;
+    pdfHeight: number;
+    canvasWidth: number;
+    canvasHeight: number;
+    lines: TextLine[];
+  }
+ 
+  // ── Helper：依 Y 分組成邏輯行 ─────────────────────────────────────
+  function groupToLines(items: any[]): TextLine[] {
+    if (!items?.length) return [];
+    const sorted = [...items]
+      .filter(i => i.str?.trim())
+      .sort((a, b) => {
+        const dy = b.transform[5] - a.transform[5];
+        return Math.abs(dy) > 2 ? dy : a.transform[4] - b.transform[4];
+      });
+    const lines: TextLine[] = [];
+    for (const item of sorted) {
+      const x = item.transform[4];
+      const y = item.transform[5];
+      const fontSize = Math.abs(item.transform[3]) || 12;
+      const match = lines.find(
+        l => Math.abs(l.y - y) < Math.max(l.fontSize, fontSize) * 0.6
+      );
+      if (match) {
+        const needSpace =
+          x > match.x && !match.text.endsWith(' ') && !item.str.startsWith(' ');
+        match.text = x < match.x
+          ? item.str + ' ' + match.text
+          : match.text + (needSpace ? ' ' : '') + item.str;
+        if (x < match.x) match.x = x;
+        match.fontSize = Math.max(match.fontSize, fontSize);
+      } else {
+        lines.push({ y, x, text: item.str, fontSize });
+      }
+    }
+    return lines.sort((a, b) => b.y - a.y);
+  }
+ 
+  // ── 2. 逐頁 render + 提取文字 ────────────────────────────────────
+  const RENDER_SCALE = 2.0;
+  const pages: PageData[] = [];
+ 
+  for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
     if (isCancelledRef.current) throw new Error('Cancelled');
-    const page = await pdf.getPage(i);
-    
-    let pageText = '';
-    
-    updateProgress(10 + ((i - 0.5) / totalPages) * 10, 'processing');
-    
-    // Try native text extraction first
+    updateProgress(5 + (pageNum / totalPages) * 15, 'processing');
+ 
+    const page = await pdf.getPage(pageNum);
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
+    const origVp = page.getViewport({ scale: 1 });
+ 
+    // Render 背景到 canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext('2d')!;
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const imageDataUrl = canvas.toDataURL('image/jpeg', 0.92);
+ 
+    // 提取文字
     const textContent = await page.getTextContent();
-    const textItems = textContent.items as any[];
-    
-    let extractedText = '';
-    let lastY = null;
-    
-    // Sort items by Y (descending) and X (ascending) to handle basic layout
-    textItems.sort((a, b) => {
-      const yDiff = b.transform[5] - a.transform[5];
-      if (Math.abs(yDiff) > 5) return yDiff;
-      return a.transform[4] - b.transform[4];
+    let lines = groupToLines(textContent.items as any[]);
+ 
+    // OCR fallback
+    if (textContent.items.map((i: any) => i.str || '').join('').trim().length < 20) {
+      console.log(`Page ${pageNum}: 文字稀少，改用 OCR`);
+      const { createWorker } = await import('tesseract.js');
+      const worker = await createWorker('chi_tra+eng');
+      await (worker as any).setParameters({ tessedit_pageseg_mode: '11' });
+      const { data: { text } } = await worker.recognize(canvas);
+      await worker.terminate();
+      lines = text
+        .split('\n')
+        .filter(l => l.trim())
+        .map((t, i) => ({ y: viewport.height - i * 16, x: 0, text: t, fontSize: 12 }));
+    }
+ 
+    pages.push({
+      imageDataUrl,
+      pdfWidth: origVp.width,
+      pdfHeight: origVp.height,
+      canvasWidth: viewport.width,
+      canvasHeight: viewport.height,
+      lines,
     });
-
-    for (const item of textItems) {
-      if (!item.str) continue;
-      if (lastY !== null && Math.abs(lastY - item.transform[5]) > 5) {
-        extractedText += '\n';
-      } else if (lastY !== null) {
-        extractedText += ' ';
-      }
-      extractedText += item.str;
-      lastY = item.transform[5];
-    }
-    
-    extractedText = extractedText.replace(/ {2,}/g, ' ').trim();
-
-    // If native extraction yields meaningful text, use it. Otherwise, fallback to OCR.
-    if (extractedText.length > 20) {
-      pageText = extractedText;
-    } else {
-      console.log(`Page ${i} has little/no text, falling back to OCR...`);
-      const viewport = page.getViewport({ scale: 2.0 }); // Higher scale for better OCR
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      if (context) {
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-        
-        await page.render({ canvasContext: context, viewport: viewport, canvas: canvas }).promise;
-        
-        if (!tesseractWorker) {
-          const { createWorker } = await import('tesseract.js');
-          tesseractWorker = await createWorker('chi_tra+eng'); // Load Traditional Chinese and English
-          await tesseractWorker.setParameters({
-            tessedit_pageseg_mode: '11', // Sparse text. Find as much text as possible in no particular order. Better for tables with empty cells.
-          });
-        }
-        
-        const { data: { text } } = await tesseractWorker.recognize(canvas);
-        pageText = text;
-      }
-    }
-    
-    fullText += pageText + '\n\n';
-    updateProgress(10 + (i / totalPages) * 10);
   }
-  
-  if (tesseractWorker) {
-    await tesseractWorker.terminate();
+ 
+  if (pages.every(p => p.lines.length === 0)) {
+    throw new Error('無法從 PDF 中提取任何文字，即使嘗試了 OCR 辨識。');
   }
-
-  if (fullText.trim().length === 0) {
-    throw new Error('無法從 PDF 中提取文字。即使嘗試了 OCR 辨識，仍無法讀取內容。');
-  }
-
+ 
   updateProgress(20, 'translating');
-  const paragraphs = fullText.split('\n\n').filter(p => p.trim().length > 0);
-  
-  const batchSize = 10;
-  const concurrency = 3;
-  const translatedParagraphs: Record<string, string>[] = [];
-  
-  for (let i = 0; i < paragraphs.length; i += batchSize * concurrency) {
-    if (isCancelledRef.current) throw new Error('Cancelled');
-    
-    const promises = [];
-    for (let j = 0; j < concurrency && (i + j * batchSize) < paragraphs.length; j++) {
-      const start = i + j * batchSize;
-      const batch = paragraphs.slice(start, start + batchSize);
-      promises.push(translateBatch(batch, targetLanguages, industry));
+ 
+  // ── 3. 批次翻譯所有行 ────────────────────────────────────────────
+  const allLineTexts: string[] = [];
+  const linePageIdx: number[] = [];
+ 
+  for (let pi = 0; pi < pages.length; pi++) {
+    for (const line of pages[pi].lines) {
+      if (line.text.trim()) {
+        allLineTexts.push(line.text);
+        linePageIdx.push(pi);
+      }
     }
-    
-    const results = await Promise.all(promises);
-    for (const res of results) {
-      translatedParagraphs.push(...res);
-    }
-    
-    const progressIndex = Math.min(i + batchSize * concurrency, paragraphs.length);
-    updateProgress(20 + (progressIndex / paragraphs.length) * 60);
   }
-
-  updateProgress(80, 'generating');
-  
+ 
+  const batchSize = 15;
+  const concurrency = 3;
+  const translatedLines: Record<string, string>[] = [];
+ 
+  for (let i = 0; i < allLineTexts.length; i += batchSize * concurrency) {
+    if (isCancelledRef.current) throw new Error('Cancelled');
+    const promises: Promise<Record<string, string>[]>[] = [];
+    for (let j = 0; j < concurrency; j++) {
+      const start = i + j * batchSize;
+      if (start >= allLineTexts.length) break;
+      promises.push(translateBatch(allLineTexts.slice(start, start + batchSize), targetLanguages, industry));
+    }
+    const results = await Promise.all(promises);
+    for (const r of results) translatedLines.push(...r);
+    const done = Math.min(i + batchSize * concurrency, allLineTexts.length);
+    updateProgress(20 + (done / allLineTexts.length) * 50);
+  }
+ 
+  updateProgress(70, 'generating');
+ 
+  // ── 4. 合成 PDF ──────────────────────────────────────────────────
   const { jsPDF } = await import('jspdf');
   const html2canvas = (await import('html2canvas')).default;
-  
-  const generatedFiles: { blob: Blob, name: string }[] = [];
-  const langGroups = outputMode === 'separate' ? targetLanguages.map(l => [l]) : [targetLanguages];
-
+ 
+  const langGroups = outputMode === 'separate'
+    ? targetLanguages.map(l => [l])
+    : [targetLanguages];
+ 
+  const generatedFiles: { blob: Blob; name: string }[] = [];
+ 
   for (const langs of langGroups) {
-    const wrapper = document.createElement('div');
-    wrapper.style.position = 'absolute';
-    wrapper.style.left = '-9999px';
-    wrapper.style.top = '0';
-    document.body.appendChild(wrapper);
-
-    const pages: HTMLDivElement[] = [];
-    const createPage = () => {
-      const page = document.createElement('div');
-      page.style.width = '800px';
-      page.style.minHeight = '1131px'; // A4 height ratio for 800px width
-      page.style.padding = '40px';
-      page.style.boxSizing = 'border-box';
-      page.style.backgroundColor = '#fff';
-      page.style.fontFamily = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", "Microsoft JhengHei", "微軟正黑體", "PingFang TC", "蘋果儷中黑", "Heiti TC", "黑體-繁"';
-      page.style.fontSize = '16px';
-      page.style.lineHeight = '1.6';
-      page.style.color = '#000';
-      wrapper.appendChild(page);
-      pages.push(page);
-      return page;
-    };
-
-    let currentPage = createPage();
-    
-    paragraphs.forEach((original, index) => {
-      const block = document.createElement('div');
-      
-      const p = document.createElement('div');
-      p.style.marginBottom = '12px';
-      p.innerText = original;
-      block.appendChild(p);
-
-      langs.forEach(lang => {
-        const rawTranslatedText = translatedParagraphs[index]?.[lang] || '(翻譯失敗)';
-        const translatedText = sanitizeOutputText(rawTranslatedText, lang);
-        const tp = document.createElement('div');
-        tp.style.marginBottom = '12px';
-        tp.innerText = translatedText;
-        block.appendChild(tp);
-      });
-      
-      const spacer = document.createElement('div');
-      spacer.style.height = '16px';
-      block.appendChild(spacer);
-
-      currentPage.appendChild(block);
-
-      // Check if page exceeded height (1131px) and it's not the only block on the page
-      if (currentPage.scrollHeight > 1131 && currentPage.children.length > 1) {
-        // Remove block from current page
-        currentPage.removeChild(block);
-        // Create new page and add block
-        currentPage = createPage();
-        currentPage.appendChild(block);
-      }
+    if (isCancelledRef.current) throw new Error('Cancelled');
+ 
+    const firstPage = pages[0];
+    const doc = new jsPDF({
+      orientation: firstPage.pdfWidth > firstPage.pdfHeight ? 'landscape' : 'portrait',
+      unit: 'pt',
+      format: [firstPage.pdfWidth, firstPage.pdfHeight],
     });
-
-    try {
-      await document.fonts.ready;
-      // Add a small delay to ensure the browser has painted the DOM elements
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      const doc = new jsPDF('p', 'pt', 'a4');
-      const pdfWidth = doc.internal.pageSize.getWidth();
-      
-      for (let i = 0; i < pages.length; i++) {
-        const canvas = await html2canvas(pages[i], { 
-          scale: 2, 
-          useCORS: true, 
-          logging: false,
-          onclone: (clonedDoc) => {
-            // Remove all stylesheets in the cloned document to prevent html2canvas 
-            // from parsing unsupported CSS functions like "oklch" from Tailwind v4.
-            // Since our PDF pages use inline styles exclusively, this won't affect the output.
-            const styles = clonedDoc.querySelectorAll('style, link[rel="stylesheet"]');
-            styles.forEach(s => s.remove());
-          }
-        });
-        const imgData = canvas.toDataURL('image/jpeg', 0.95);
-        
-        if (i > 0) {
-          doc.addPage();
-        }
-        
-        const imgWidth = pdfWidth;
-        const imgHeight = (canvas.height * imgWidth) / canvas.width;
-        
-        doc.addImage(imgData, 'JPEG', 0, 0, imgWidth, imgHeight);
+ 
+    let globalLineIdx = 0;
+ 
+    for (let pi = 0; pi < pages.length; pi++) {
+      if (pi > 0) {
+        const p = pages[pi];
+        doc.addPage(
+          [p.pdfWidth, p.pdfHeight],
+          p.pdfWidth > p.pdfHeight ? 'landscape' : 'portrait'
+        );
       }
-
-      const blob = doc.output('blob');
-      const prefix = outputMode === 'separate' ? `${langs[0]}_` : 'translated_';
-      generatedFiles.push({ blob, name: `${prefix}${file.name.replace('.pdf', '.pdf')}` });
-    } finally {
-      document.body.removeChild(wrapper);
+ 
+      const pd = pages[pi];
+ 
+      // 4a. 貼背景圖（保留原始圖片、圖形、表格線條）
+      doc.addImage(pd.imageDataUrl, 'JPEG', 0, 0, pd.pdfWidth, pd.pdfHeight);
+ 
+      // 4b. 建立覆蓋層 div（離屏渲染，支援所有 Unicode 字元）
+      const overlay = document.createElement('div');
+      overlay.style.cssText = [
+        'position:absolute',
+        'left:-99999px',
+        'top:0',
+        `width:${pd.canvasWidth}px`,
+        `height:${pd.canvasHeight}px`,
+        'pointer-events:none',
+        'overflow:visible',
+        'background:transparent',
+      ].join(';');
+      document.body.appendChild(overlay);
+ 
+      for (const line of pd.lines) {
+        if (!line.text.trim()) continue;
+        const translations = translatedLines[globalLineIdx++] || {};
+ 
+        // canvas 座標（pdfjs Y 是左下原點 → canvas Y 是左上原點）
+        // 譯文區塊放在「原文行正下方」
+        const canvasLineTop = pd.canvasHeight - line.y * RENDER_SCALE;
+        const fontSizePx = Math.round(line.fontSize * RENDER_SCALE * 0.95);
+        const lineHeightPx = Math.max(fontSizePx + 6, 16);
+ 
+        const block = document.createElement('div');
+        block.style.cssText = [
+          'position:absolute',
+          `left:${Math.max(0, line.x * RENDER_SCALE - 2)}px`,
+          // 放在原文行下方（+1px 間距）
+          `top:${canvasLineTop + 1}px`,
+          `width:${Math.min(pd.canvasWidth * 0.95, pd.canvasWidth - line.x * RENDER_SCALE)}px`,
+          'background:rgba(255,255,255,0.90)',
+          'padding:1px 4px 2px 4px',
+          'box-sizing:border-box',
+          'border-left:3px solid rgba(99,102,241,0.6)',
+          'border-radius:0 2px 2px 0',
+          'z-index:10',
+        ].join(';');
+ 
+        langs.forEach((lang, langIdx) => {
+          const text = translations[lang] || '';
+          if (!text) return;
+          const row = document.createElement('div');
+          row.style.cssText = [
+            `font-size:${fontSizePx}px`,
+            `line-height:${lineHeightPx}px`,
+            // 多語言時顏色區分：藍/紫/綠
+            `color:${['#1e40af', '#6d28d9', '#065f46', '#92400e'][langIdx % 4]}`,
+            'font-family:Arial,"Noto Sans TC","Microsoft JhengHei","Noto Sans Thai",sans-serif',
+            'white-space:pre-wrap',
+            'word-break:break-word',
+          ].join(';');
+          // 多語言時加語言標籤
+          if (langs.length > 1) {
+            const label = document.createElement('span');
+            label.textContent = `[${lang}] `;
+            label.style.cssText = 'font-size:9px;opacity:0.6;font-weight:bold;';
+            row.prepend(label);
+          }
+          row.appendChild(document.createTextNode(text));
+          block.appendChild(row);
+        });
+ 
+        overlay.appendChild(block);
+      }
+ 
+      await document.fonts.ready;
+      await new Promise(r => setTimeout(r, 60));
+ 
+      let overlayCanvas: HTMLCanvasElement | null = null;
+      try {
+        overlayCanvas = await html2canvas(overlay, {
+          scale: 1,
+          useCORS: true,
+          logging: false,
+          backgroundColor: null,
+          width: pd.canvasWidth,
+          height: pd.canvasHeight,
+          onclone: (clonedDoc) => {
+            clonedDoc.querySelectorAll('style,link[rel="stylesheet"]').forEach(s => s.remove());
+          },
+        });
+      } catch (e) {
+        console.warn(`頁面 ${pi + 1} 覆蓋層渲染失敗`, e);
+      }
+      document.body.removeChild(overlay);
+ 
+      if (overlayCanvas) {
+        // 用 PNG 保留透明背景，貼在背景圖上方
+        doc.addImage(
+          overlayCanvas.toDataURL('image/png'),
+          'PNG',
+          0, 0,
+          pd.pdfWidth, pd.pdfHeight,
+        );
+      }
     }
+ 
+    const blob = doc.output('blob');
+    const prefix = outputMode === 'separate' ? `${langs[0]}_` : 'translated_';
+    generatedFiles.push({ blob, name: `${prefix}${file.name}` });
   }
-
+ 
   updateProgress(100, 'completed');
   return generatedFiles;
 };
-
 export const processPptx = async (
   file: File, 
   targetLanguages: string[],
