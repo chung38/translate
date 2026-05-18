@@ -713,11 +713,8 @@ export const processPdf = async (
   }
 
   interface PageData {
-    imageDataUrl: string;   // 原始頁面截圖（全彩）
     pdfWidth: number;
     pdfHeight: number;
-    canvasWidth: number;
-    canvasHeight: number;
     lines: TextLine[];
   }
 
@@ -753,8 +750,7 @@ export const processPdf = async (
     return lines.sort((a, b) => b.y - a.y);
   }
 
-  // ── 2. 逐頁 render + 提取文字 ────────────────────────────────────
-  const RENDER_SCALE = 2.0;
+  // ── 2. 逐頁提取文字（不再 render 截圖） ──────────────────────────
   const pages: PageData[] = [];
 
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
@@ -762,21 +758,22 @@ export const processPdf = async (
     updateProgress(5 + (pageNum / totalPages) * 15, 'processing');
 
     const page = await pdf.getPage(pageNum);
-    const viewport = page.getViewport({ scale: RENDER_SCALE });
     const origVp = page.getViewport({ scale: 1 });
-
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext('2d')!;
-    await page.render({ canvasContext: ctx, viewport }).promise;
-    const imageDataUrl = canvas.toDataURL('image/jpeg', 0.92);
 
     const textContent = await page.getTextContent();
     let lines = groupToLines(textContent.items as any[]);
 
+    // OCR fallback：若文字稀少，render 後 OCR
     if (textContent.items.map((i: any) => i.str || '').join('').trim().length < 20) {
       console.log(`Page ${pageNum}: 文字稀少，改用 OCR`);
+      const RENDER_SCALE = 2.0;
+      const viewport = page.getViewport({ scale: RENDER_SCALE });
+      const canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      const ctx = canvas.getContext('2d')!;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
       const { createWorker } = await import('tesseract.js');
       const worker = await createWorker('chi_tra+eng');
       await (worker as any).setParameters({ tessedit_pageseg_mode: '11' });
@@ -785,15 +782,12 @@ export const processPdf = async (
       lines = text
         .split('\n')
         .filter(l => l.trim())
-        .map((t, i) => ({ y: viewport.height - i * 16, x: 0, text: t, fontSize: 12 }));
+        .map((t, i) => ({ y: origVp.height - i * 16, x: 0, text: t, fontSize: 12 }));
     }
 
     pages.push({
-      imageDataUrl,
       pdfWidth: origVp.width,
       pdfHeight: origVp.height,
-      canvasWidth: viewport.width,
-      canvasHeight: viewport.height,
       lines,
     });
   }
@@ -805,6 +799,7 @@ export const processPdf = async (
   updateProgress(20, 'translating');
 
   // ── 3. 批次翻譯所有行 ────────────────────────────────────────────
+  // 收集所有頁面的有效行，並建立 globalIndex → (pageIdx, lineIdx) 的對應
   const allLineTexts: string[] = [];
   const linePageIdx: number[] = [];
 
@@ -819,7 +814,7 @@ export const processPdf = async (
 
   const batchSize = 15;
   const concurrency = 3;
-  const translatedLines: Record<string, string>[] = [];
+  const translatedLines: Record<string, string>[] = new Array(allLineTexts.length);
 
   for (let i = 0; i < allLineTexts.length; i += batchSize * concurrency) {
     if (isCancelledRef.current) throw new Error('Cancelled');
@@ -827,28 +822,56 @@ export const processPdf = async (
     for (let j = 0; j < concurrency; j++) {
       const start = i + j * batchSize;
       if (start >= allLineTexts.length) break;
-      promises.push(translateBatch(allLineTexts.slice(start, start + batchSize), targetLanguages, industry));
+      const end = Math.min(start + batchSize, allLineTexts.length);
+      promises.push(translateBatch(allLineTexts.slice(start, end), targetLanguages, industry));
     }
     const results = await Promise.all(promises);
-    for (const r of results) translatedLines.push(...r);
+    let fillIdx = i;
+    for (const r of results) {
+      for (const item of r) {
+        translatedLines[fillIdx++] = item;
+      }
+    }
     const done = Math.min(i + batchSize * concurrency, allLineTexts.length);
     updateProgress(20 + (done / allLineTexts.length) * 50);
   }
 
   updateProgress(70, 'generating');
 
-  // ── 4. 合成 PDF：淡化背景 + 原文/譯文交錯排列 + 自動分頁 ────────
-  const { jsPDF } = await import('jspdf');
+  // ── 4. 合成 PDF：純白頁面，原文一行 + 譯文一行交錯排列 ──────────
+  //
+  // 使用 canvas 繪製文字（支援 CJK / Thai / Vietnamese），
+  // 再以 jsPDF addImage 方式輸出，確保字型完整。
+  //
+  // 排版邏輯：
+  //   每個「block」= 原文行 + 每個語言的譯文行
+  //   block 高度固定，超出一頁時自動新增 PDF 頁面（純白）
+  //
+  // 排版常數（pt）
+  const PAGE_MARGIN = 40;
+  const LINE_GAP = 3;             // 原文行 → 第一行譯文的間距
+  const BLOCK_GAP = 10;           // block 與 block 之間的間距
+  const ORIG_FONT_SIZE = 9;
+  const TRANS_FONT_SIZE = 10;
+  const ORIG_LINE_HEIGHT = ORIG_FONT_SIZE * 1.5;
+  const TRANS_LINE_HEIGHT = TRANS_FONT_SIZE * 1.6;
+  const TEXT_SCALE = 2;           // canvas 超取樣，讓文字清晰
 
-  // 排版常數
-  const PAGE_MARGIN = 36;           // pt，四邊留白
-  const LINE_GAP = 4;               // pt，原文行與譯文行之間的間距
-  const BLOCK_GAP = 10;             // pt，每個原文+譯文區塊之間的間距
-  const ORIG_FONT_SIZE = 9;         // pt，原文字體大小
-  const TRANS_FONT_SIZE = 10;       // pt，譯文字體大小（稍大，更易讀）
-  const ORIG_LINE_HEIGHT = ORIG_FONT_SIZE * 1.4;
-  const TRANS_LINE_HEIGHT = TRANS_FONT_SIZE * 1.5;
-  const BG_OPACITY = 0.15;          // 背景圖淡化程度
+  // 每個 block 的高度（pt）
+  const blockHeight =
+    ORIG_LINE_HEIGHT + LINE_GAP +
+    targetLanguages.length * TRANS_LINE_HEIGHT +
+    BLOCK_GAP;
+
+  const TRANS_COLORS = ['#1e3a8a', '#5b21b6', '#065f46', '#7c2d12'];
+  const TRANS_BG = [
+    'rgba(219,234,254,0.85)',
+    'rgba(237,233,254,0.85)',
+    'rgba(209,250,229,0.85)',
+    'rgba(254,243,199,0.85)',
+  ];
+
+  const { jsPDF } = await import('jspdf');
 
   const langGroups = outputMode === 'separate'
     ? targetLanguages.map(l => [l])
@@ -859,159 +882,119 @@ export const processPdf = async (
   for (const langs of langGroups) {
     if (isCancelledRef.current) throw new Error('Cancelled');
 
+    // 決定輸出頁面尺寸（以第一頁為準）
     const firstPage = pages[0];
+    const PW = firstPage.pdfWidth;
+    const PH = firstPage.pdfHeight;
+
     const doc = new jsPDF({
-      orientation: firstPage.pdfWidth > firstPage.pdfHeight ? 'landscape' : 'portrait',
+      orientation: PW > PH ? 'landscape' : 'portrait',
       unit: 'pt',
-      format: [firstPage.pdfWidth, firstPage.pdfHeight],
+      format: [PW, PH],
     });
 
-    // 載入支援多語言的字體（jsPDF 內建 Helvetica 支援 Latin，CJK 需 canvas 回退）
-    // 此處使用 canvas-based 文字渲染，由 jsPDF addImage 方式繪製
+    const contentWidth = PW - PAGE_MARGIN * 2;
+    const usableHeight = PH - PAGE_MARGIN * 2;
+    const blocksPerOutputPage = Math.floor(usableHeight / blockHeight);
 
-    let globalLineIdx = 0;
-
-    for (let pi = 0; pi < pages.length; pi++) {
-      const pd = pages[pi];
-      const PW = pd.pdfWidth;
-      const PH = pd.pdfHeight;
-      const contentWidth = PW - PAGE_MARGIN * 2;
-
-      // ── 4a. 新增頁面（第一頁已在 jsPDF 初始化時建立） ───────────
-      if (pi > 0) {
-        doc.addPage([PW, PH], PW > PH ? 'landscape' : 'portrait');
+    // 建立一個「可繪製 canvas 到 PDF 頁面」的工具函式
+    const flushCanvasToPdf = (
+      tc: HTMLCanvasElement,
+      isFirstPage: boolean,
+      pw: number,
+      ph: number
+    ) => {
+      if (!isFirstPage) {
+        doc.addPage([pw, ph], pw > ph ? 'landscape' : 'portrait');
       }
-
-      // ── 4b. 貼淡化背景圖 ────────────────────────────────────────
-      // 先鋪一層白色底，再用低透明度貼原始截圖，實現 15% 淡化效果
-      doc.setFillColor(255, 255, 255);
-      doc.rect(0, 0, PW, PH, 'F');
-
-      // 使用 canvas 混合達到淡化
-      const bgCanvas = document.createElement('canvas');
-      bgCanvas.width = pd.canvasWidth;
-      bgCanvas.height = pd.canvasHeight;
-      const bgCtx = bgCanvas.getContext('2d')!;
       // 白色底
-      bgCtx.fillStyle = '#ffffff';
-      bgCtx.fillRect(0, 0, bgCanvas.width, bgCanvas.height);
-      // 以 globalAlpha 疊加原圖
-      bgCtx.globalAlpha = BG_OPACITY;
-      const bgImg = new Image();
-      await new Promise<void>(resolve => {
-        bgImg.onload = () => {
-          bgCtx.drawImage(bgImg, 0, 0);
-          resolve();
-        };
-        bgImg.src = pd.imageDataUrl;
-      });
-      doc.addImage(bgCanvas.toDataURL('image/jpeg', 0.85), 'JPEG', 0, 0, PW, PH);
+      doc.setFillColor(255, 255, 255);
+      doc.rect(0, 0, pw, ph, 'F');
+      // 貼文字 canvas
+      doc.addImage(tc.toDataURL('image/png'), 'PNG', 0, 0, pw, ph);
+    };
 
-      // ── 4c. 用 canvas 渲染文字（支援 CJK/Thai/Vietnamese），再 addImage ──
-      // 建立離屏 canvas，尺寸與 PDF 頁面等比
-      const TEXT_SCALE = 2; // 高解析度文字
-      const textCanvas = document.createElement('canvas');
-      textCanvas.width = PW * TEXT_SCALE;
-      textCanvas.height = PH * TEXT_SCALE;
-      const tc = textCanvas.getContext('2d')!;
-      tc.scale(TEXT_SCALE, TEXT_SCALE);
-      // 透明底
-      tc.clearRect(0, 0, PW, PH);
+    // 走訪所有全域行，依 blocksPerOutputPage 自動分頁
+    let isFirstPdfPage = true;
+    let blockOnPage = 0;
+    let curY = PAGE_MARGIN;
 
-      // 收集本頁所有行資料
-      const pageLines = pd.lines.filter(l => l.text.trim());
-      const pageLinesCount = pageLines.length;
+    // 建立初始 canvas
+    let tc = document.createElement('canvas');
+    tc.width = PW * TEXT_SCALE;
+    tc.height = PH * TEXT_SCALE;
+    let ctx = tc.getContext('2d')!;
+    ctx.scale(TEXT_SCALE, TEXT_SCALE);
+    ctx.clearRect(0, 0, PW, PH);
 
-      // 計算每個「原文+譯文」區塊的高度
-      // 每個區塊 = ORIG_LINE_HEIGHT + langs.length * TRANS_LINE_HEIGHT + LINE_GAP + BLOCK_GAP
-      const blockHeight = ORIG_LINE_HEIGHT + langs.length * TRANS_LINE_HEIGHT + LINE_GAP + BLOCK_GAP;
-
-      // 決定每頁可容納的區塊數
-      const usableHeight = PH - PAGE_MARGIN * 2;
-      const blocksPerPage = Math.floor(usableHeight / blockHeight);
-
-      // 如果一頁 PDF 原本的行數超過可容納數，需要分頁
-      // 計算需要幾個輸出頁面來放本原始頁的所有行
-      const outputPagesNeeded = pageLinesCount === 0 ? 1 : Math.ceil(pageLinesCount / blocksPerPage);
-
-      // 先處理第一個輸出頁（已由上面 addPage 處理），剩餘的動態新增
-      for (let opIdx = 0; opIdx < outputPagesNeeded; opIdx++) {
-        if (opIdx > 0) {
-          // 新增分頁，同樣貼淡化背景
-          doc.addPage([PW, PH], PW > PH ? 'landscape' : 'portrait');
-          doc.setFillColor(255, 255, 255);
-          doc.rect(0, 0, PW, PH, 'F');
-          doc.addImage(bgCanvas.toDataURL('image/jpeg', 0.85), 'JPEG', 0, 0, PW, PH);
-        }
-
-        // 本輸出頁的行範圍
-        const startLine = opIdx * blocksPerPage;
-        const endLine = Math.min(startLine + blocksPerPage, pageLinesCount);
-
-        // 建立此輸出頁的文字 canvas
-        const tc2 = document.createElement('canvas');
-        tc2.width = PW * TEXT_SCALE;
-        tc2.height = PH * TEXT_SCALE;
-        const ctx2 = tc2.getContext('2d')!;
-        ctx2.scale(TEXT_SCALE, TEXT_SCALE);
-        ctx2.clearRect(0, 0, PW, PH);
-
-        let curY = PAGE_MARGIN;
-
-        for (let li = startLine; li < endLine; li++) {
-          const line = pageLines[li];
-          const lineGlobalIdx = globalLineIdx + li;
-          const translations = translatedLines[lineGlobalIdx] || {};
-
-          // ── 原文行 ──────────────────────────────────────────────
-          // 半透明白底，讓文字更易讀
-          ctx2.fillStyle = 'rgba(255,255,255,0.75)';
-          ctx2.fillRect(PAGE_MARGIN - 2, curY - ORIG_LINE_HEIGHT + 3, contentWidth + 4, ORIG_LINE_HEIGHT + 2);
-
-          ctx2.font = `${ORIG_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-          ctx2.fillStyle = '#333333';
-          ctx2.fillText(line.text, PAGE_MARGIN, curY, contentWidth);
-
-          curY += ORIG_LINE_HEIGHT + LINE_GAP;
-
-          // ── 譯文行（每個語言一行）──────────────────────────────
-          const TRANS_COLORS = ['#1e3a8a', '#5b21b6', '#065f46', '#7c2d12'];
-          langs.forEach((lang, langIdx) => {
-            const translatedText = translations[lang] || '';
-            if (!translatedText) return;
-
-            // 淡色背景帶
-            ctx2.fillStyle = ['rgba(219,234,254,0.7)', 'rgba(237,233,254,0.7)', 'rgba(209,250,229,0.7)', 'rgba(254,243,199,0.7)'][langIdx % 4];
-            ctx2.fillRect(PAGE_MARGIN - 2, curY - TRANS_LINE_HEIGHT + 3, contentWidth + 4, TRANS_LINE_HEIGHT + 1);
-
-            // 左側語言標籤（多語言時）
-            let textX = PAGE_MARGIN;
-            if (langs.length > 1) {
-              ctx2.font = `bold ${ORIG_FONT_SIZE - 1}pt Arial, sans-serif`;
-              ctx2.fillStyle = TRANS_COLORS[langIdx % 4];
-              const label = `[${lang}] `;
-              ctx2.fillText(label, textX, curY);
-              textX += ctx2.measureText(label).width + 2;
-            }
-
-            ctx2.font = `${TRANS_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", "Noto Sans Thai", sans-serif`;
-            ctx2.fillStyle = TRANS_COLORS[langIdx % 4];
-            ctx2.fillText(translatedText, textX, curY, contentWidth - (textX - PAGE_MARGIN));
-
-            curY += TRANS_LINE_HEIGHT;
-          });
-
-          curY += BLOCK_GAP;
-        }
-
-        // 將文字 canvas 以 PNG（保留透明）貼到 PDF
-        const textDataUrl = tc2.toDataURL('image/png');
-        doc.addImage(textDataUrl, 'PNG', 0, 0, PW, PH);
+    for (let gi = 0; gi < allLineTexts.length; gi++) {
+      // 若本頁已滿，flush 後開新頁
+      if (blockOnPage >= blocksPerOutputPage) {
+        flushCanvasToPdf(tc, isFirstPdfPage, PW, PH);
+        isFirstPdfPage = false;
+        blockOnPage = 0;
+        curY = PAGE_MARGIN;
+        tc = document.createElement('canvas');
+        tc.width = PW * TEXT_SCALE;
+        tc.height = PH * TEXT_SCALE;
+        ctx = tc.getContext('2d')!;
+        ctx.scale(TEXT_SCALE, TEXT_SCALE);
+        ctx.clearRect(0, 0, PW, PH);
       }
 
-      // 更新 globalLineIdx（已使用的行數）
-      globalLineIdx += pageLinesCount;
+      const origText = allLineTexts[gi];
+      const translations = translatedLines[gi] || {};
+
+      // ── 原文行 ──────────────────────────────────────────────────
+      const origY = curY + ORIG_LINE_HEIGHT;
+      // 淡灰底帶
+      ctx.fillStyle = 'rgba(245,245,245,0.9)';
+      ctx.fillRect(PAGE_MARGIN - 4, curY, contentWidth + 8, ORIG_LINE_HEIGHT + 2);
+      // 原文文字
+      ctx.font = `${ORIG_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
+      ctx.fillStyle = '#333333';
+      ctx.fillText(origText, PAGE_MARGIN, origY, contentWidth);
+
+      curY += ORIG_LINE_HEIGHT + LINE_GAP;
+
+      // ── 譯文行（每個語言一行）──────────────────────────────────
+      langs.forEach((lang, langIdx) => {
+        const translatedText = translations[lang] || '';
+        if (!translatedText) {
+          curY += TRANS_LINE_HEIGHT;
+          return;
+        }
+
+        const transY = curY + TRANS_LINE_HEIGHT;
+        const colorIdx = langIdx % 4;
+
+        // 彩色底帶
+        ctx.fillStyle = TRANS_BG[colorIdx];
+        ctx.fillRect(PAGE_MARGIN - 4, curY, contentWidth + 8, TRANS_LINE_HEIGHT + 1);
+
+        // 多語言時顯示語言標籤
+        let textX = PAGE_MARGIN;
+        if (langs.length > 1) {
+          ctx.font = `bold ${ORIG_FONT_SIZE - 1}pt Arial, sans-serif`;
+          ctx.fillStyle = TRANS_COLORS[colorIdx];
+          const label = `[${lang}] `;
+          ctx.fillText(label, textX, transY);
+          textX += ctx.measureText(label).width + 2;
+        }
+
+        ctx.font = `${TRANS_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", "Noto Sans Thai", sans-serif`;
+        ctx.fillStyle = TRANS_COLORS[colorIdx];
+        ctx.fillText(translatedText, textX, transY, contentWidth - (textX - PAGE_MARGIN));
+
+        curY += TRANS_LINE_HEIGHT;
+      });
+
+      curY += BLOCK_GAP;
+      blockOnPage++;
     }
+
+    // flush 最後一頁（即使不滿也要輸出）
+    flushCanvasToPdf(tc, isFirstPdfPage, PW, PH);
 
     const blob = doc.output('blob');
     const prefix = outputMode === 'separate' ? `${langs[0]}_` : 'translated_';
