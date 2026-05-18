@@ -108,10 +108,14 @@ async function startServer() {
     next();
   });
 
-  // Create a queue for DeepSeek API calls to prevent rate limits
-  // concurrency: 10 means max 10 requests at the same time
-  // intervalCap: 30, interval: 1000 means max 30 requests per second
-  const translationQueue = new PQueue({ concurrency: 10, intervalCap: 30, interval: 1000 });
+  // ─── DeepSeek 全域並發控制 ────────────────────────────────────────────────
+  // concurrency: 3   → 同時最多 3 個請求打向 DeepSeek（防止 429）
+  // intervalCap: 6   → 每秒最多觸發 6 次（3 concurrency × 2，保守設定）
+  // interval: 1000   → 計算窗口 1 秒
+  // MAX_QUEUE_SIZE   → queue 超過此值直接回 503，讓前端 retry backoff
+  //                    避免 queue 無限堆積、記憶體暴漲
+  const MAX_QUEUE_SIZE = 20;
+  const translationQueue = new PQueue({ concurrency: 3, intervalCap: 6, interval: 1000 });
 
   // Admin API: Delete user immediately
   app.delete('/api/admin/users/:uid', async (req, res) => {
@@ -226,6 +230,22 @@ async function startServer() {
         } 
       });
     }
+
+    // ── Queue 滿載保護 ───────────────────────────────────────────────────────
+    // size  = 等待中（尚未開始執行）的請求數
+    // pending = 正在執行中的請求數
+    // 當 waiting 超過 MAX_QUEUE_SIZE，拒絕加入，讓前端 retry backoff
+    const waitingCount = translationQueue.size;
+    if (waitingCount >= MAX_QUEUE_SIZE) {
+      console.warn(`[Queue] OVERLOADED. Waiting: ${waitingCount}, Pending: ${translationQueue.pending}. Returning 503.`);
+      return res.status(503).json({
+        error: {
+          message: `伺服器目前繁忙（佇列已滿 ${waitingCount}/${MAX_QUEUE_SIZE}），請稍後自動重試。`
+        }
+      });
+    }
+
+    console.log(`[Queue] Enqueued. Waiting: ${waitingCount + 1}, Pending: ${translationQueue.pending}`);
 
     try {
       // Add the request to the queue
