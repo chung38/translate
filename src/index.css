@@ -25,3 +25,8 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(0, 0, 0, 0.25);
 }
+
+/* Responsive viewport fix */
+html, body, #root {
+  height: 100%;
+}

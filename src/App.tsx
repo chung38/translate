@@ -720,7 +720,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen bg-slate-50 font-sans text-slate-800 relative overflow-hidden">
+      <div className="min-h-screen h-screen overflow-auto bg-slate-50 font-sans text-slate-800 relative">
         {/* Auth Bar */}
         <div className="relative md:absolute z-50 flex justify-end md:justify-start p-4 sm:p-6 md:p-8 w-full md:w-auto top-0 left-0">
           {isAuthReady && (
@@ -847,7 +847,7 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className="max-w-4xl mx-auto p-4 sm:p-6 md:p-8 md:pt-24 relative z-10">
+        <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-4xl mx-auto p-3 sm:p-5 md:p-6 md:pt-20 relative z-10">
           {/* Header */}
           <header className="mb-8 md:mb-12 text-center">
             <div className="space-y-2">
@@ -884,7 +884,28 @@ export default function App() {
           transition={{ delay: 0.3 }}
           className="bg-white/90 backdrop-blur-2xl rounded-3xl shadow-xl shadow-slate-200/50 border border-white overflow-hidden"
         >
-          <div className="p-6 md:p-10">
+          <div className="p-4 sm:p-6 md:p-8">
+            {/* Error Message — 顯示在頂部 */}
+            <AnimatePresence>
+            {error && (
+              <motion.div
+                key="error-top"
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-600 text-sm"
+              >
+                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-medium">發生錯誤</p>
+                  <p className="text-red-500 mt-0.5">{error}</p>
+                </div>
+                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 transition-colors ml-2 flex-shrink-0">
+                  <X className="w-4 h-4" />
+                </button>
+              </motion.div>
+            )}
+            </AnimatePresence>
             {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
@@ -1200,17 +1221,6 @@ export default function App() {
               fileProgress={fileProgress}
             />
 
-            {/* Error Message */}
-            {error && (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="mt-6 p-4 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-600 text-sm"
-              >
-                <AlertCircle className="w-5 h-5 shrink-0" />
-                <p>{error}</p>
-              </motion.div>
-            )}
           </div>
         </motion.div>
       </div>
