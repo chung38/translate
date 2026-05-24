@@ -851,11 +851,11 @@ export default function App() {
             )}
             </AnimatePresence>
 
-            {/* Upload Section */}
+            {/* Upload Section — 縮小版 */}
             <div 
               onClick={() => fileInputRef.current?.click()}
               className={`
-                relative group cursor-pointer border-2 border-dashed rounded-2xl p-10 md:p-12 transition-all duration-300
+                relative group cursor-pointer border-2 border-dashed rounded-2xl p-5 md:p-6 transition-all duration-300
                 ${files.length > 0 ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-400 hover:bg-slate-50/50'}
               `}
             >
@@ -868,17 +868,16 @@ export default function App() {
                 className="hidden"
               />
               
-              <div className="flex flex-col items-center text-center">
+              <div className="flex items-center gap-4">
                 <div className={`
-                  w-16 h-16 rounded-full flex items-center justify-center mb-4 transition-all duration-500 group-hover:scale-110
-                  ${files.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-[0_0_15px_rgba(79,70,229,0.2)]' : 'bg-slate-100 text-slate-400'}
+                  w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center transition-all duration-500 group-hover:scale-110
+                  ${files.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-[0_0_12px_rgba(79,70,229,0.2)]' : 'bg-slate-100 text-slate-400'}
                 `}>
-                  <Upload className="w-7 h-7" />
+                  <Upload className="w-5 h-5" />
                 </div>
-                
-                <div className="max-w-xs">
-                  <p className="text-lg font-medium text-slate-800 mb-2">點擊或拖拽上傳文件</p>
-                  <p className="text-sm text-slate-500 font-light">支援 .docx, .xlsx 格式 (可多選)</p>
+                <div>
+                  <p className="text-sm font-medium text-slate-800">點擊或拖拽上傳文件</p>
+                  <p className="text-xs text-slate-400 font-light mt-0.5">支援 .docx, .xlsx, .pdf, .pptx（可多選）</p>
                 </div>
               </div>
             </div>
