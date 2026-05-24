@@ -704,93 +704,92 @@ export default function App() {
         />
 
         <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-4xl mx-auto p-3 sm:p-5 md:p-6 md:pt-10 relative z-10">
-          {/* Header — 標題 + 登入列整合 */}
+          {/* Header */}
           <header className="mb-8 md:mb-12">
-            {/* Auth Bar — 在標題正上方，向左對齊與標題一致 */}
+
+            {/* Auth Bar — 標題上方，靠左對齊中間內容區塊 */}
             {isAuthReady && (
               <motion.div
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.05, duration: 0.4 }}
-                className="flex justify-center mb-3"
+                className="flex justify-start mb-3"
               >
-                <div className="flex justify-start w-full max-w-fit">
-                  {user ? (
-                    <div className="flex items-center gap-2">
+                {user ? (
+                  <div className="flex items-center gap-2">
+                    <button 
+                      onClick={() => setShowHistory(!showHistory)}
+                      className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-indigo-600 transition-colors"
+                      title="翻譯紀錄"
+                    >
+                      <Clock className="w-5 h-5" />
+                    </button>
+                    {userProfile?.role === 'admin' && (
                       <button 
-                        onClick={() => setShowHistory(!showHistory)}
-                        className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-indigo-600 transition-colors"
-                        title="翻譯紀錄"
+                        onClick={() => setShowAdminPanel(true)}
+                        className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-violet-600 transition-colors"
+                        title="管理後台"
                       >
-                        <Clock className="w-5 h-5" />
+                        <Shield className="w-5 h-5" />
                       </button>
-                      {userProfile?.role === 'admin' && (
+                    )}
+                    <div className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-white">
+                      {user.photoURL ? (
+                        <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
+                      ) : (
+                        <UserIcon className="w-4 h-4 text-slate-400" />
+                      )}
+                      <span className="text-sm font-medium text-slate-800 inline-block max-w-[120px] truncate sm:max-w-[200px]">
+                        {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
+                      </span>
+                      {userProfile && (
+                        <div className="flex items-center gap-1.5 ml-1">
+                          {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
+                            <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
+                          ) : userProfile.isPaid ? (
+                            <div className="flex items-center gap-1">
+                              <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
+                              <span className="text-[10px] text-indigo-700 font-bold">{userProfile.quota}次</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-1">
+                              <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                                {userProfile.isPaid ? 'Pro' : 'Free'}
+                              </span>
+                              <span className="text-[10px] text-slate-500 font-medium">({dbHistory.length}/{userProfile.quota})</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {!user.emailVerified && !userProfile?.isManuallyAdded && (
                         <button 
-                          onClick={() => setShowAdminPanel(true)}
-                          className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-violet-600 transition-colors"
-                          title="管理後台"
+                          onClick={async () => {
+                            try {
+                              await sendEmailVerification(user);
+                              setError('驗證信已重新發送，請檢查您的信箱。');
+                            } catch (e) {
+                              setError('發送驗證信失敗，請稍後再試。');
+                            }
+                          }}
+                          className="ml-2 px-2 py-0.5 bg-amber-100 border border-amber-200 text-amber-700 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
                         >
-                          <Shield className="w-5 h-5" />
+                          重發驗證信
                         </button>
                       )}
-                      <div className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-white">
-                        {user.photoURL ? (
-                          <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
-                        ) : (
-                          <UserIcon className="w-4 h-4 text-slate-400" />
-                        )}
-                        <span className="text-sm font-medium text-slate-800 inline-block max-w-[120px] truncate sm:max-w-[200px]">
-                          {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
-                        </span>
-                        {userProfile && (
-                          <div className="flex items-center gap-1.5 ml-1">
-                            {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
-                              <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
-                            ) : userProfile.isPaid ? (
-                              <div className="flex items-center gap-1">
-                                <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
-                                <span className="text-[10px] text-indigo-700 font-bold">{userProfile.quota}次</span>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-1">
-                                <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
-                                  {userProfile.isPaid ? 'Pro' : 'Free'}
-                                </span>
-                                <span className="text-[10px] text-slate-500 font-medium">({dbHistory.length}/{userProfile.quota})</span>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                        {!user.emailVerified && !userProfile?.isManuallyAdded && (
-                          <button 
-                            onClick={async () => {
-                              try {
-                                await sendEmailVerification(user);
-                                setError('驗證信已重新發送，請檢查您的信箱。');
-                              } catch (e) {
-                                setError('發送驗證信失敗，請稍後再試。');
-                              }
-                            }}
-                            className="ml-2 px-2 py-0.5 bg-amber-100 border border-amber-200 text-amber-700 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
-                          >
-                            重發驗證信
-                          </button>
-                        )}
-                        <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition-colors">
-                          <LogOut className="w-4 h-4" />
-                        </button>
-                      </div>
+                      <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition-colors">
+                        <LogOut className="w-4 h-4" />
+                      </button>
                     </div>
-                  ) : (
-                    <button 
-                      onClick={handleLogin}
-                      className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-white text-slate-800 font-medium hover:bg-white transition-colors"
-                    >
-                      <LogIn className="w-4 h-4 text-indigo-600" />
-                      <span>登入</span>
-                    </button>
-                  )}
-                </div>
+                  </div>
+                ) : (
+                  <button 
+                    onClick={handleLogin}
+                    className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-white text-slate-800 font-medium hover:bg-white transition-colors"
+                  >
+                    <LogIn className="w-4 h-4 text-indigo-600" />
+                    <span>登入</span>
+                  </button>
+                )}
               </motion.div>
             )}
 
