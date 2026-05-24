@@ -67,7 +67,6 @@ import {
 } from './firebase';
 import type { User } from './firebase';
 
-// Error Boundary Component
 // Error Boundary Component (Placeholder for functional compatibility)
 const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
@@ -178,12 +177,10 @@ export default function App() {
         const isAdminEmail = user.email === 'chen.chung.shih@gmail.com';
 
         if (!userSnap.exists()) {
-          // Check if another document exists with the same email (Consolidate by Email)
           const q = query(collection(db, 'users'), where('email', '==', user.email), limit(1));
           const emailQuerySnap = await getDocs(q);
           
           let existingData: Partial<UserProfile> = {};
-          // SECURITY: Only inherit privileges if the email is VERIFIED
           if (!emailQuerySnap.empty && user.emailVerified) {
             const oldDoc = emailQuerySnap.docs[0];
             const oldData = oldDoc.data() as UserProfile;
@@ -216,7 +213,6 @@ export default function App() {
             ...existingData
           };
           
-          // Remove any undefined values before saving to Firestore
           Object.keys(newProfile).forEach(key => {
             if (newProfile[key as keyof UserProfile] === undefined) {
               delete newProfile[key as keyof UserProfile];
@@ -299,7 +295,6 @@ export default function App() {
               setUserProfile(data);
             }
           } else {
-            // Document was deleted by admin
             try {
               if (auth.currentUser) {
                 await deleteAuthUser(auth.currentUser);
@@ -327,52 +322,6 @@ export default function App() {
     };
   }, [user, reloadCounter]);
 
-
-
-
-
-          
-
-          
-
-
-
-
-            
-
-
-
-
-
-
-              
-
-
-
-
-
-
-
-              
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
   // Firestore History Listener
   useEffect(() => {
     if (!user || !isAuthReady) {
@@ -396,16 +345,14 @@ export default function App() {
     return () => unsubscribe();
   }, [user, isAuthReady]);
 
-  // Listen for payment updates (polling-like behavior via Firestore real-time)
+  // Listen for payment updates
   useEffect(() => {
     if (!user || !isPaying) return;
     
-    // If we have a specific orderId, listen to that document directly
     if (pendingOrderId) {
       const paymentRef = doc(db, 'payments', pendingOrderId);
       const unsubscribe = onSnapshot(paymentRef, (doc) => {
         if (doc.exists() && doc.data().status === 'completed') {
-          console.log("Payment completed detected via specific orderId listener");
           setPendingOrderId(null);
           setIsPaying(false);
           setStatus('completed');
@@ -417,7 +364,6 @@ export default function App() {
       return () => unsubscribe();
     }
 
-    // Fallback: Listen for any completed payment for this user in the last 5 minutes
     const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
     const paymentsRef = collection(db, 'payments');
     const q = query(
@@ -430,7 +376,6 @@ export default function App() {
     
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (!snapshot.empty) {
-        console.log("Payment completed detected via fallback listener");
         setIsPaying(false);
         setStatus('completed');
         setStatusMessage('支付成功！額度已更新。');
@@ -482,7 +427,6 @@ export default function App() {
           if (data.success) {
             setStatus('completed');
             setStatusMessage('支付成功！額度已更新。');
-            // Clear URL params
             window.history.replaceState({}, document.title, window.location.pathname);
           } else {
             throw new Error(data.error || '支付確認失敗');
@@ -496,7 +440,7 @@ export default function App() {
     }
   }, []);
 
-  const MAX_FILE_SIZE = 250 * 1024 * 1024; // 250MB
+  const MAX_FILE_SIZE = 250 * 1024 * 1024;
   const MAX_FILE_COUNT = 10;
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -547,7 +491,6 @@ export default function App() {
         
         setStatus('idle');
 
-        // Simulate upload progress
         newFiles.forEach(file => {
           setUploadStatus(prev => ({ ...prev, [file.name]: 'uploading' }));
           setUploadProgress(prev => ({ ...prev, [file.name]: 0 }));
@@ -571,7 +514,6 @@ export default function App() {
       } else if (hasInvalid) {
         setError('請上傳有效的 .docx, .xlsx, .pdf 或 .pptx 檔案');
       }
-      // Reset input value to allow same file selection
       e.target.value = '';
     }
   };
@@ -624,9 +566,7 @@ export default function App() {
       return;
     }
 
-    // Check usage limit for free users
     const isAdmin = userProfile?.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com';
-    const isPaid = userProfile?.isPaid;
     const quota = userProfile?.quota || 2;
 
     if (!isAdmin) {
@@ -657,7 +597,6 @@ export default function App() {
         
         setStatusMessage(`正在處理第 ${i + 1} / ${filesToProcess.length} 份文件: ${currentFile.name}`);
         
-        // Update overall progress based on file index
         const baseProgress = (i / filesToProcess.length) * 100;
         const fileWeight = 100 / filesToProcess.length;
         
@@ -693,12 +632,9 @@ export default function App() {
             }
           }
 
-          // Remove file from list after successful processing
           setFiles(prev => prev.filter(f => f !== currentFile));
         } catch (fileErr) {
           console.error(`處理檔案 ${currentFile.name} 時發生錯誤:`, fileErr);
-          // We continue to the next file even if one fails, 
-          // but we might want to keep the failed file in the list
           setError(`處理 ${currentFile.name} 時發生錯誤: ${fileErr instanceof Error ? fileErr.message : '未知錯誤'}`);
         }
       }
@@ -721,86 +657,6 @@ export default function App() {
   return (
     <ErrorBoundary>
       <div className="min-h-screen h-screen overflow-auto bg-slate-50 font-sans text-slate-800 relative">
-        {/* Auth Bar */}
-        <div className="relative md:absolute z-50 flex justify-end md:justify-start p-4 sm:p-6 md:p-8 w-full md:w-auto top-0 left-0">
-          {isAuthReady && (
-            user ? (
-              <div className="flex items-center gap-2">
-                <button 
-                  onClick={() => setShowHistory(!showHistory)}
-                  className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-indigo-600 transition-colors"
-                  title="翻譯紀錄"
-                >
-                  <Clock className="w-5 h-5" />
-                </button>
-                {userProfile?.role === 'admin' && (
-                  <button 
-                    onClick={() => setShowAdminPanel(true)}
-                    className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-violet-600 transition-colors"
-                    title="管理後台"
-                  >
-                    <Shield className="w-5 h-5" />
-                  </button>
-                )}
-                <div className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-white">
-                  {user.photoURL ? (
-                    <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
-                  ) : (
-                    <UserIcon className="w-4 h-4 text-slate-400" />
-                  )}
-                  <span className="text-sm font-medium text-slate-800 inline-block max-w-[100px] truncate sm:max-w-[200px]">
-                    {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
-                  </span>
-                  {userProfile && (
-                    <div className="flex items-center gap-1.5 ml-1">
-                      {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
-                        <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
-                      ) : userProfile.isPaid ? (
-                        <div className="flex items-center gap-1">
-                          <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
-                          <span className="text-[10px] text-indigo-700 font-bold">{userProfile.quota}次</span>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-1">
-                          <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
-                            {userProfile.isPaid ? 'Pro' : 'Free'}
-                          </span>
-                          <span className="text-[10px] text-slate-500 font-medium">({dbHistory.length}/{userProfile.quota})</span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  {!user.emailVerified && !userProfile?.isManuallyAdded && (
-                    <button 
-                      onClick={async () => {
-                        try {
-                          await sendEmailVerification(user);
-                          setError('驗證信已重新發送，請檢查您的信箱。');
-                        } catch (e) {
-                          setError('發送驗證信失敗，請稍後再試。');
-                        }
-                      }}
-                      className="ml-2 px-2 py-0.5 bg-amber-100 border border-amber-200 text-amber-700 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
-                    >
-                      重發驗證信
-                    </button>
-                  )}
-                  <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition-colors">
-                    <LogOut className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button 
-                onClick={handleLogin}
-                className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-white text-slate-800 font-medium hover:bg-white transition-colors"
-              >
-                <LogIn className="w-4 h-4 text-indigo-600" />
-                <span>登入</span>
-              </button>
-            )
-          )}
-        </div>
 
         {/* Background Accents */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-100/40 via-slate-50 to-slate-50 -z-10" />
@@ -847,10 +703,99 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-4xl mx-auto p-3 sm:p-5 md:p-6 md:pt-20 relative z-10">
-          {/* Header */}
-          <header className="mb-8 md:mb-12 text-center">
-            <div className="space-y-2">
+        <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-4xl mx-auto p-3 sm:p-5 md:p-6 md:pt-10 relative z-10">
+          {/* Header — 標題 + 登入列整合 */}
+          <header className="mb-8 md:mb-12">
+            {/* Auth Bar — 在標題正上方，向左對齊與標題一致 */}
+            {isAuthReady && (
+              <motion.div
+                initial={{ opacity: 0, y: -6 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.05, duration: 0.4 }}
+                className="flex justify-center mb-3"
+              >
+                <div className="flex justify-start w-full max-w-fit">
+                  {user ? (
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={() => setShowHistory(!showHistory)}
+                        className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-indigo-600 transition-colors"
+                        title="翻譯紀錄"
+                      >
+                        <Clock className="w-5 h-5" />
+                      </button>
+                      {userProfile?.role === 'admin' && (
+                        <button 
+                          onClick={() => setShowAdminPanel(true)}
+                          className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-violet-600 transition-colors"
+                          title="管理後台"
+                        >
+                          <Shield className="w-5 h-5" />
+                        </button>
+                      )}
+                      <div className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-white">
+                        {user.photoURL ? (
+                          <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
+                        ) : (
+                          <UserIcon className="w-4 h-4 text-slate-400" />
+                        )}
+                        <span className="text-sm font-medium text-slate-800 inline-block max-w-[120px] truncate sm:max-w-[200px]">
+                          {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
+                        </span>
+                        {userProfile && (
+                          <div className="flex items-center gap-1.5 ml-1">
+                            {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
+                              <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
+                            ) : userProfile.isPaid ? (
+                              <div className="flex items-center gap-1">
+                                <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
+                                <span className="text-[10px] text-indigo-700 font-bold">{userProfile.quota}次</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1">
+                                <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                                  {userProfile.isPaid ? 'Pro' : 'Free'}
+                                </span>
+                                <span className="text-[10px] text-slate-500 font-medium">({dbHistory.length}/{userProfile.quota})</span>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        {!user.emailVerified && !userProfile?.isManuallyAdded && (
+                          <button 
+                            onClick={async () => {
+                              try {
+                                await sendEmailVerification(user);
+                                setError('驗證信已重新發送，請檢查您的信箱。');
+                              } catch (e) {
+                                setError('發送驗證信失敗，請稍後再試。');
+                              }
+                            }}
+                            className="ml-2 px-2 py-0.5 bg-amber-100 border border-amber-200 text-amber-700 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
+                          >
+                            重發驗證信
+                          </button>
+                        )}
+                        <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition-colors">
+                          <LogOut className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={handleLogin}
+                      className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-white text-slate-800 font-medium hover:bg-white transition-colors"
+                    >
+                      <LogIn className="w-4 h-4 text-indigo-600" />
+                      <span>登入</span>
+                    </button>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {/* Title */}
+            <div className="space-y-2 text-center">
               <motion.h1 
                 initial={{ opacity: 0, y: 10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -906,6 +851,7 @@ export default function App() {
               </motion.div>
             )}
             </AnimatePresence>
+
             {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
@@ -988,7 +934,6 @@ export default function App() {
                       </div>
                       
                       <div className="flex items-center gap-4">
-                        {/* Translation Progress */}
                         {status !== 'idle' && status !== 'error' && (
                           <div className="flex flex-col items-end gap-1.5">
                             <span className="text-[10px] font-mono font-bold text-indigo-600">
@@ -1003,7 +948,6 @@ export default function App() {
                           </div>
                         )}
                         
-                        {/* Upload Progress */}
                         {status === 'idle' && uploadStatus[f.name] === 'uploading' && (
                           <div className="flex flex-col items-end gap-1.5">
                             <span className="text-[10px] font-mono font-bold text-blue-500">
@@ -1018,7 +962,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Upload Success Visual Feedback */}
                         {status === 'idle' && uploadStatus[f.name] === 'success' && (
                           <div className="flex items-center gap-2">
                             <span className="text-[10px] text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded-full flex items-center gap-1">
@@ -1034,7 +977,6 @@ export default function App() {
                           </div>
                         )}
 
-                        {/* Fallback for idle without upload state */}
                         {status === 'idle' && !uploadStatus[f.name] && (
                           <button 
                             onClick={() => removeFile(idx)}
