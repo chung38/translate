@@ -14,7 +14,7 @@ const isChineseFont = (fontName: string | undefined) => {
   const knownChineseFonts = [
     'mingliu', 'pmingliu', 'dfkai-sb', 'simsun', 'nsimsun', 'simhei', 
     'microsoft jhenghei', 'microsoft yahei', 'biaukai', 'kaiti', 'fangsong',
-    'times new roman' // Sometimes Times New Roman is used as a default for Chinese in older documents but doesn't render Vietnamese well
+    'times new roman'
   ];
   const lowerName = fontName.toLowerCase();
   return knownChineseFonts.some(f => lowerName.includes(f));
@@ -24,22 +24,17 @@ const adjustFontForLanguage = (font: any, lang: string) => {
   const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
   let newFont = font ? { ...font } : {};
   
-  // For Vietnamese and Thai, we strongly prefer Arial because many default fonts 
-  // (even non-Chinese ones) have poor support for their specific diacritics in Excel.
   const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
   
   if (!isAsianLang) {
     if (needsStrongFontAdjustment || !newFont.name || isChineseFont(newFont.name)) {
       newFont.name = 'Arial';
-      // CRITICAL: If a font has a 'scheme' (like 'minor' or 'major') or 'theme', Excel will ignore the 'name'
-      // and use the theme's default font instead. We must delete it to force Arial.
       delete newFont.scheme;
       delete newFont.family;
       delete newFont.theme;
     }
   }
   
-  // If we didn't change anything and it was originally undefined, return undefined
   if (!font && !newFont.name) return undefined;
   
   return newFont;
@@ -71,7 +66,6 @@ const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType:
   let shouldAdjust = needsStrongFontAdjustment;
   
   if (!shouldAdjust && newRPr) {
-    // Check if it contains Chinese fonts
     const fontRegex = /(?:w:ascii|w:hAnsi|w:eastAsia|w:cs|typeface)="([^"]*)"/g;
     let match;
     while ((match = fontRegex.exec(newRPr)) !== null) {
@@ -215,8 +209,17 @@ export const processDocx = async (
   const unescapeXml = (text: string) => text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
   const escapeXml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
-  const textsToTranslate: { file: string, id: string, text: string, pBlock: string, runs?: { rPr: string, normRPr?: string, text: string }[] }[] = [];
+  // FIX: 用唯一 marker ID 而非 pIndex 計數，確保擷取與回寫完全對應
+  type DocxItem = {
+    file: string;
+    markerId: string;
+    text: string;
+    pBlock: string;
+    runs?: { rPr: string; normRPr?: string; text: string }[];
+  };
+  const textsToTranslate: DocxItem[] = [];
   const fileContents: Record<string, string> = {};
+  let globalMarkerCounter = 0;
 
   for (const docFile of docFiles) {
     if (isCancelledRef.current) throw new Error('Cancelled');
@@ -230,18 +233,47 @@ export const processDocx = async (
         content = content.replace(/<w:eastAsianLayout\b[^>]*\/>/g, '');
       }
 
+      // FIX: 在擷取階段為每個有文字的 <w:p> 注入唯一 marker attribute
+      const markerIds: string[] = [];
+      content = content.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pBlock) => {
+        const rMatches = pBlock.match(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g);
+        let hasText = false;
+        if (rMatches) {
+          for (const rBlock of rMatches) {
+            const tMatches = rBlock.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
+            if (tMatches) {
+              for (const tMatch of tMatches) {
+                const inner = tMatch.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/);
+                if (inner && inner[1]) { hasText = true; break; }
+              }
+            }
+            if (hasText) break;
+          }
+        }
+        if (!hasText) return pBlock;
+        const mid = `docx_p_${globalMarkerCounter++}`;
+        markerIds.push(mid);
+        // 在 <w:p> 開頭注入 w:rsidR 不衝突的自訂屬性作為 marker（利用 XML comment 包裹 marker，不影響 Word 解析）
+        return pBlock.replace(/^(<w:p\b)/, `$1 data-mid="${mid}"`);
+      });
+
       fileContents[docFile] = content;
-      
-      const pMatches = content.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g);
+
+      // 重新掃描帶有 data-mid 的 <w:p> 來擷取文字
+      const pMatches = content.match(/<w:p\b[^>]*data-mid="[^"]+"[^>]*>[\s\S]*?<\/w:p>/g);
       if (pMatches) {
-        pMatches.forEach((pBlock, index) => {
+        pMatches.forEach((pBlock) => {
+          const midMatch = pBlock.match(/data-mid="([^"]+)"/);
+          if (!midMatch) return;
+          const markerId = midMatch[1];
+
           const rMatches = pBlock.match(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g);
           if (rMatches) {
             let taggedText = '';
             const runs: { rPr: string, normRPr?: string, text: string }[] = [];
             
             rMatches.forEach((rBlock) => {
-              const tMatches = rBlock.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g);
+              const tMatches = rBlock.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
               if (tMatches) {
                 const rPrMatch = rBlock.match(/<w:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:rPr>)/);
                 const rPr = rPrMatch ? rPrMatch[0] : '';
@@ -271,7 +303,7 @@ export const processDocx = async (
             });
             
             if (taggedText.trim().length > 0) {
-              textsToTranslate.push({ file: docFile, id: `${docFile}_${index}`, text: taggedText, pBlock, runs });
+              textsToTranslate.push({ file: docFile, markerId, text: taggedText, pBlock, runs });
             }
           }
         });
@@ -335,13 +367,12 @@ export const processDocx = async (
       let content = fileContents[docFile];
       const fileTexts = textsToTranslate.filter(t => t.file === docFile);
       
-      let pIndex = 0;
-      content = content.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pBlock) => {
-        const currentItem = fileTexts.find(t => t.id === `${docFile}_${pIndex}`);
-        pIndex++;
+      // FIX: 用 data-mid marker 精準配對，移除 pIndex 計數邏輯
+      content = content.replace(/<w:p\b[^>]*data-mid="([^"]+)"[^>]*>[\s\S]*?<\/w:p>/g, (pBlock, markerId) => {
+        const currentItem = fileTexts.find(t => t.markerId === markerId);
         
         if (currentItem) {
-          const globalIndex = textsToTranslate.findIndex(t => t.id === currentItem.id);
+          const globalIndex = textsToTranslate.findIndex(t => t.markerId === markerId);
           
           let appendedRuns = '';
           langs.forEach(lang => {
@@ -402,11 +433,17 @@ export const processDocx = async (
             }
           });
           
-          return pBlock.replace(/<\/w:p>$/, appendedRuns + '</w:p>');
+          // 移除 data-mid marker attribute 後輸出（讓最終 Word 檔不含自訂屬性）
+          const cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
+          return cleanedPBlock.replace(/<\/w:p>$/, appendedRuns + '</w:p>');
         }
         
-        return pBlock;
+        // 沒有翻譯的段落也要移除 marker
+        return pBlock.replace(/ data-mid="[^"]+"/, '');
       });
+
+      // 清除其餘未被 replace 到的 data-mid（沒有翻譯文字的段落）
+      content = content.replace(/ data-mid="[^"]+"/g, '');
       
       loadedZip.file(docFile, content);
     }
@@ -437,16 +474,32 @@ export const processExcel = async (
   const totalWorksheets = workbook.worksheets.length;
   let processedWorksheets = 0;
   
-  const allTranslations: { sheet: string, row: number, col: number, original: string, translations: Record<string, string> }[] = [];
+  // FIX: 加入 mergedRichText 欄位，確保翻譯 tag 與回寫字型對應一致
+  const allTranslations: {
+    sheet: string;
+    row: number;
+    col: number;
+    original: string;
+    translations: Record<string, string>;
+    mergedRichText?: any[];
+    isFormula?: boolean;
+  }[] = [];
 
   for (const worksheet of workbook.worksheets) {
     if (isCancelledRef.current) throw new Error('Cancelled');
     
-    const textsToTranslate: { row: number, col: number, text: string, type: 'string' | 'richText', richText?: any[] }[] = [];
+    const textsToTranslate: {
+      row: number;
+      col: number;
+      text: string;
+      type: 'string' | 'richText' | 'formula';
+      richText?: any[];
+      mergedRichText?: any[];
+    }[] = [];
     
     worksheet.eachRow((row, rowNumber) => {
       row.eachCell((cell, colNumber) => {
-        if (cell.type === 1) return;
+        if (cell.type === 1) return; // Null
         
         if (cell.value) {
           if (typeof cell.value === 'string' && cell.value.trim().length > 0) {
@@ -471,8 +524,29 @@ export const processExcel = async (
               taggedText += `[f${idx}]${rt.text}[/f${idx}]`;
             });
             if (taggedText.trim().length > 0) {
-              textsToTranslate.push({ row: rowNumber, col: colNumber, text: taggedText, type: 'richText', richText: mergedRichText });
+              // FIX: 保存 mergedRichText 以便回寫時使用
+              textsToTranslate.push({
+                row: rowNumber,
+                col: colNumber,
+                text: taggedText,
+                type: 'richText',
+                richText: richTextArr,
+                mergedRichText
+              });
             }
+          } else if (
+            // FIX: 處理公式儲存格（formula + result 為字串）
+            typeof cell.value === 'object' &&
+            (cell.value as any).formula &&
+            typeof (cell.value as any).result === 'string' &&
+            (cell.value as any).result.trim().length > 0
+          ) {
+            textsToTranslate.push({
+              row: rowNumber,
+              col: colNumber,
+              text: (cell.value as any).result,
+              type: 'formula'
+            });
           }
         }
       });
@@ -507,15 +581,15 @@ export const processExcel = async (
     updateProgress(30 + ((processedWorksheets + 1) / totalWorksheets) * 60, 'generating');
 
     textsToTranslate.forEach((item, index) => {
-      const originalText = item.text;
       const translations = translatedResults[index] || {};
-      
       allTranslations.push({
         sheet: worksheet.name,
         row: item.row,
         col: item.col,
-        original: originalText,
-        translations
+        original: item.text,
+        translations,
+        mergedRichText: item.mergedRichText,
+        isFormula: item.type === 'formula'
       });
     });
     
@@ -537,19 +611,24 @@ export const processExcel = async (
         row.eachCell((cell, colNumber) => {
           if (cell.type === 1) return;
           
-          const translationItem = allTranslations.find(t => t.sheet === worksheet.name && t.row === rowNumber && t.col === colNumber);
+          const translationItem = allTranslations.find(
+            t => t.sheet === worksheet.name && t.row === rowNumber && t.col === colNumber
+          );
           if (translationItem) {
-            const originalText = translationItem.original;
-            const newRichText: any[] = [];
-            
-            let defaultFont = {};
+            let defaultFont: any = {};
             if (typeof cell.value === 'object' && (cell.value as any).richText && (cell.value as any).richText.length > 0) {
               defaultFont = (cell.value as any).richText[0].font || {};
             } else if (cell.font) {
               defaultFont = cell.font;
             }
 
-            if (typeof cell.value === 'object' && (cell.value as any).richText) {
+            const newRichText: any[] = [];
+
+            // 先放原文
+            if (translationItem.isFormula) {
+              // 公式儲存格：原文直接放純文字
+              newRichText.push({ text: String((cell.value as any).result || ''), font: defaultFont });
+            } else if (typeof cell.value === 'object' && (cell.value as any).richText) {
               const originalRichText = (cell.value as any).richText;
               originalRichText.forEach((rt: any) => {
                 newRichText.push({ text: rt.text, font: rt.font || defaultFont });
@@ -561,34 +640,37 @@ export const processExcel = async (
             langs.forEach(lang => {
               const rawTranslatedText = translationItem.translations[lang] || '(翻譯失敗)';
               const translatedText = sanitizeOutputText(rawTranslatedText, lang);
-              
               const adjustedDefaultFont = adjustFontForLanguage(defaultFont, lang);
 
-              if (translationItem.original.includes('[f0]')) {
+              // FIX: 用 mergedRichText 判斷是否有 tag（與送翻的 text 格式一致）
+              const hasMergedRichText = !!(translationItem.mergedRichText && translationItem.mergedRichText.length > 0);
+
+              if (hasMergedRichText && translationItem.original.includes('[f0]')) {
                 newRichText.push({ text: '\n', font: adjustedDefaultFont });
                 
                 const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
                 let match;
                 let lastIndex = 0;
-                let hasTags = false;
+                let hasTagsInTranslation = false;
                 
                 while ((match = fRegex.exec(translatedText)) !== null) {
-                  hasTags = true;
+                  hasTagsInTranslation = true;
                   const id = parseInt(match[1], 10);
                   const text = match[2];
                   
+                  // FIX: 從 mergedRichText 查字型（與送翻 tag 的 id 一一對應）
                   let originalFont = defaultFont;
-                  if (typeof cell.value === 'object' && (cell.value as any).richText) {
-                    originalFont = (cell.value as any).richText[id]?.font || defaultFont;
+                  if (translationItem.mergedRichText && translationItem.mergedRichText[id]) {
+                    originalFont = translationItem.mergedRichText[id].font || defaultFont;
                   }
                   const adjustedOriginalFont = adjustFontForLanguage(originalFont, lang);
                   
                   if (match.index > lastIndex) {
-                     const betweenText = translatedText.substring(lastIndex, match.index);
-                     if (betweenText) {
-                       const cleanBetween = stripTags(betweenText);
-                       newRichText.push({ text: cleanBetween, font: adjustedDefaultFont });
-                     }
+                    const betweenText = translatedText.substring(lastIndex, match.index);
+                    if (betweenText) {
+                      const cleanBetween = stripTags(betweenText);
+                      newRichText.push({ text: cleanBetween, font: adjustedDefaultFont });
+                    }
                   }
                   
                   if (text) {
@@ -598,7 +680,7 @@ export const processExcel = async (
                   lastIndex = fRegex.lastIndex;
                 }
                 
-                if (!hasTags) {
+                if (!hasTagsInTranslation) {
                   const cleanText = stripTags(translatedText);
                   newRichText.push({ text: cleanText, font: adjustedDefaultFont });
                 } else if (lastIndex < translatedText.length) {
@@ -650,7 +732,6 @@ export const processPdf = async (
 ): Promise<{ blob: Blob; name: string }[]> => {
   updateProgress(5, 'processing');
 
-  // ── 1. 載入 PDF ──────────────────────────────────────────────────
   const pdfjsLib = await import('pdfjs-dist');
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
@@ -678,7 +759,6 @@ export const processPdf = async (
     lines: TextLine[];
   }
 
-  // ── Helper：依 Y 分組成邏輯行 ─────────────────────────────────────
   function groupToLines(items: any[]): TextLine[] {
     if (!items?.length) return [];
     const sorted = [...items]
@@ -710,7 +790,6 @@ export const processPdf = async (
     return lines.sort((a, b) => b.y - a.y);
   }
 
-  // ── 2. 逐頁提取文字 ──────────────────────────────────────────────
   const pages: PageData[] = [];
 
   for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
@@ -723,7 +802,6 @@ export const processPdf = async (
     const textContent = await page.getTextContent();
     let lines = groupToLines(textContent.items as any[]);
 
-    // OCR fallback：若文字稀少，render 後 OCR
     if (textContent.items.map((i: any) => i.str || '').join('').trim().length < 20) {
       console.log(`Page ${pageNum}: 文字稀少，改用 OCR`);
       const RENDER_SCALE = 2.0;
@@ -758,7 +836,6 @@ export const processPdf = async (
 
   updateProgress(20, 'translating');
 
-  // ── 3. 批次翻譯所有行 ────────────────────────────────────────────
   const allLineTexts: string[] = [];
   const linePageIdx: number[] = [];
 
@@ -797,25 +874,20 @@ export const processPdf = async (
 
   updateProgress(70, 'generating');
 
-  // ── 4. 合成 PDF：純白頁面，原文一行 + 譯文一行，無任何底色或框線 ──
-  //
-  // 排版常數（pt）
   const PAGE_MARGIN = 40;
-  const LINE_GAP = 4;              // 原文行底部 → 譯文行頂部的間距
-  const BLOCK_GAP = 10;            // block 與 block 之間的間距
+  const LINE_GAP = 4;
+  const BLOCK_GAP = 10;
   const ORIG_FONT_SIZE = 9;
   const TRANS_FONT_SIZE = 10;
   const ORIG_LINE_HEIGHT = ORIG_FONT_SIZE * 1.55;
   const TRANS_LINE_HEIGHT = TRANS_FONT_SIZE * 1.6;
-  const TEXT_SCALE = 2;            // canvas 超取樣
+  const TEXT_SCALE = 2;
 
-  // 每個 block 高度（pt）：原文行 + gap + 所有譯文行 + block 間距
   const blockHeight =
     ORIG_LINE_HEIGHT + LINE_GAP +
     targetLanguages.length * TRANS_LINE_HEIGHT +
     BLOCK_GAP;
 
-  // 譯文文字顏色（深色，純文字，無底色）
   const TRANS_COLORS = ['#1e3a8a', '#5b21b6', '#065f46', '#7c2d12'];
 
   const { jsPDF } = await import('jspdf');
@@ -843,7 +915,6 @@ export const processPdf = async (
     const usableHeight = PH - PAGE_MARGIN * 2;
     const blocksPerOutputPage = Math.floor(usableHeight / blockHeight);
 
-    // flush canvas → 新的 PDF 頁面（純白底）
     const flushCanvasToPdf = (
       tc: HTMLCanvasElement,
       isFirstPage: boolean,
@@ -853,10 +924,8 @@ export const processPdf = async (
       if (!isFirstPage) {
         doc.addPage([pw, ph], pw > ph ? 'landscape' : 'portrait');
       }
-      // 純白底
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, pw, ph, 'F');
-      // 貼文字 canvas
       doc.addImage(tc.toDataURL('image/png'), 'PNG', 0, 0, pw, ph);
     };
 
@@ -864,14 +933,12 @@ export const processPdf = async (
     let blockOnPage = 0;
     let curY = PAGE_MARGIN;
 
-    // 建立初始 canvas（純透明，white background 由 PDF 負責）
     const makeCanvas = () => {
       const tc = document.createElement('canvas');
       tc.width = PW * TEXT_SCALE;
       tc.height = PH * TEXT_SCALE;
       const ctx = tc.getContext('2d')!;
       ctx.scale(TEXT_SCALE, TEXT_SCALE);
-      // 純白底（canvas 本身也需白色，否則 toDataURL 預設透明→黑）
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, PW, PH);
       return { tc, ctx };
@@ -880,7 +947,6 @@ export const processPdf = async (
     let { tc, ctx } = makeCanvas();
 
     for (let gi = 0; gi < allLineTexts.length; gi++) {
-      // 若本頁已滿，flush 後開新頁
       if (blockOnPage >= blocksPerOutputPage) {
         flushCanvasToPdf(tc, isFirstPdfPage, PW, PH);
         isFirstPdfPage = false;
@@ -892,7 +958,6 @@ export const processPdf = async (
       const origText = allLineTexts[gi];
       const translations = translatedLines[gi] || {};
 
-      // ── 原文行（深灰文字，無底色） ───────────────────────────────
       const origBaseline = curY + ORIG_LINE_HEIGHT;
       ctx.font = `${ORIG_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
       ctx.fillStyle = '#444444';
@@ -900,7 +965,6 @@ export const processPdf = async (
 
       curY += ORIG_LINE_HEIGHT + LINE_GAP;
 
-      // ── 譯文行（每語言一行，彩色文字，無底色） ───────────────────
       langs.forEach((lang, langIdx) => {
         const translatedText = translations[lang] || '';
         if (!translatedText) {
@@ -913,7 +977,6 @@ export const processPdf = async (
 
         let textX = PAGE_MARGIN;
 
-        // 多語言時顯示語言標籤（如 [th] ）
         if (langs.length > 1) {
           ctx.font = `bold ${ORIG_FONT_SIZE - 1}pt Arial, sans-serif`;
           ctx.fillStyle = TRANS_COLORS[colorIdx];
@@ -933,7 +996,6 @@ export const processPdf = async (
       blockOnPage++;
     }
 
-    // flush 最後一頁
     flushCanvasToPdf(tc, isFirstPdfPage, PW, PH);
 
     const blob = doc.output('blob');
