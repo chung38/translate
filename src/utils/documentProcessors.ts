@@ -209,7 +209,6 @@ export const processDocx = async (
   const unescapeXml = (text: string) => text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
   const escapeXml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
-  // FIX: 用唯一 marker ID 而非 pIndex 計數，確保擷取與回寫完全對應
   type DocxItem = {
     file: string;
     markerId: string;
@@ -233,8 +232,6 @@ export const processDocx = async (
         content = content.replace(/<w:eastAsianLayout\b[^>]*\/>/g, '');
       }
 
-      // FIX: 在擷取階段為每個有文字的 <w:p> 注入唯一 marker attribute
-      const markerIds: string[] = [];
       content = content.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pBlock) => {
         const rMatches = pBlock.match(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g);
         let hasText = false;
@@ -252,14 +249,11 @@ export const processDocx = async (
         }
         if (!hasText) return pBlock;
         const mid = `docx_p_${globalMarkerCounter++}`;
-        markerIds.push(mid);
-        // 在 <w:p> 開頭注入 w:rsidR 不衝突的自訂屬性作為 marker（利用 XML comment 包裹 marker，不影響 Word 解析）
         return pBlock.replace(/^(<w:p\b)/, `$1 data-mid="${mid}"`);
       });
 
       fileContents[docFile] = content;
 
-      // 重新掃描帶有 data-mid 的 <w:p> 來擷取文字
       const pMatches = content.match(/<w:p\b[^>]*data-mid="[^"]+"[^>]*>[\s\S]*?<\/w:p>/g);
       if (pMatches) {
         pMatches.forEach((pBlock) => {
@@ -367,7 +361,6 @@ export const processDocx = async (
       let content = fileContents[docFile];
       const fileTexts = textsToTranslate.filter(t => t.file === docFile);
       
-      // FIX: 用 data-mid marker 精準配對，移除 pIndex 計數邏輯
       content = content.replace(/<w:p\b[^>]*data-mid="([^"]+)"[^>]*>[\s\S]*?<\/w:p>/g, (pBlock, markerId) => {
         const currentItem = fileTexts.find(t => t.markerId === markerId);
         
@@ -433,17 +426,27 @@ export const processDocx = async (
             }
           });
           
-          // 移除 data-mid marker attribute 後輸出（讓最終 Word 檔不含自訂屬性）
           const cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
           return cleanedPBlock.replace(/<\/w:p>$/, appendedRuns + '</w:p>');
         }
         
-        // 沒有翻譯的段落也要移除 marker
         return pBlock.replace(/ data-mid="[^"]+"/, '');
       });
 
-      // 清除其餘未被 replace 到的 data-mid（沒有翻譯文字的段落）
       content = content.replace(/ data-mid="[^"]+"/g, '');
+
+      // FIX: 對每個 <w:tbl> 強制插入 fixed layout，防止翻譯後欄寬撐開
+      content = content.replace(/(<w:tbl\b[^>]*>)(\s*<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>)/g, (match, tblOpen, tblPr) => {
+        // 若已有 w:tblLayout，強制改為 fixed
+        if (/<w:tblLayout\b/.test(tblPr)) {
+          return tblOpen + tblPr.replace(/<w:tblLayout\b[^>]*\/?>/g, '<w:tblLayout w:type="fixed"/>');
+        }
+        // 若沒有，在 </w:tblPr> 前插入
+        return tblOpen + tblPr.replace(/<\/w:tblPr>/, '<w:tblLayout w:type="fixed"/></w:tblPr>');
+      });
+
+      // 處理 <w:tbl> 後面沒有緊接 <w:tblPr> 的極端情況
+      content = content.replace(/(<w:tbl\b[^>]*>)(?!\s*<w:tblPr\b)/g, '$1<w:tblPr><w:tblLayout w:type="fixed"/></w:tblPr>');
       
       loadedZip.file(docFile, content);
     }
@@ -474,7 +477,6 @@ export const processExcel = async (
   const totalWorksheets = workbook.worksheets.length;
   let processedWorksheets = 0;
   
-  // FIX: 加入 mergedRichText 欄位，確保翻譯 tag 與回寫字型對應一致
   const allTranslations: {
     sheet: string;
     row: number;
@@ -499,7 +501,7 @@ export const processExcel = async (
     
     worksheet.eachRow((row, rowNumber) => {
       row.eachCell((cell, colNumber) => {
-        if (cell.type === 1) return; // Null
+        if (cell.type === 1) return;
         
         if (cell.value) {
           if (typeof cell.value === 'string' && cell.value.trim().length > 0) {
@@ -524,7 +526,6 @@ export const processExcel = async (
               taggedText += `[f${idx}]${rt.text}[/f${idx}]`;
             });
             if (taggedText.trim().length > 0) {
-              // FIX: 保存 mergedRichText 以便回寫時使用
               textsToTranslate.push({
                 row: rowNumber,
                 col: colNumber,
@@ -535,7 +536,6 @@ export const processExcel = async (
               });
             }
           } else if (
-            // FIX: 處理公式儲存格（formula + result 為字串）
             typeof cell.value === 'object' &&
             (cell.value as any).formula &&
             typeof (cell.value as any).result === 'string' &&
@@ -606,6 +606,9 @@ export const processExcel = async (
     const newWorkbook = new ExcelJS.Workbook();
     await newWorkbook.xlsx.load(await file.arrayBuffer());
 
+    // FIX: 記錄哪些欄位有翻譯，用於後續限制欄寬
+    const translatedCols: Record<string, Set<number>> = {};
+
     for (const worksheet of newWorkbook.worksheets) {
       worksheet.eachRow((row, rowNumber) => {
         row.eachCell((cell, colNumber) => {
@@ -624,9 +627,7 @@ export const processExcel = async (
 
             const newRichText: any[] = [];
 
-            // 先放原文
             if (translationItem.isFormula) {
-              // 公式儲存格：原文直接放純文字
               newRichText.push({ text: String((cell.value as any).result || ''), font: defaultFont });
             } else if (typeof cell.value === 'object' && (cell.value as any).richText) {
               const originalRichText = (cell.value as any).richText;
@@ -642,7 +643,6 @@ export const processExcel = async (
               const translatedText = sanitizeOutputText(rawTranslatedText, lang);
               const adjustedDefaultFont = adjustFontForLanguage(defaultFont, lang);
 
-              // FIX: 用 mergedRichText 判斷是否有 tag（與送翻的 text 格式一致）
               const hasMergedRichText = !!(translationItem.mergedRichText && translationItem.mergedRichText.length > 0);
 
               if (hasMergedRichText && translationItem.original.includes('[f0]')) {
@@ -658,7 +658,6 @@ export const processExcel = async (
                   const id = parseInt(match[1], 10);
                   const text = match[2];
                   
-                  // FIX: 從 mergedRichText 查字型（與送翻 tag 的 id 一一對應）
                   let originalFont = defaultFont;
                   if (translationItem.mergedRichText && translationItem.mergedRichText[id]) {
                     originalFont = translationItem.mergedRichText[id].font || defaultFont;
@@ -702,6 +701,10 @@ export const processExcel = async (
               return rt;
             });
             cell.value = { richText: cleanedRichText };
+
+            // 記錄此欄有翻譯資料
+            if (!translatedCols[worksheet.name]) translatedCols[worksheet.name] = new Set();
+            translatedCols[worksheet.name].add(colNumber);
           }
           cell.alignment = { 
             ...(cell.alignment || {}), 
@@ -709,6 +712,19 @@ export const processExcel = async (
           };
         });
       });
+
+      // FIX: 對有翻譯的欄位設定欄寬上限（保留原始寬度，但不超過 30）
+      const MAX_COL_WIDTH = 30;
+      const sheetTranslatedCols = translatedCols[worksheet.name];
+      if (sheetTranslatedCols) {
+        sheetTranslatedCols.forEach(colNumber => {
+          const col = worksheet.getColumn(colNumber);
+          const currentWidth = (col.width && col.width > 0) ? col.width : 12;
+          if (currentWidth > MAX_COL_WIDTH) {
+            col.width = MAX_COL_WIDTH;
+          }
+        });
+      }
     }
 
     const buffer = await newWorkbook.xlsx.writeBuffer();
