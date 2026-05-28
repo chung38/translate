@@ -195,6 +195,7 @@ export const processDocx = async (
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(file);
   
+  // FIX Bug1: 明確排除 header/footer，避免空白頁首頁尾段落被標記後找不到翻譯而顯示「翻譯失敗」
   const docFiles = Object.keys(loadedZip.files).filter(name => 
     name.startsWith('word/') && 
     name.endsWith('.xml') && 
@@ -203,7 +204,9 @@ export const processDocx = async (
     !name.includes('styles') &&
     !name.includes('settings') &&
     !name.includes('webSettings') &&
-    !name.includes('fontTable')
+    !name.includes('fontTable') &&
+    !name.includes('header') &&
+    !name.includes('footer')
   );
   
   const unescapeXml = (text: string) => text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
@@ -437,15 +440,12 @@ export const processDocx = async (
 
       // FIX: 對每個 <w:tbl> 強制插入 fixed layout，防止翻譯後欄寬撐開
       content = content.replace(/(<w:tbl\b[^>]*>)(\s*<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>)/g, (match, tblOpen, tblPr) => {
-        // 若已有 w:tblLayout，強制改為 fixed
         if (/<w:tblLayout\b/.test(tblPr)) {
           return tblOpen + tblPr.replace(/<w:tblLayout\b[^>]*\/?>/g, '<w:tblLayout w:type="fixed"/>');
         }
-        // 若沒有，在 </w:tblPr> 前插入
         return tblOpen + tblPr.replace(/<\/w:tblPr>/, '<w:tblLayout w:type="fixed"/></w:tblPr>');
       });
 
-      // 處理 <w:tbl> 後面沒有緊接 <w:tblPr> 的極端情況
       content = content.replace(/(<w:tbl\b[^>]*>)(?!\s*<w:tblPr\b)/g, '$1<w:tblPr><w:tblLayout w:type="fixed"/></w:tblPr>');
       
       loadedZip.file(docFile, content);
@@ -606,7 +606,6 @@ export const processExcel = async (
     const newWorkbook = new ExcelJS.Workbook();
     await newWorkbook.xlsx.load(await file.arrayBuffer());
 
-    // FIX: 記錄哪些欄位有翻譯，用於後續限制欄寬
     const translatedCols: Record<string, Set<number>> = {};
 
     for (const worksheet of newWorkbook.worksheets) {
@@ -702,7 +701,6 @@ export const processExcel = async (
             });
             cell.value = { richText: cleanedRichText };
 
-            // 記錄此欄有翻譯資料
             if (!translatedCols[worksheet.name]) translatedCols[worksheet.name] = new Set();
             translatedCols[worksheet.name].add(colNumber);
           }
@@ -713,7 +711,6 @@ export const processExcel = async (
         });
       });
 
-      // FIX: 對有翻譯的欄位設定欄寬上限（保留原始寬度，但不超過 30）
       const MAX_COL_WIDTH = 30;
       const sheetTranslatedCols = translatedCols[worksheet.name];
       if (sheetTranslatedCols) {
@@ -1051,6 +1048,8 @@ export const processPptx = async (
     if (content) {
       slideContents[slideFile] = content;
       
+      // FIX Bug2: 用 data-pid 標記所有段落的原始全域索引，確保翻譯結果對應正確
+      // 不能只對有文字的段落計數，因為 replace 迴圈會遍歷所有 <a:p>
       const pMatches = content.match(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g);
       if (pMatches) {
         pMatches.forEach((pBlock, index) => {
@@ -1083,6 +1082,7 @@ export const processPptx = async (
             });
             
             if (taggedText.trim().length > 0) {
+              // id 使用 slideFile + 原始段落索引(含空段落)，確保對應不錯位
               textsToTranslate.push({ slide: slideFile, id: `${slideFile}_${index}`, text: taggedText, pBlock, runs });
             }
           }
@@ -1129,10 +1129,11 @@ export const processPptx = async (
       let content = slideContents[slideFile];
       const slideTexts = textsToTranslate.filter(t => t.slide === slideFile);
       
+      // FIX Bug2: pIndex 對所有 <a:p> 遞增（含空段落），與掃描時的 index 一致
       let pIndex = 0;
       content = content.replace(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g, (pBlock) => {
-        const currentItem = slideTexts.find(t => t.id === `${slideFile}_${pIndex}`);
-        pIndex++;
+        const currentIndex = pIndex++;
+        const currentItem = slideTexts.find(t => t.id === `${slideFile}_${currentIndex}`);
         
         if (currentItem) {
           const globalIndex = textsToTranslate.findIndex(t => t.id === currentItem.id);
