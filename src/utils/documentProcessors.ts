@@ -195,7 +195,7 @@ export const processDocx = async (
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(file);
   
-  // FIX Bug1: 明確排除 header/footer，避免空白頁首頁尾段落被標記後找不到翻譯而顯示「翻譯失敗」
+  // 明確排除 header/footer，避免空白頁首頁尾段落被標記後找不到翻譯而顯示「翻譯失敗」
   const docFiles = Object.keys(loadedZip.files).filter(name => 
     name.startsWith('word/') && 
     name.endsWith('.xml') && 
@@ -429,8 +429,13 @@ export const processDocx = async (
             }
           });
           
+          // FIX: 用 lastIndexOf 取代 /$/ regex，避免 multiline XML 中
+          // /$/ 誤匹配第一個 </w:p> 導致譯文插入在原文之前
           const cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
-          return cleanedPBlock.replace(/<\/w:p>$/, appendedRuns + '</w:p>');
+          const closeTag = '</w:p>';
+          const insertPos = cleanedPBlock.lastIndexOf(closeTag);
+          if (insertPos === -1) return cleanedPBlock;
+          return cleanedPBlock.slice(0, insertPos) + appendedRuns + closeTag;
         }
         
         return pBlock.replace(/ data-mid="[^"]+"/, '');
@@ -438,7 +443,7 @@ export const processDocx = async (
 
       content = content.replace(/ data-mid="[^"]+"/g, '');
 
-      // FIX: 對每個 <w:tbl> 強制插入 fixed layout，防止翻譯後欄寬撐開
+      // 對每個 <w:tbl> 強制插入 fixed layout，防止翻譯後欄寬撐開
       content = content.replace(/(<w:tbl\b[^>]*>)(\s*<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>)/g, (match, tblOpen, tblPr) => {
         if (/<w:tblLayout\b/.test(tblPr)) {
           return tblOpen + tblPr.replace(/<w:tblLayout\b[^>]*\/?>/g, '<w:tblLayout w:type="fixed"/>');
@@ -1048,8 +1053,6 @@ export const processPptx = async (
     if (content) {
       slideContents[slideFile] = content;
       
-      // FIX Bug2: 用 data-pid 標記所有段落的原始全域索引，確保翻譯結果對應正確
-      // 不能只對有文字的段落計數，因為 replace 迴圈會遍歷所有 <a:p>
       const pMatches = content.match(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g);
       if (pMatches) {
         pMatches.forEach((pBlock, index) => {
@@ -1082,7 +1085,6 @@ export const processPptx = async (
             });
             
             if (taggedText.trim().length > 0) {
-              // id 使用 slideFile + 原始段落索引(含空段落)，確保對應不錯位
               textsToTranslate.push({ slide: slideFile, id: `${slideFile}_${index}`, text: taggedText, pBlock, runs });
             }
           }
@@ -1129,7 +1131,6 @@ export const processPptx = async (
       let content = slideContents[slideFile];
       const slideTexts = textsToTranslate.filter(t => t.slide === slideFile);
       
-      // FIX Bug2: pIndex 對所有 <a:p> 遞增（含空段落），與掃描時的 index 一致
       let pIndex = 0;
       content = content.replace(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g, (pBlock) => {
         const currentIndex = pIndex++;
