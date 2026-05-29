@@ -182,52 +182,62 @@ export const sanitizeOutputText = (text: string, lang: string) => {
 
 // ─── 統一的段落 run 解析器 ──────────────────────────────────────────────────
 // 將一個 <w:p> 區塊解析成「文字區段」陣列。
-// 每個區段代表連續相同格式的文字，<w:br/> 會插入一個 { rPr, text: '\n', isBr: true } 節點，
-// 使得提取邏輯與回寫邏輯完全一致。
+//
+// 關鍵規則：<w:br/> 幾乎永遠包在 <w:r> 內部，例如：
+//   <w:r><w:rPr>...</w:rPr><w:br/></w:r>
+//   <w:r><w:br/></w:r>
+//
+// 正確做法：解析每個 <w:r> 時，先看它是否含有 <w:br/>：
+//   1. 若 <w:r> 同時有 <w:t> 和 <w:br/>，先輸出文字 run，再輸出 br run。
+//   2. 若 <w:r> 只有 <w:br/> 沒有 <w:t>，輸出 br run。
+//   3. 若 <w:r> 只有 <w:t>，正常輸出文字 run。
+//
+// 這樣提取文字和回寫時的 run index 才會完全對應。
 type DocxRun = { rPr: string; normRPr: string; text: string; isBr?: boolean };
 
 function parseDocxParagraphRuns(pBlock: string, unescapeXml: (s: string) => string): DocxRun[] {
-  // 取出所有 <w:r> 和 <w:br/>（直接在 <w:p> 下的）
-  // 使用 token 化：逐一抓取 <w:r ...>...</w:r> 或獨立 <w:br .../>
   const runs: DocxRun[] = [];
 
-  // 先找出所有子 token（w:r 或 w:br）
-  const tokenRegex = /(<w:r\b[^>]*>[\s\S]*?<\/w:r>|<w:br\b[^>]*\/>)/g;
+  // 只抓 <w:r ...>...</w:r>，不再單獨抓頂層 <w:br/>（因為 br 幾乎都在 w:r 內）
+  const rRegex = /<w:r\b[^>]*>[\s\S]*?<\/w:r>/g;
   let match: RegExpExecArray | null;
 
-  while ((match = tokenRegex.exec(pBlock)) !== null) {
-    const token = match[1];
+  while ((match = rRegex.exec(pBlock)) !== null) {
+    const rToken = match[0];
 
-    if (token.startsWith('<w:br')) {
-      // 段落內換行符：插入 \n 佔位，繼承前一個 run 的 rPr
-      const prevRPr = runs.length > 0 ? runs[runs.length - 1].rPr : '';
-      const prevNormRPr = runs.length > 0 ? runs[runs.length - 1].normRPr : '';
-      runs.push({ rPr: prevRPr, normRPr: prevNormRPr, text: '\n', isBr: true });
-      continue;
-    }
-
-    // 這是一個 <w:r>
-    const tMatches = token.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
-    if (!tMatches) continue;
-
-    const rPrMatch = token.match(/<w:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:rPr>)/);
+    // 取出此 run 的 rPr
+    const rPrMatch = rToken.match(/<w:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:rPr>)/);
     const rPr = rPrMatch ? rPrMatch[0] : '';
     const normRPr = normalizeDocxRPr(rPr);
 
+    // 取出文字（可能有多個 <w:t>）
+    const tMatches = rToken.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
     let runText = '';
-    for (const tTag of tMatches) {
-      const inner = tTag.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/);
-      if (inner && inner[1]) runText += unescapeXml(inner[1]);
+    if (tMatches) {
+      for (const tTag of tMatches) {
+        const inner = tTag.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/);
+        if (inner && inner[1]) runText += unescapeXml(inner[1]);
+      }
     }
 
-    if (!runText) continue;
+    // 偵測此 run 是否含有 <w:br/>
+    const hasBr = /<w:br\b[^>]*\/?>/.test(rToken);
 
-    // 合併相同格式的相鄰 run（但不跨越 br）
-    const last = runs.length > 0 ? runs[runs.length - 1] : null;
-    if (last && !last.isBr && last.normRPr === normRPr) {
-      last.text += runText;
-    } else {
-      runs.push({ rPr, normRPr, text: runText });
+    // 先輸出文字部分（若有）
+    if (runText) {
+      const last = runs.length > 0 ? runs[runs.length - 1] : null;
+      if (last && !last.isBr && last.normRPr === normRPr) {
+        last.text += runText;
+      } else {
+        runs.push({ rPr, normRPr, text: runText });
+      }
+    }
+
+    // 再輸出 br 佔位（若有）
+    if (hasBr) {
+      const prevRPr = runs.length > 0 ? runs[runs.length - 1].rPr : rPr;
+      const prevNormRPr = runs.length > 0 ? runs[runs.length - 1].normRPr : normRPr;
+      runs.push({ rPr: prevRPr, normRPr: prevNormRPr, text: '\n', isBr: true });
     }
   }
 
