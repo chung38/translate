@@ -180,6 +180,76 @@ export const sanitizeOutputText = (text: string, lang: string) => {
   return cleaned;
 };
 
+// ─── 統一的段落 run 解析器 ──────────────────────────────────────────────────
+// 將一個 <w:p> 區塊解析成「文字區段」陣列。
+// 每個區段代表連續相同格式的文字，<w:br/> 會插入一個 { rPr, text: '\n', isBr: true } 節點，
+// 使得提取邏輯與回寫邏輯完全一致。
+type DocxRun = { rPr: string; normRPr: string; text: string; isBr?: boolean };
+
+function parseDocxParagraphRuns(pBlock: string, unescapeXml: (s: string) => string): DocxRun[] {
+  // 取出所有 <w:r> 和 <w:br/>（直接在 <w:p> 下的）
+  // 使用 token 化：逐一抓取 <w:r ...>...</w:r> 或獨立 <w:br .../>
+  const runs: DocxRun[] = [];
+
+  // 先找出所有子 token（w:r 或 w:br）
+  const tokenRegex = /(<w:r\b[^>]*>[\s\S]*?<\/w:r>|<w:br\b[^>]*\/>)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenRegex.exec(pBlock)) !== null) {
+    const token = match[1];
+
+    if (token.startsWith('<w:br')) {
+      // 段落內換行符：插入 \n 佔位，繼承前一個 run 的 rPr
+      const prevRPr = runs.length > 0 ? runs[runs.length - 1].rPr : '';
+      const prevNormRPr = runs.length > 0 ? runs[runs.length - 1].normRPr : '';
+      runs.push({ rPr: prevRPr, normRPr: prevNormRPr, text: '\n', isBr: true });
+      continue;
+    }
+
+    // 這是一個 <w:r>
+    const tMatches = token.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
+    if (!tMatches) continue;
+
+    const rPrMatch = token.match(/<w:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:rPr>)/);
+    const rPr = rPrMatch ? rPrMatch[0] : '';
+    const normRPr = normalizeDocxRPr(rPr);
+
+    let runText = '';
+    for (const tTag of tMatches) {
+      const inner = tTag.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/);
+      if (inner && inner[1]) runText += unescapeXml(inner[1]);
+    }
+
+    if (!runText) continue;
+
+    // 合併相同格式的相鄰 run（但不跨越 br）
+    const last = runs.length > 0 ? runs[runs.length - 1] : null;
+    if (last && !last.isBr && last.normRPr === normRPr) {
+      last.text += runText;
+    } else {
+      runs.push({ rPr, normRPr, text: runText });
+    }
+  }
+
+  return runs;
+}
+
+// 將 runs 陣列轉成帶 [f0]...[/f0] tag 的字串
+function runsToTaggedText(runs: DocxRun[]): string {
+  let tagged = '';
+  let fIdx = 0;
+  for (const run of runs) {
+    if (run.isBr) {
+      // br 本身不參與翻譯，但要佔一個 slot 讓 index 對得上
+      tagged += `[f${fIdx}]\n[/f${fIdx}]`;
+    } else {
+      tagged += `[f${fIdx}]${run.text}[/f${fIdx}]`;
+    }
+    fIdx++;
+  }
+  return tagged;
+}
+
 export const processDocx = async (
   file: File, 
   targetLanguages: string[],
@@ -195,7 +265,6 @@ export const processDocx = async (
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(file);
   
-  // 明確排除 header/footer，避免空白頁首頁尾段落被標記後找不到翻譯而顯示「翻譯失敗」
   const docFiles = Object.keys(loadedZip.files).filter(name => 
     name.startsWith('word/') && 
     name.endsWith('.xml') && 
@@ -217,7 +286,7 @@ export const processDocx = async (
     markerId: string;
     text: string;
     pBlock: string;
-    runs?: { rPr: string; normRPr?: string; text: string }[];
+    runs: DocxRun[];
   };
   const textsToTranslate: DocxItem[] = [];
   const fileContents: Record<string, string> = {};
@@ -235,21 +304,10 @@ export const processDocx = async (
         content = content.replace(/<w:eastAsianLayout\b[^>]*\/>/g, '');
       }
 
+      // ── 第一步：掃描每個 <w:p>，若含可翻譯文字則加 data-mid ──
       content = content.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pBlock) => {
-        const rMatches = pBlock.match(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g);
-        let hasText = false;
-        if (rMatches) {
-          for (const rBlock of rMatches) {
-            const tMatches = rBlock.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
-            if (tMatches) {
-              for (const tMatch of tMatches) {
-                const inner = tMatch.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/);
-                if (inner && inner[1]) { hasText = true; break; }
-              }
-            }
-            if (hasText) break;
-          }
-        }
+        const runs = parseDocxParagraphRuns(pBlock, unescapeXml);
+        const hasText = runs.some(r => !r.isBr && r.text.trim().length > 0);
         if (!hasText) return pBlock;
         const mid = `docx_p_${globalMarkerCounter++}`;
         return pBlock.replace(/^(<w:p\b)/, `$1 data-mid="${mid}"`);
@@ -257,53 +315,21 @@ export const processDocx = async (
 
       fileContents[docFile] = content;
 
+      // ── 第二步：用同一套 parseDocxParagraphRuns 提取文字 ──
       const pMatches = content.match(/<w:p\b[^>]*data-mid="[^"]+"[^>]*>[\s\S]*?<\/w:p>/g);
       if (pMatches) {
-        pMatches.forEach((pBlock) => {
+        for (const pBlock of pMatches) {
           const midMatch = pBlock.match(/data-mid="([^"]+)"/);
-          if (!midMatch) return;
+          if (!midMatch) continue;
           const markerId = midMatch[1];
 
-          const rMatches = pBlock.match(/<w:r\b[^>]*>[\s\S]*?<\/w:r>/g);
-          if (rMatches) {
-            let taggedText = '';
-            const runs: { rPr: string, normRPr?: string, text: string }[] = [];
-            
-            rMatches.forEach((rBlock) => {
-              const tMatches = rBlock.match(/<w:t\b[^>]*>[\s\S]*?<\/w:t>/g);
-              if (tMatches) {
-                const rPrMatch = rBlock.match(/<w:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/w:rPr>)/);
-                const rPr = rPrMatch ? rPrMatch[0] : '';
-                const normRPr = normalizeDocxRPr(rPr);
-                
-                let runText = '';
-                tMatches.forEach(tMatch => {
-                  const innerTextMatch = tMatch.match(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/);
-                  if (innerTextMatch && innerTextMatch[1]) {
-                    runText += unescapeXml(innerTextMatch[1]);
-                  }
-                });
-                
-                if (runText) {
-                  const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
-                  if (lastRun && lastRun.normRPr === normRPr) {
-                    lastRun.text += runText;
-                  } else {
-                    runs.push({ rPr, normRPr, text: runText });
-                  }
-                }
-              }
-            });
-            
-            runs.forEach((run, idx) => {
-              taggedText += `[f${idx}]${run.text}[/f${idx}]`;
-            });
-            
-            if (taggedText.trim().length > 0) {
-              textsToTranslate.push({ file: docFile, markerId, text: taggedText, pBlock, runs });
-            }
+          const runs = parseDocxParagraphRuns(pBlock, unescapeXml);
+          const taggedText = runsToTaggedText(runs);
+
+          if (taggedText.replace(/\[f\d+\][\s\n]*\[\/f\d+\]/g, '').trim().length > 0) {
+            textsToTranslate.push({ file: docFile, markerId, text: taggedText, pBlock, runs });
           }
-        });
+        }
       }
     }
   }
@@ -370,67 +396,71 @@ export const processDocx = async (
         if (currentItem) {
           const globalIndex = textsToTranslate.findIndex(t => t.markerId === markerId);
           
+          // 找最長 run 作為 fallback 格式
+          let longestRun = currentItem.runs.find(r => !r.isBr) || currentItem.runs[0];
+          for (const run of currentItem.runs) {
+            if (!run.isBr && run.text.length > longestRun.text.length) {
+              longestRun = run;
+            }
+          }
+
           let appendedRuns = '';
           langs.forEach(lang => {
             const rawTranslatedText = translatedResults[globalIndex]?.[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
             
+            // 換行分隔
             appendedRuns += `<w:r><w:br/></w:r>`;
             
-            if (currentItem.runs && currentItem.runs.length > 0) {
-              let longestRun = currentItem.runs[0];
-              for (const run of currentItem.runs) {
-                if (run.text.length > longestRun.text.length) {
-                  longestRun = run;
-                }
-              }
-              const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'docx');
+            const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'docx');
+            const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
+            let fMatch: RegExpExecArray | null;
+            let lastIndex = 0;
+            let hasTags = false;
+            
+            while ((fMatch = fRegex.exec(translatedText)) !== null) {
+              hasTags = true;
+              const id = parseInt(fMatch[1], 10);
+              const text = fMatch[2];
 
-              const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
-              let match;
-              let lastIndex = 0;
-              let hasTags = false;
-              
-              while ((match = fRegex.exec(translatedText)) !== null) {
-                hasTags = true;
-                const id = parseInt(match[1], 10);
-                const text = match[2];
-                const originalRPr = currentItem.runs[id] ? currentItem.runs[id].rPr : longestRun.rPr;
-                const rPr = adjustXmlRPrForLanguage(originalRPr, lang, 'docx');
-                
-                if (match.index > lastIndex) {
-                   const betweenText = translatedText.substring(lastIndex, match.index);
-                   if (betweenText) {
-                     const cleanBetween = stripTags(betweenText);
-                     appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanBetween)}</w:t></w:r>`;
-                   }
+              // 對應原始 run
+              const originalRun = currentItem.runs[id];
+
+              if (fMatch.index > lastIndex) {
+                const betweenText = translatedText.substring(lastIndex, fMatch.index);
+                const cleanBetween = stripTags(betweenText);
+                if (cleanBetween) {
+                  appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanBetween)}</w:t></w:r>`;
                 }
-                
-                if (text) {
-                  let finalText = stripTags(text);
-                  appendedRuns += `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(finalText)}</w:t></w:r>`;
-                }
-                lastIndex = fRegex.lastIndex;
               }
-              
-              if (!hasTags) {
-                const cleanText = stripTags(translatedText);
+
+              if (originalRun?.isBr) {
+                // 原始是 br，翻譯後若遇到 \n 就插 br，否則略過
+                if (text === '\n' || text.includes('\n')) {
+                  appendedRuns += `<w:r><w:br/></w:r>`;
+                }
+              } else if (text && text !== '\n') {
+                const rPr = adjustXmlRPrForLanguage(originalRun ? originalRun.rPr : longestRun.rPr, lang, 'docx');
+                const finalText = stripTags(text);
+                appendedRuns += `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(finalText)}</w:t></w:r>`;
+              }
+
+              lastIndex = fRegex.lastIndex;
+            }
+            
+            if (!hasTags) {
+              const cleanText = stripTags(translatedText);
+              if (cleanText) {
                 appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
-              } else if (lastIndex < translatedText.length) {
-                const remainingText = translatedText.substring(lastIndex);
-                if (remainingText) {
-                  const cleanText = stripTags(remainingText);
-                  appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(cleanText)}</w:t></w:r>`;
-                }
               }
-            } else {
-               const fallbackRPr = adjustXmlRPrForLanguage('', lang, 'docx');
-               appendedRuns += `<w:r>${fallbackRPr}<w:t xml:space="preserve">${escapeXml(stripTags(translatedText))}</w:t></w:r>`;
+            } else if (lastIndex < translatedText.length) {
+              const remainingText = stripTags(translatedText.substring(lastIndex));
+              if (remainingText) {
+                appendedRuns += `<w:r>${defaultRPr}<w:t xml:space="preserve">${escapeXml(remainingText)}</w:t></w:r>`;
+              }
             }
           });
           
-          // FIX: 用 lastIndexOf 取代 /$/ regex，避免 multiline XML 中
-          // /$/ 誤匹配第一個 </w:p> 導致譯文插入在原文之前
           const cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
           const closeTag = '</w:p>';
           const insertPos = cleanedPBlock.lastIndexOf(closeTag);
@@ -443,7 +473,7 @@ export const processDocx = async (
 
       content = content.replace(/ data-mid="[^"]+"/g, '');
 
-      // 對每個 <w:tbl> 強制插入 fixed layout，防止翻譯後欄寬撐開
+      // 強制表格 fixed layout，防止翻譯後欄寬撐開
       content = content.replace(/(<w:tbl\b[^>]*>)(\s*<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>)/g, (match, tblOpen, tblPr) => {
         if (/<w:tblLayout\b/.test(tblPr)) {
           return tblOpen + tblPr.replace(/<w:tblLayout\b[^>]*\/?>/g, '<w:tblLayout w:type="fixed"/>');
