@@ -134,6 +134,26 @@ const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType:
   return newRPr;
 };
 
+// 將段落的 <w:pPr> 中的對齊改為左對齊（覆蓋兩端對齊，避免翻譯後字間距過大）
+const forceLeftAlignInPPr = (pBlock: string): string => {
+  // 若段落有 <w:pPr>，在其中處理 <w:jc>
+  if (/<w:pPr\b[^>]*>[\s\S]*?<\/w:pPr>/.test(pBlock)) {
+    return pBlock.replace(/(<w:pPr\b[^>]*>[\s\S]*?)(<\/w:pPr>)/, (match, pPrContent, closeTag) => {
+      if (/<w:jc\b/.test(pPrContent)) {
+        // 已有 <w:jc>，替換成 left
+        return pPrContent.replace(/<w:jc\b[^>]*\/?>/, '<w:jc w:val="left"/>') + closeTag;
+      } else {
+        // 沒有 <w:jc>，在 </w:pPr> 前插入
+        return pPrContent + '<w:jc w:val="left"/>' + closeTag;
+      }
+    });
+  } else if (/<w:p\b[^>]*>/.test(pBlock)) {
+    // 段落完全沒有 <w:pPr>，在 <w:p...> 後插入
+    return pBlock.replace(/^(<w:p\b[^>]*>)/, '$1<w:pPr><w:jc w:val="left"/></w:pPr>');
+  }
+  return pBlock;
+};
+
 export const sanitizeOutputText = (text: string, lang: string) => {
   let cleaned = text.normalize('NFC').replace(/[·‧•]/g, ' ').replace(/\u00A0/g, ' ');
   if (lang === 'vi-VN' || lang === 'th-TH' || lang.toLowerCase().startsWith('en')) {
@@ -471,7 +491,10 @@ export const processDocx = async (
             }
           });
           
-          const cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
+          // 移除 data-mid 屬性，並強制段落左對齊（避免兩端對齊造成翻譯文字字間距過大）
+          let cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
+          cleanedPBlock = forceLeftAlignInPPr(cleanedPBlock);
+          
           const closeTag = '</w:p>';
           const insertPos = cleanedPBlock.lastIndexOf(closeTag);
           if (insertPos === -1) return cleanedPBlock;
