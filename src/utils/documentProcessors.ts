@@ -501,7 +501,10 @@ export const processDocx = async (
           return cleanedPBlock.slice(0, insertPos) + appendedRuns + closeTag;
         }
         
-        return pBlock.replace(/ data-mid="[^"]+"/, '');
+        // 沒有翻譯結果的段落：同樣移除 data-mid 並強制左對齊
+        let cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
+        cleanedPBlock = forceLeftAlignInPPr(cleanedPBlock);
+        return cleanedPBlock;
       });
 
       content = content.replace(/ data-mid="[^"]+"/g, '');
