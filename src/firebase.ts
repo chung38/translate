@@ -1,5 +1,5 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged, User, createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, updateProfile, sendEmailVerification, sendPasswordResetEmail } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, User, createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, updateProfile, sendEmailVerification, sendPasswordResetEmail } from 'firebase/auth';
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, addDoc, query, orderBy, onSnapshot, getDocFromServer, getDocs, Timestamp, where, limit } from 'firebase/firestore';
 
 // Import the Firebase configuration
@@ -15,6 +15,11 @@ export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'
 });
+
+// Detect mobile environment
+export const isMobileDevice = (): boolean => {
+  return /Android|iPhone|iPad|iPod|Mobile|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+};
 
 // Error Handling Spec for Firestore Operations
 export enum OperationType {
@@ -83,7 +88,9 @@ async function testConnection() {
 testConnection();
 
 export { 
-  signInWithPopup, 
+  signInWithPopup,
+  signInWithRedirect,
+  getRedirectResult,
   onAuthStateChanged, 
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
