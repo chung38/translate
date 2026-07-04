@@ -42,7 +42,8 @@ import {
   auth, 
   db, 
   googleProvider, 
-  signInWithPopup, 
+  signInWithPopup,
+  getRedirectResult,
   onAuthStateChanged, 
   doc, 
   getDoc, 
@@ -122,6 +123,32 @@ export default function App() {
   } = useTranslation(user);
 
   const [reloadCounter, setReloadCounter] = useState(0);
+
+  // 手機 Google redirect 登入結果處理（必須在最頂層，獨立於 AuthModal）
+  useEffect(() => {
+    const handleRedirectResult = async () => {
+      try {
+        const result = await getRedirectResult(auth);
+        if (result?.user) {
+          // redirect 登入成功，onAuthStateChanged 會自動觸發更新 user 狀態
+          setShowAuthModal(false);
+          console.log('Mobile Google redirect login success:', result.user.email);
+        }
+      } catch (err: any) {
+        if (err.code === 'auth/popup-closed-by-user' || err.code === 'auth/cancelled-popup-request') {
+          return;
+        }
+        console.error('Google redirect result error:', err);
+        if (err.code === 'auth/unauthorized-domain') {
+          setError('此網域未授權 Google 登入，請聯繫管理員在 Firebase Console 新增授權網域');
+        } else {
+          setError('Google 登入失敗，請再試一次');
+        }
+      }
+    };
+    handleRedirectResult();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Firebase Auth Listener
   useEffect(() => {
@@ -562,7 +589,7 @@ export default function App() {
     }
 
     if (!auth.currentUser?.emailVerified && !userProfile?.isManuallyAdded) {
-      setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
+      setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
       return;
     }
 
@@ -707,7 +734,7 @@ export default function App() {
           {/* Header */}
           <header className="mb-8 md:mb-12">
 
-            {/* Auth Bar — 標題上方，靠左對齊中間內容區塊 */}
+            {/* Auth Bar — 標題上方，非左對齊中間內容區塊 */}
             {isAuthReady && (
               <motion.div
                 initial={{ opacity: 0, y: -6 }}
@@ -766,7 +793,7 @@ export default function App() {
                           onClick={async () => {
                             try {
                               await sendEmailVerification(user);
-                              setError('驗證信已重新發送，請檢查您的信箱。');
+                              setError('驗證信已重新發送，請檢查您的信笱。');
                             } catch (e) {
                               setError('發送驗證信失敗，請稍後再試。');
                             }
@@ -895,7 +922,7 @@ export default function App() {
                       <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
                       <div className="text-sm text-amber-800">
                         <p className="font-bold mb-1">PDF 翻譯注意事項</p>
-                        <p>系統目前僅能擷取 PDF 中的「純文字」進行翻譯，將會**遺失原有的表格與排版**。若為掃描檔或圖片 PDF，系統會自動啟用 OCR (光學字元辨識) 進行處理，但辨識可能需要較長時間。若您的 PDF 包含表格或特殊字體（可能導致亂碼），強烈建議您先將其轉換為 Word 或 Excel 檔案後再進行翻譯。</p>
+                        <p>系統目前僅能擷取 PDF 中的「純文字」進行翻譯，將會**遺失原有的表格與排版**。若為揃描檔或圖片 PDF，系統會自動啟用 OCR (光學字元辨識) 進行處理，但辨識可能需要較長時間。若您的 PDF 包含表格或特殊字體（可能導致亂碼），強烈建議您先將其轉換為 Word 或 Excel 檔案後再進行翻譯。</p>
                       </div>
                     </div>
                   )}
@@ -1090,10 +1117,10 @@ export default function App() {
                         if (auth.currentUser?.emailVerified) {
                           setReloadCounter(c => c + 1);
                         } else {
-                          setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
+                          setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
                         }
                       } catch (e) {
-                        setError('請先至您的信箱收取驗證信並完成驗證，才可使用翻譯功能。');
+                        setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。');
                       }
                     }}
                     className="w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white hover:shadow-[0_8px_20px_rgba(245,158,11,0.3)] hover:-translate-y-0.5 active:scale-[0.98]"
