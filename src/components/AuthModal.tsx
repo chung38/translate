@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, User as UserIcon, AlertCircle, Loader2 } from 'lucide-react';
+import { X, User as UserIcon, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
 import { 
   auth, 
   db, 
@@ -25,6 +25,16 @@ interface AuthModalProps {
   onSuccess?: (message?: string) => void;
 }
 
+/** 偵測是否為 WebView（Line、Facebook、Instagram 等 App 內建瀏覽器） */
+function isWebView(): boolean {
+  const ua = navigator.userAgent || '';
+  return (
+    /FBAN|FBAV|Instagram|Line\/|MicroMessenger|WebView|wv/.test(ua) ||
+    ((/iPhone|iPod|iPad/.test(ua)) && !/Safari\//.test(ua)) ||
+    (/Android/.test(ua) && /Version\/\d/.test(ua) && /Chrome\/\d/.test(ua) && /Mobile Safari\/\d/.test(ua) === false)
+  );
+}
+
 export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess }) => {
   const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
   const [email, setEmail] = useState('');
@@ -33,6 +43,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   const [authLoading, setAuthLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resetSent, setResetSent] = useState(false);
+  const [inWebView, setInWebView] = useState(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setInWebView(isWebView());
+    }
+  }, [isOpen]);
 
   const handleResetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -73,7 +90,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(userCredential.user, { displayName });
         
-        // Send email verification
         try {
           await sendEmailVerification(userCredential.user);
           console.log("Verification email sent.");
@@ -86,7 +102,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           }
         }
         
-        // Also update the Firestore profile immediately
         const userRef = doc(db, 'users', userCredential.user.uid);
         await setDoc(userRef, {
           uid: userCredential.user.uid,
@@ -135,16 +150,20 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
   const handleGoogleLogin = async () => {
     if (authLoading) return;
+
+    // WebView 環境下 Google 登入會被封鎖，提示使用者改用系統瀏覽器
+    if (inWebView) {
+      setError('目前在 App 內建瀏覽器中，Google 登入不被允許。請點擊下方按鈕，用系統預設瀏覽器開啟本頁面後再登入。');
+      return;
+    }
+
     setAuthLoading(true);
     setError(null);
     try {
       if (isMobileDevice()) {
-        // 手機版：使用 redirect，頁面會跳轉到 Google，結果由 App.tsx 頂層的 useEffect 處理
         await signInWithRedirect(auth, googleProvider);
-        // 注意：此行以下不會在 redirect 後繼續執行，頁面會直接跳走
         return;
       } else {
-        // 電腦版：使用 popup
         await signInWithPopup(auth, googleProvider);
         onClose();
         if (onSuccess) onSuccess();
@@ -157,13 +176,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       let msg = 'Google 登入失敗';
       if (err.code === 'auth/popup-blocked') msg = '彈出視窗被封鎖，請允許彈出視窗或改用帳密登入';
       else if (err.code === 'auth/unauthorized-domain') msg = '此網域未授權，請聯繫管理員';
+      else if (err.code === 'auth/disallowed-useragent' || (err.message && err.message.includes('disallowed_useragent'))) {
+        msg = '您的瀏覽器不支援 Google 登入，請改用系統預設瀏覽器開啟本頁面。';
+        setInWebView(true);
+      }
       setError(msg);
     } finally {
-      // 只在非 redirect 時才重置 loading（redirect 會讓頁面跳走，不需要重置）
       if (!isMobileDevice()) {
         setAuthLoading(false);
       }
     }
+  };
+
+  const handleOpenInBrowser = () => {
+    const url = window.location.href;
+    // 嘗試透過 location.href 跳轉（部分 App 會自動用系統瀏覽器開啟）
+    window.location.href = url;
   };
 
   return (
@@ -195,6 +223,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   {authMode === 'login' ? '請登入您的帳號以繼續' : authMode === 'register' ? '註冊一個新帳號開始使用' : '輸入您的電子郵件，我們將發送密碼重設連結給您'}
                 </p>
               </div>
+
+              {/* WebView 警告橫幅 */}
+              {inWebView && (
+                <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+                  <div className="flex items-start gap-3">
+                    <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                    <div className="text-sm text-amber-800">
+                      <p className="font-bold mb-1">偵測到 App 內建瀏覽器</p>
+                      <p className="mb-3">您目前在 Line / Facebook 等 App 的內建瀏覽器中，Google 登入不支援此環境。</p>
+                      <p className="mb-3 font-medium">請改用<strong>帳號密碼登入</strong>，或點擊下方按鈕用系統瀏覽器開啟：</p>
+                      <button
+                        onClick={handleOpenInBrowser}
+                        className="w-full flex items-center justify-center gap-2 py-2.5 px-4 bg-amber-500 text-white font-bold rounded-lg hover:bg-amber-600 transition-colors text-sm"
+                      >
+                        <ExternalLink className="w-4 h-4" />
+                        在系統瀏覽器中開啟
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {authMode === 'reset' ? (
                 <form onSubmit={handleResetPassword} className="space-y-4">
@@ -318,7 +367,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   <button 
                     onClick={handleGoogleLogin}
                     disabled={authLoading}
-                    className={`w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl transition-all flex items-center justify-center gap-3 ${authLoading ? 'opacity-50 cursor-not-allowed' : 'hover:bg-slate-50'}`}
+                    className={`w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl transition-all flex items-center justify-center gap-3 ${
+                      inWebView 
+                        ? 'opacity-40 cursor-not-allowed' 
+                        : authLoading 
+                          ? 'opacity-50 cursor-not-allowed' 
+                          : 'hover:bg-slate-50'
+                    }`}
                   >
                     {authLoading ? (
                       <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
@@ -330,7 +385,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                         <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
                       </svg>
                     )}
-                    {authLoading ? '跳轉至 Google 登入中...' : 'Google 登入'}
+                    {inWebView ? 'Google 登入（不支援此環境）' : authLoading ? '跳轉至 Google 登入中...' : 'Google 登入'}
                   </button>
 
                   <div className="mt-8 text-center">
