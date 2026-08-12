@@ -12,7 +12,7 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const extractTagIds = (text: string): number[] => {
   const ids = new Set<number>();
-  const regex = /\\[f(\\d+)\\]([\s\S]*?)\\[\\/f\\1\\]/g;
+  const regex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
   let match;
   while ((match = regex.exec(text)) !== null) {
     ids.add(parseInt(match[1], 10));
@@ -20,7 +20,7 @@ const extractTagIds = (text: string): number[] => {
   return [...ids].sort((a, b) => a - b);
 };
 
-const hasTagMarkup = (text: string) => /\\[f\\d+\\][\s\S]*?\\[\\/f\\d+\\]/.test(text);
+const hasTagMarkup = (text: string) => /\[f\d+\][\s\S]*?\[\/f\d+\]/.test(text);
 
 const hasExactSameTags = (source: string, target: string) => {
   const sourceIds = extractTagIds(source);
@@ -28,10 +28,10 @@ const hasExactSameTags = (source: string, target: string) => {
   return sourceIds.length === targetIds.length && sourceIds.every((id, index) => id === targetIds[index]);
 };
 
-const stripAllTags = (text: string) => text.replace(/\\[f\\d+\\]/g, '').replace(/\\[\\/f\\d+\\]/g, '');
+const stripAllTags = (text: string) => text.replace(/\[f\d+\]/g, '').replace(/\[\/f\d+\]/g, '');
 
 const rebuildWithSourceTags = (source: string, translated: string) => {
-  const srcMatches = [...source.matchAll(/\\[f(\\d+)\\]([\s\S]*?)\\[\\/f\\1\\]/g)];
+  const srcMatches = [...source.matchAll(/\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g)];
   if (srcMatches.length === 0) return translated;
 
   const cleanTranslated = stripAllTags(translated).trim();
