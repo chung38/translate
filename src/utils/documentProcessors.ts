@@ -11,6 +11,153 @@ const stripTags = (text: string) => {
   return text.replace(/\[\/?f\d+\]/g, '').replace(/<\/?f\d+[^>]*>/g, '');
 };
 
+// ─── 語言代碼正規化 ────────────────────────────────────────────────────────
+// [修正] App.tsx 傳進來的是 AVAILABLE_LANGUAGES 的 name(中文顯示名，例如 '越南文')，
+// 不是 id。所以檔案裡原本所有 ['zh-TW','ja','ko'].includes(lang)、
+// ['vi','th'].includes(lang)、lang === 'vi-VN'、lang.startsWith('en') 的判斷
+// 全部永遠是 false —— 字型替換、越南文防斷字、語系標記等等從來沒有生效過。
+// 這裡統一把「中文名 / 英文名 / ISO 代碼」都收斂成同一組 base code。
+export type LangBase = 'zh' | 'ja' | 'ko' | 'th' | 'vi' | 'id' | 'en' | 'other';
+
+const LANG_ALIASES: { base: LangBase; keys: string[] }[] = [
+  { base: 'zh', keys: ['zh', 'zh-tw', 'zh-cn', 'zh-hant', 'zh-hans', 'chinese', 'traditional chinese', 'simplified chinese', '中文', '繁體中文', '简体中文', '簡體中文', '繁中', '簡中', '台灣', '國語'] },
+  { base: 'ja', keys: ['ja', 'ja-jp', 'jp', 'japanese', '日文', '日語', '日本語'] },
+  { base: 'ko', keys: ['ko', 'ko-kr', 'kr', 'korean', '韓文', '韓語', '한국어'] },
+  { base: 'th', keys: ['th', 'th-th', 'thai', '泰文', '泰語', 'ภาษาไทย'] },
+  { base: 'vi', keys: ['vi', 'vi-vn', 'vn', 'vietnamese', '越南文', '越南語', '越文', 'tiếng việt'] },
+  { base: 'id', keys: ['id', 'id-id', 'ms', 'indonesian', 'malay', '印尼文', '印尼語', '馬來文', 'bahasa indonesia'] },
+  { base: 'en', keys: ['en', 'en-us', 'en-gb', 'english', '英文', '英語', '美語'] },
+];
+
+export const langBase = (lang: string): LangBase => {
+  const key = (lang || '').trim().toLowerCase();
+  if (!key) return 'other';
+  for (const entry of LANG_ALIASES) {
+    if (entry.keys.includes(key)) return entry.base;
+  }
+  for (const entry of LANG_ALIASES) {
+    if (entry.keys.some(k => key.includes(k))) return entry.base;
+  }
+  return 'other';
+};
+
+// ─── 判斷一段文字「是否已經含有某個目標語言」 ─────────────────────────────
+// 用 Unicode 區段統計，不呼叫 API。
+const VIET_CHARS = /[ăâđêôơưĂÂĐÊÔƠƯáàảãạắằẳẵặấầẩẫậéèẻẽẹếềểễệíìỉĩịóòỏõọốồổỗộớờởỡợúùủũụứừửữựýỳỷỹỵ]/i;
+
+type ScriptCounts = { han: number; kana: number; hangul: number; thai: number; latin: number; viet: number; total: number };
+
+const countScripts = (text: string): ScriptCounts => {
+  const c: ScriptCounts = { han: 0, kana: 0, hangul: 0, thai: 0, latin: 0, viet: 0, total: 0 };
+  for (const ch of (text || '').normalize('NFC')) {
+    const cp = ch.codePointAt(0) as number;
+    if ((cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF)) c.han++;
+    else if (cp >= 0x3040 && cp <= 0x30FF) c.kana++;
+    else if ((cp >= 0xAC00 && cp <= 0xD7AF) || (cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x3130 && cp <= 0x318F)) c.hangul++;
+    else if (cp >= 0x0E00 && cp <= 0x0E7F) c.thai++;
+    else if (/[A-Za-z\u00C0-\u024F\u1E00-\u1EFF]/.test(ch)) { c.latin++; if (VIET_CHARS.test(ch)) c.viet++; }
+    else continue;
+    c.total++;
+  }
+  return c;
+};
+
+// 「夠多」的定義：佔比 ≥ 30%，或絕對字數 ≥ 10。
+// 這樣像「多說好話、多做好事、多幫助別人 Say good things, do good deeds...」
+// 這種中英混排的句子，翻英文時會被判定為已經有英文而跳過。
+const isSubstantial = (n: number, total: number) => n > 0 && (n / total >= 0.3 || n >= 10);
+
+export const alreadyHasLanguage = (text: string, lang: string): boolean => {
+  const plain = stripTags(text || '').trim();
+  if (!plain) return true;
+  const c = countScripts(plain);
+  if (c.total === 0) return true;  // 純數字、符號、日期 → 不需要翻譯
+
+  switch (langBase(lang)) {
+    case 'zh': return isSubstantial(c.han, c.total) && c.kana === 0 && c.hangul === 0;
+    case 'ja': return c.kana > 0 && isSubstantial(c.kana + c.han, c.total);
+    case 'ko': return isSubstantial(c.hangul, c.total);
+    case 'th': return isSubstantial(c.thai, c.total);
+    case 'vi': return c.viet > 0 && isSubstantial(c.latin, c.total);
+    // 英文/印尼文都是無附加符號的拉丁字母，用越南文附加符號排除誤判
+    case 'en':
+    case 'id': return c.viet === 0 && isSubstantial(c.latin, c.total);
+    default: return false;
+  }
+};
+
+// 這一項還缺哪些語言
+export const neededLanguages = (text: string, targetLanguages: string[]) =>
+  targetLanguages.filter(lang => !alreadyHasLanguage(text, lang));
+
+// ─── 共用的分批翻譯 ────────────────────────────────────────────────────────
+// 依「每一項還缺哪些語言」分組，只把真正需要的語言送去 API。
+// 回傳以 id 為 key 的結果，取代原本用陣列位置對應 —— 位置對應只要 API 少回
+// 一筆，後面所有段落都會錯位。
+export const translateItemsByLanguage = async (
+  items: { id: string; text: string }[],
+  targetLanguages: string[],
+  industry: string,
+  translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
+  isCancelledRef: React.MutableRefObject<boolean>,
+  onProgress?: (done: number, total: number) => void
+): Promise<Map<string, Record<string, string>>> => {
+  const out = new Map<string, Record<string, string>>();
+  const groups = new Map<string, { id: string; text: string }[]>();
+
+  for (const item of items) {
+    out.set(item.id, {});
+    const needed = neededLanguages(item.text, targetLanguages);
+    if (needed.length === 0) continue;   // 整項都已經有目標語言 → 完全不送 API
+    const key = needed.join('\u0001');
+    if (!groups.has(key)) groups.set(key, []);
+    (groups.get(key) as { id: string; text: string }[]).push(item);
+  }
+
+  const total = [...groups.values()].reduce((s, g) => s + g.length, 0);
+  let done = 0;
+  if (total === 0) { onProgress?.(1, 1); return out; }
+
+  const batchSize = 10;
+  const concurrency = 3;
+
+  for (const [key, group] of groups) {
+    const langs = key.split('\u0001');
+
+    for (let i = 0; i < group.length; i += batchSize * concurrency) {
+      if (isCancelledRef.current) throw new Error('Cancelled');
+
+      const slices: { id: string; text: string }[][] = [];
+      const promises: Promise<Record<string, string>[]>[] = [];
+
+      for (let j = 0; j < concurrency && i + j * batchSize < group.length; j++) {
+        const slice = group.slice(i + j * batchSize, i + j * batchSize + batchSize);
+        slices.push(slice);
+        promises.push(
+          translateBatch(slice.map(s => s.text), langs, industry).then(res => {
+            // API 少回或多回都會讓後面錯位，補齊/截斷到原長度
+            const fixed = res.slice(0, slice.length);
+            while (fixed.length < slice.length) fixed.push({});
+            return fixed;
+          })
+        );
+      }
+
+      const results = await Promise.all(promises);
+      results.forEach((res, k) => {
+        slices[k].forEach((item, idx) => {
+          out.set(item.id, { ...(out.get(item.id) || {}), ...res[idx] });
+        });
+        done += slices[k].length;
+      });
+
+      onProgress?.(done, total);
+    }
+  }
+
+  return out;
+};
+
 const isChineseFont = (fontName: string | undefined) => {
   if (!fontName) return false;
   if (/[\u4e00-\u9fff]/.test(fontName)) return true;
@@ -24,10 +171,11 @@ const isChineseFont = (fontName: string | undefined) => {
 };
 
 const adjustFontForLanguage = (font: any, lang: string) => {
-  const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
+  const base = langBase(lang);
+  const isAsianLang = base === 'zh' || base === 'ja' || base === 'ko';
   let newFont = font ? { ...font } : {};
   
-  const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
+  const needsStrongFontAdjustment = base === 'vi' || base === 'th';
   
   if (!isAsianLang) {
     if (needsStrongFontAdjustment || !newFont.name || isChineseFont(newFont.name)) {
@@ -93,7 +241,8 @@ const insertRunsIntoPptxParagraph = (pBlock: string, runsXml: string) => {
 // 「存檔當下」算好寫死的值 —— 程式改文字它不會重算，使用者開檔也不會，
 // 要人工點進文字方塊才觸發。結果就是字爆出框，這是版面看起來壞掉最直接的原因。
 // 文字面積大致與字級平方成正比，所以 fontScale 除以 sqrt(成長倍率)。
-const PPTX_TXBODY_RE = /<(p:txBody|a:txBody)>[\s\S]*?<\/\1>/g;
+// dsp:txBody 是 SmartArt 快取繪圖(ppt/diagrams/drawingN.xml)用的
+const PPTX_TXBODY_RE = /<(p:txBody|a:txBody|dsp:txBody)>[\s\S]*?<\/\1>/g;
 
 const pptxTextLength = (xml: string) => {
   let n = 0;
@@ -150,20 +299,14 @@ const PPTX_FONT_ANCHORS = /<a:sym\b|<a:hlinkClick\b|<a:hlinkMouseOver\b|<a:rtl\b
 // 想保留原本主題字型的話，把這個設成 null 即可
 const PPTX_FORCE_LATIN_FONT: string | null = 'Arial';
 
-const PPTX_LANG_CODES: Record<string, string> = {
-  'zh-TW': 'zh-TW', 'zh-CN': 'zh-CN', 'zh': 'zh-CN',
-  'ja': 'ja-JP', 'ja-JP': 'ja-JP',
-  'ko': 'ko-KR', 'ko-KR': 'ko-KR',
-  'vi': 'vi-VN', 'vi-VN': 'vi-VN',
-  'th': 'th-TH', 'th-TH': 'th-TH',
-  'id': 'id-ID', 'id-ID': 'id-ID',
+const PPTX_LANG_CODES: Record<LangBase, string> = {
+  zh: 'zh-TW', ja: 'ja-JP', ko: 'ko-KR',
+  th: 'th-TH', vi: 'vi-VN', id: 'id-ID', en: 'en-US', other: 'en-US',
 };
 
-const pptxLangCode = (lang: string) =>
-  PPTX_LANG_CODES[lang] || (lang && lang.includes('-') ? lang : 'en-US');
+const pptxLangCode = (lang: string) => PPTX_LANG_CODES[langBase(lang)];
 
-const isPptxAsianLang = (lang: string) =>
-  ['zh-TW', 'zh-CN', 'zh', 'ja', 'ja-JP', 'ko', 'ko-KR'].includes(lang);
+const isPptxAsianLang = (lang: string) => ['zh', 'ja', 'ko'].includes(langBase(lang));
 
 const adjustPptxRPrForLanguage = (rPr: string | undefined, lang: string) => {
   const langCode = pptxLangCode(lang);
@@ -171,7 +314,7 @@ const adjustPptxRPrForLanguage = (rPr: string | undefined, lang: string) => {
   // 決定要不要換字型：中日韓保留原字型；越南文/泰文，或原字型是中文字型時才換
   let typeface: string | null = null;
   if (!isPptxAsianLang(lang)) {
-    if (['vi', 'vi-VN', 'th', 'th-TH'].includes(lang)) {
+    if (['vi', 'th'].includes(langBase(lang))) {
       typeface = PPTX_FORCE_LATIN_FONT;
     } else if (rPr) {
       const fontRegex = /typeface="([^"]*)"/g;
@@ -214,8 +357,9 @@ const adjustPptxRPrForLanguage = (rPr: string | undefined, lang: string) => {
 const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType: 'docx' | 'pptx') => {
   if (docType === 'pptx') return adjustPptxRPrForLanguage(rPr, lang);
 
-  const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
-  const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
+  const base = langBase(lang);
+  const isAsianLang = base === 'zh' || base === 'ja' || base === 'ko';
+  const needsStrongFontAdjustment = base === 'vi' || base === 'th';
   
   if (isAsianLang) return rPr || '';
   
@@ -234,7 +378,7 @@ const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType:
   }
   
   if (shouldAdjust) {
-    const langCode = lang === 'th' ? 'th-TH' : 'en-US';
+    const langCode = base === 'th' ? 'th-TH' : base === 'vi' ? 'vi-VN' : 'en-US';
     
     if (docType === 'docx') {
       const safeRegexMatch = (str: string, regex: RegExp) => (str.match(regex) || [])[0] || '';
@@ -285,10 +429,11 @@ const forceLeftAlignInPPr = (pBlock: string): string => {
 
 export const sanitizeOutputText = (text: string, lang: string) => {
   let cleaned = text.normalize('NFC').replace(/[·‧•]/g, ' ').replace(/\u00A0/g, ' ');
-  if (lang === 'vi-VN' || lang === 'th-TH' || lang.toLowerCase().startsWith('en')) {
+  const base = langBase(lang);
+  if (base === 'vi' || base === 'th' || base === 'en' || base === 'id') {
     cleaned = cleaned.replace(/\[f\d+\]\s*\[\/f\d+\]/g, '');
     
-    if (lang === 'vi-VN') {
+    if (base === 'vi') {
        const VOWELS = /[aAáÁàÀãÃảẢạẠăĂắẮằẰẵẴẳẲặẶâÂấẤầẦẫẪẩẨậẬeEéÉèÈẽẼẻẺẹẸêÊếẾềỀễỄểỂệỆiIíÍìÌĩĨỉỈịỊoOóÓòÒõÕỏỎọỌôÔốỐồỒỗỖổỔộỘơƠớỚờỜỡỠởỞợỢuUúÚùÙũŨủỦụỤưƯứỨừỪữỮửỬựỰyYýÝỳỲỹỸỷỶỵỴ]/;
        const CONSONANTS = /[bBcCdDđĐgGhHkKlLmMnNpPqQrRsStTvVxX]/;
        const TONES = /[áÁàÀãÃảẢạẠắẮằẰẵẴẳẲặẶấẤầẦẫẪẩẨậẬéÉèÈẽẼẻẺẹẸếẾềỀễỄểỂệỆíÍìÌĩĨỉỈịỊóÓòÒõÕỏỎọỌốỐồỒỗỖổỔộỘớỚờỜỡỠởỞợỢúÚùÙũŨủỦụỤứỨừỪữỮửỬựỰýÝỳỲỹỸỷỶỵỴ]/;
@@ -318,7 +463,7 @@ export const sanitizeOutputText = (text: string, lang: string) => {
              return match;
          });
        } while (prevCleaned !== cleaned);
-    } else if (lang.toLowerCase().startsWith('en')) {
+    } else if (base === 'en' || base === 'id') {
        let prevCleaned;
        do {
          prevCleaned = cleaned;
@@ -455,7 +600,7 @@ export const processDocx = async (
     if (isCancelledRef.current) throw new Error('Cancelled');
     let content = await loadedZip.file(docFile)?.async('text');
     if (content) {
-      const isTargetAsian = targetLanguages.some(l => l.includes('zh') || l.includes('ja') || l.includes('ko'));
+      const isTargetAsian = targetLanguages.some(l => ['zh', 'ja', 'ko'].includes(langBase(l)));
       if (!isTargetAsian) {
         content = content.replace(/\s+w:eastAsia="[^"]+"/g, '');
         content = content.replace(/\s+w:eastAsiaTheme="[^"]+"/g, '');
@@ -495,28 +640,12 @@ export const processDocx = async (
 
   updateProgress(30, 'translating');
 
-  const batchSize = 10;
-  const concurrency = 3;
-  const translatedResults: Record<string, string>[] = [];
-  
-  for (let i = 0; i < textsToTranslate.length; i += batchSize * concurrency) {
-    if (isCancelledRef.current) throw new Error('Cancelled');
-    
-    const promises = [];
-    for (let j = 0; j < concurrency && (i + j * batchSize) < textsToTranslate.length; j++) {
-      const start = i + j * batchSize;
-      const batch = textsToTranslate.slice(start, start + batchSize).map(item => item.text);
-      promises.push(translateBatch(batch, targetLanguages, industry));
-    }
-    
-    const results = await Promise.all(promises);
-    for (const res of results) {
-      translatedResults.push(...res);
-    }
-    
-    const progressIndex = Math.min(i + batchSize * concurrency, textsToTranslate.length);
-    updateProgress(30 + (progressIndex / textsToTranslate.length) * 50);
-  }
+  // 已經含有目標語言的段落不會送 API，結果以 markerId 對應而非陣列位置
+  const translationsById = await translateItemsByLanguage(
+    textsToTranslate.map(t => ({ id: t.markerId, text: t.text })),
+    targetLanguages, industry, translateBatch, isCancelledRef,
+    (done, total) => updateProgress(30 + (done / total) * 50)
+  );
 
   updateProgress(80, 'generating');
 
@@ -527,7 +656,7 @@ export const processDocx = async (
     const zip = new JSZip();
     const loadedZip = await zip.loadAsync(file);
 
-    const isTargetAsian = langs.some(l => l.includes('zh') || l.includes('ja') || l.includes('ko'));
+    const isTargetAsian = langs.some(l => ['zh', 'ja', 'ko'].includes(langBase(l)));
 
     if (!isTargetAsian) {
       const styleFiles = ['word/styles.xml', 'word/settings.xml', 'word/theme/theme1.xml'];
@@ -553,7 +682,7 @@ export const processDocx = async (
         const currentItem = fileTexts.find(t => t.markerId === markerId);
         
         if (currentItem) {
-          const globalIndex = textsToTranslate.findIndex(t => t.markerId === markerId);
+          const itemTranslations = translationsById.get(markerId) || {};
           
           // 找最長 run 作為 fallback 格式
           let longestRun = currentItem.runs.find(r => !r.isBr) || currentItem.runs[0];
@@ -565,7 +694,9 @@ export const processDocx = async (
 
           let appendedRuns = '';
           langs.forEach(lang => {
-            const rawTranslatedText = translatedResults[globalIndex]?.[lang] || '(翻譯失敗)';
+            // 原文本來就已經是這個語言 → 不重複附加
+            if (alreadyHasLanguage(currentItem.text, lang)) return;
+            const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
             
             // 換行分隔
@@ -754,34 +885,25 @@ export const processExcel = async (
 
     updateProgress(10 + (processedWorksheets / totalWorksheets) * 20, 'translating');
 
-    const batchSize = 10;
-    const concurrency = 3;
-    const translatedResults: Record<string, string>[] = [];
-    
-    for (let i = 0; i < textsToTranslate.length; i += batchSize * concurrency) {
-      if (isCancelledRef.current) throw new Error('Cancelled');
-      
-      const promises = [];
-      for (let j = 0; j < concurrency && (i + j * batchSize) < textsToTranslate.length; j++) {
-        const start = i + j * batchSize;
-        const batch = textsToTranslate.slice(start, start + batchSize).map(item => item.text);
-        promises.push(translateBatch(batch, targetLanguages, industry));
+    // 已經含有目標語言的儲存格不會送 API，結果以 儲存格座標 對應而非陣列位置
+    const translationsById = await translateItemsByLanguage(
+      textsToTranslate.map(t => ({ id: `${t.row}:${t.col}`, text: t.text })),
+      targetLanguages, industry, translateBatch, isCancelledRef,
+      (done, total) => {
+        const sheetProgress = (done / total) * (60 / totalWorksheets);
+        updateProgress(30 + (processedWorksheets * (60 / totalWorksheets)) + sheetProgress);
       }
-      
-      const results = await Promise.all(promises);
-      for (const res of results) {
-        translatedResults.push(...res);
-      }
-      
-      const progressIndex = Math.min(i + batchSize * concurrency, textsToTranslate.length);
-      const sheetProgress = (progressIndex / textsToTranslate.length) * (60 / totalWorksheets);
-      updateProgress(30 + (processedWorksheets * (60 / totalWorksheets)) + sheetProgress);
-    }
+    );
 
     updateProgress(30 + ((processedWorksheets + 1) / totalWorksheets) * 60, 'generating');
 
-    textsToTranslate.forEach((item, index) => {
-      const translations = translatedResults[index] || {};
+    textsToTranslate.forEach((item) => {
+      const raw = translationsById.get(`${item.row}:${item.col}`) || {};
+      // 原文本來就已經是該語言的，直接不列入，後面就不會附加
+      const translations: Record<string, string> = {};
+      targetLanguages.forEach(lang => {
+        if (!alreadyHasLanguage(item.text, lang)) translations[lang] = raw[lang] || '(翻譯失敗)';
+      });
       allTranslations.push({
         sheet: worksheet.name,
         row: item.row,
@@ -838,6 +960,8 @@ export const processExcel = async (
             }
 
             langs.forEach(lang => {
+              // 原文本來就已經是這個語言 → 不重複附加
+              if (!(lang in translationItem.translations)) return;
               const rawTranslatedText = translationItem.translations[lang] || '(翻譯失敗)';
               const translatedText = sanitizeOutputText(rawTranslatedText, lang);
               const adjustedDefaultFont = adjustFontForLanguage(defaultFont, lang);
@@ -1295,39 +1419,12 @@ export const processPptx = async (
 
   updateProgress(30, 'translating');
 
-  // id -> 在 textsToTranslate 中的位置，避免每個段落都跑一次 findIndex
-  const indexById = new Map<string, number>();
-  textsToTranslate.forEach((t, i) => indexById.set(t.id, i));
-
-  const batchSize = 10;
-  const concurrency = 3;
-  const translatedResults: Record<string, string>[] = [];
-  
-  for (let i = 0; i < textsToTranslate.length; i += batchSize * concurrency) {
-    if (isCancelledRef.current) throw new Error('Cancelled');
-    
-    const promises = [];
-    for (let j = 0; j < concurrency && (i + j * batchSize) < textsToTranslate.length; j++) {
-      const start = i + j * batchSize;
-      const batch = textsToTranslate.slice(start, start + batchSize).map(item => item.text);
-      promises.push(
-        translateBatch(batch, targetLanguages, industry).then((res) => {
-          // 保險：API 少回或多回都會讓後面所有段落錯位，補齊到原長度
-          const fixed = res.slice(0, batch.length);
-          while (fixed.length < batch.length) fixed.push({});
-          return fixed;
-        })
-      );
-    }
-    
-    const results = await Promise.all(promises);
-    for (const res of results) {
-      translatedResults.push(...res);
-    }
-    
-    const progressIndex = Math.min(i + batchSize * concurrency, textsToTranslate.length);
-    updateProgress(30 + (progressIndex / textsToTranslate.length) * 50);
-  }
+  // 已經含有目標語言的段落不會送 API，結果以 id 對應而非陣列位置
+  const translationsById = await translateItemsByLanguage(
+    textsToTranslate.map(t => ({ id: t.id, text: t.text })),
+    targetLanguages, industry, translateBatch, isCancelledRef,
+    (done, total) => updateProgress(30 + (done / total) * 50)
+  );
 
   updateProgress(80, 'generating');
 
@@ -1349,11 +1446,13 @@ export const processPptx = async (
         const currentItem = slideTexts.find(t => t.id === `${slideFile}_${currentIndex}`);
         
         if (currentItem) {
-          const globalIndex = indexById.get(currentItem.id) ?? -1;
+          const itemTranslations = translationsById.get(currentItem.id) || {};
           
           let appendedRuns = '';
           langs.forEach(lang => {
-            const rawTranslatedText = translatedResults[globalIndex]?.[lang] || '(翻譯失敗)';
+            // 原文本來就已經是這個語言 → 不重複附加
+            if (alreadyHasLanguage(currentItem.text, lang)) return;
+            const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
             
             const runs = currentItem.runs || [];
