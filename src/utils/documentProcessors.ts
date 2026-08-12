@@ -3,9 +3,12 @@ import type { Worksheet } from 'exceljs';
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
+// [修正] 原本寫成 /\[\/?\f\d+\]/，其中 \f 是「換頁字元 U+000C」而不是字母 f，
+// 這條 replace 永遠不會命中。只要 LLM 回傳的 [f0]...[/f0] 配對壞掉，
+// 字面的標籤就會直接印在文件上。
 const stripTags = (text: string) => {
   if (!text) return text;
-  return text.replace(/\[\/?\f\d+\]/g, '').replace(/<\/?f[^>]*>/g, '');
+  return text.replace(/\[\/?f\d+\]/g, '').replace(/<\/?f\d+[^>]*>/g, '');
 };
 
 const isChineseFont = (fontName: string | undefined) => {
@@ -50,13 +53,167 @@ const normalizePptxRPr = (rPr: string) => {
   return rPr.replace(/<a:latin\b[^>]*>/g, '').replace(/<a:ea\b[^>]*>/g, '').replace(/<a:cs\b[^>]*>/g, '').replace(/ lang="[^"]*"/g, '').replace(/ altLang="[^"]*"/g, '');
 };
 
+// ─── PPTX：OOXML 結構相關 helper ────────────────────────────────────────
+//
+// [修正] <a:t> 一定要吃屬性。PowerPoint 對任何含前後空白的文字都會寫成
+// <a:t xml:space="preserve"> First </a:t>，原本的 /<a:t>/ 完全抓不到，
+// 該 run 會被整段跳過，譯文就缺字。
+const PPTX_T_RE = /<a:t(?:\s[^>]*)?>([\s\S]*?)<\/a:t>/;
+const PPTX_T_RE_SRC = '<a:t(?:\\s[^>]*)?>([\\s\\S]*?)<\\/a:t>';
+
+// 注意：和 Word 的 <w:t> 不同，DrawingML 的 <a:t> 在 schema 裡是純 xsd:string，
+// 不接受任何屬性 —— 寫 xml:space="preserve" 反而會違反 schema。
+// xsd:string 的 whiteSpace facet 本來就是 preserve，前後空白會自動保留。
+// (讀取時仍要容忍屬性，因為 LibreOffice / Google Slides 有時會多寫。)
+const makePptxT = (escapedText: string) => `<a:t>${escapedText}</a:t>`;
+
+// [修正] <a:br> 要帶 <a:rPr>，否則換行高度用預設字級，行距會突然變大
+const makePptxBr = (rPr: string) =>
+  `<a:br>${rPr && rPr.trim() ? rPr : '<a:rPr lang="en-US"/>'}</a:br>`;
+
+// [修正／最關鍵] 譯文必須插在 <a:endParaRPr> 之前。
+// OOXML 的 CT_TextParagraph 子元素順序是寫死的：
+//     pPr? → (r | br | fld)* → endParaRPr?
+// 原本用 pBlock.replace(/<\/a:p>$/, ...) 會把 <a:br/><a:r> 塞到 endParaRPr
+// 後面，違反 schema。實測對 ISO-29500 XSD 會多出
+//     Element 'br': This element is not expected.
+// PowerPoint 遇到就跳「發現無法讀取的內容」，修復的做法是把該段砍掉。
+const PPTX_END_PARA_RPR =
+  /<a:endParaRPr\b[^>]*(?:\/>|>[\s\S]*?<\/a:endParaRPr>)(?=\s*<\/a:p>$)/;
+
+const insertRunsIntoPptxParagraph = (pBlock: string, runsXml: string) => {
+  if (!runsXml) return pBlock;
+  return PPTX_END_PARA_RPR.test(pBlock)
+    ? pBlock.replace(PPTX_END_PARA_RPR, (m) => runsXml + m)
+    : pBlock.replace(/<\/a:p>$/, runsXml + '</a:p>');
+};
+
+// [修正] 重算 <a:normAutofit>。
+// 原文＋譯文塞進同一個 <a:p>，文字量變 2~3 倍，但 fontScale 是 PowerPoint
+// 「存檔當下」算好寫死的值 —— 程式改文字它不會重算，使用者開檔也不會，
+// 要人工點進文字方塊才觸發。結果就是字爆出框，這是版面看起來壞掉最直接的原因。
+// 文字面積大致與字級平方成正比，所以 fontScale 除以 sqrt(成長倍率)。
+const PPTX_TXBODY_RE = /<(p:txBody|a:txBody)>[\s\S]*?<\/\1>/g;
+
+const pptxTextLength = (xml: string) => {
+  let n = 0;
+  let m: RegExpExecArray | null;
+  const re = new RegExp(PPTX_T_RE_SRC, 'g');
+  while ((m = re.exec(xml)) !== null) n += m[1].length;
+  return n;
+};
+
+const rescalePptxAutofit = (newContent: string, oldContent: string) => {
+  const oldBodies = oldContent.match(PPTX_TXBODY_RE) || [];
+  let i = 0;
+  return newContent.replace(PPTX_TXBODY_RE, (body) => {
+    const before = pptxTextLength(oldBodies[i++] || '');
+    const after = pptxTextLength(body);
+    if (!before || after <= before) return body;
+    const growth = after / before;
+
+    return body.replace(/<a:normAutofit([^>]*)\/>/, (_m, attrs: string) => {
+      const fsRaw = (attrs.match(/fontScale="(\d+)"/) || [])[1];
+      const lsRaw = (attrs.match(/lnSpcReduction="(\d+)"/) || [])[1];
+      const fs = parseInt(fsRaw || '100000', 10);
+      const ls = parseInt(lsRaw || '0', 10);
+      const newFs = Math.max(25000, Math.round(fs / Math.sqrt(growth)));
+      const newLs = Math.min(20000, ls + 10000);
+      return `<a:normAutofit fontScale="${newFs}" lnSpcReduction="${newLs}"/>`;
+    });
+  });
+};
+
+// [修正] 處理範圍不只 ppt/slides/。
+// SmartArt 的文字放在 ppt/diagrams/dataN.xml，但畫面上顯示的是
+// ppt/diagrams/drawingN.xml 的快取版本 —— 兩邊都要改，只改 data 不會有變化。
+const PPTX_TEXT_PART_RE =
+  /^ppt\/(slides\/slide\d+\.xml|notesSlides\/notesSlide\d+\.xml|diagrams\/(?:data|drawing)\d+\.xml|charts\/chart\d+\.xml)$/;
+
 const normalizeExcelFont = (font: any) => {
   if (!font) return '';
   const { name, family, scheme, charset, ...rest } = font;
   return JSON.stringify(rest);
 };
 
+// ─── PPTX 專用的 rPr 處理 ────────────────────────────────────────────────
+// [修正] 原本的 pptx 分支是「整個重組 <a:rPr>」，只保留 solidFill 與 highlight，
+// 等於把 <a:ln>(外框字)、<a:effectLst>(陰影/光暈)、<a:gradFill>(漸層字)、
+// <a:uLn>/<a:uFill>(底線樣式)、<a:hlinkClick>(超連結)、
+// 以及 spc(字距)、cap(全大寫)、kern(字距微調)全部丟掉 —— 視覺上就是格式跑掉。
+// 改成「只動字型與語系，其餘原封不動」。
+//
+// 注意：DrawingML 的 CT_TextCharacterProperties 子元素順序是固定的，
+// latin/ea/cs 必須排在 sym / hlinkClick / hlinkMouseOver / rtl / extLst 之前。
+const PPTX_FONT_ANCHORS = /<a:sym\b|<a:hlinkClick\b|<a:hlinkMouseOver\b|<a:rtl\b|<a:extLst\b/;
+
+// 想保留原本主題字型的話，把這個設成 null 即可
+const PPTX_FORCE_LATIN_FONT: string | null = 'Arial';
+
+const PPTX_LANG_CODES: Record<string, string> = {
+  'zh-TW': 'zh-TW', 'zh-CN': 'zh-CN', 'zh': 'zh-CN',
+  'ja': 'ja-JP', 'ja-JP': 'ja-JP',
+  'ko': 'ko-KR', 'ko-KR': 'ko-KR',
+  'vi': 'vi-VN', 'vi-VN': 'vi-VN',
+  'th': 'th-TH', 'th-TH': 'th-TH',
+  'id': 'id-ID', 'id-ID': 'id-ID',
+};
+
+const pptxLangCode = (lang: string) =>
+  PPTX_LANG_CODES[lang] || (lang && lang.includes('-') ? lang : 'en-US');
+
+const isPptxAsianLang = (lang: string) =>
+  ['zh-TW', 'zh-CN', 'zh', 'ja', 'ja-JP', 'ko', 'ko-KR'].includes(lang);
+
+const adjustPptxRPrForLanguage = (rPr: string | undefined, lang: string) => {
+  const langCode = pptxLangCode(lang);
+
+  // 決定要不要換字型：中日韓保留原字型；越南文/泰文，或原字型是中文字型時才換
+  let typeface: string | null = null;
+  if (!isPptxAsianLang(lang)) {
+    if (['vi', 'vi-VN', 'th', 'th-TH'].includes(lang)) {
+      typeface = PPTX_FORCE_LATIN_FONT;
+    } else if (rPr) {
+      const fontRegex = /typeface="([^"]*)"/g;
+      let m: RegExpExecArray | null;
+      while ((m = fontRegex.exec(rPr)) !== null) {
+        if (isChineseFont(m[1])) { typeface = PPTX_FORCE_LATIN_FONT; break; }
+      }
+    }
+  }
+
+  let out = rPr && rPr.trim() ? rPr : '<a:rPr lang="en-US"/>';
+
+  if (typeface) {
+    // 自閉合標籤先展開，才有地方放子元素
+    if (/\/>\s*$/.test(out)) out = out.replace(/\/>\s*$/, '></a:rPr>');
+    out = out
+      .replace(/<a:latin\b[^>]*\/>/g, '')
+      .replace(/<a:ea\b[^>]*\/>/g, '')
+      .replace(/<a:cs\b[^>]*\/>/g, '');
+    const fonts =
+      `<a:latin typeface="${typeface}"/>` +
+      `<a:ea typeface="${typeface}"/>` +
+      `<a:cs typeface="${typeface}"/>`;
+    out = PPTX_FONT_ANCHORS.test(out)
+      ? out.replace(PPTX_FONT_ANCHORS, (m) => fonts + m)
+      : out.replace(/<\/a:rPr>\s*$/, fonts + '</a:rPr>');
+  }
+
+  // 更新語系（原本中日韓路徑完全不改 lang，會導致字型後援選錯）
+  out = /\slang="/.test(out)
+    ? out.replace(/\slang="[^"]*"/, ` lang="${langCode}"`)
+    : out.replace(/^<a:rPr/, `<a:rPr lang="${langCode}"`);
+
+  // 關掉拼字檢查紅波浪線
+  if (!/\snoProof="/.test(out)) out = out.replace(/^<a:rPr/, '<a:rPr noProof="1"');
+
+  return out;
+};
+
 const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType: 'docx' | 'pptx') => {
+  if (docType === 'pptx') return adjustPptxRPrForLanguage(rPr, lang);
+
   const isAsianLang = ['zh-TW', 'zh-CN', 'ja', 'ko'].includes(lang);
   const needsStrongFontAdjustment = ['vi', 'th'].includes(lang);
   
@@ -100,34 +257,6 @@ const adjustXmlRPrForLanguage = (rPr: string | undefined, lang: string, docType:
       const langTag = `<w:lang w:val="${langCode}" w:bidi="ar-SA"/>`;
       
       newRPr = `<w:rPr>${arialFonts}${b}${bCs}${i}${iCs}${strike}${noProof}${color}${sz}${szCs}${highlight}${u}${langTag}</w:rPr>`;
-    } else if (docType === 'pptx') {
-      const sz = (newRPr.match(/ sz="([^"]+)"/) || [])[1];
-      const b = (newRPr.match(/ b="([^"]+)"/) || [])[1];
-      const i = (newRPr.match(/ i="([^"]+)"/) || [])[1];
-      const u = (newRPr.match(/ u="([^"]+)"/) || [])[1];
-      const strike = (newRPr.match(/ strike="([^"]+)"/) || [])[1];
-      const baseline = (newRPr.match(/ baseline="([^"]+)"/) || [])[1];
-
-      const solidFill = (newRPr.match(/<a:solidFill[^>]*>[\s\S]*?<\/a:solidFill>/) || [])[0];
-      const highlight = (newRPr.match(/<a:highlight[^>]*>[\s\S]*?<\/a:highlight>/) || [])[0];
-
-      let attributes = `lang="${langCode}" altLang="en-US" err="0" dirty="0" smtClean="0" noProof="1"`;
-      if (sz) attributes += ` sz="${sz}"`;
-      if (b) attributes += ` b="${b}"`;
-      if (i) attributes += ` i="${i}"`;
-      if (u) attributes += ` u="${u}"`;
-      if (strike) attributes += ` strike="${strike}"`;
-      if (baseline) attributes += ` baseline="${baseline}"`;
-
-      let children = '';
-      if (solidFill) children += solidFill;
-      if (highlight) children += highlight;
-
-      const arialLatin = `<a:latin typeface="Arial"/>`;
-      const arialEa = `<a:ea typeface="Arial"/>`;
-      const arialCs = `<a:cs typeface="Arial"/>`;
-      
-      newRPr = `<a:rPr ${attributes}>${children}${arialLatin}${arialEa}${arialCs}</a:rPr>`;
     }
   }
   
@@ -1105,12 +1234,16 @@ export const processPptx = async (
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(file);
   
-  const slideFiles = Object.keys(loadedZip.files).filter(name => name.startsWith('ppt/slides/slide') && name.endsWith('.xml'));
+  // [修正] 除了投影片，備忘稿、SmartArt(data + drawing 兩份)、圖表也要一起翻，
+  // 否則 SmartArt 會維持原文，看起來就像「有些地方沒翻、版面錯亂」。
+  const slideFiles = Object.keys(loadedZip.files)
+    .filter(name => PPTX_TEXT_PART_RE.test(name))
+    .sort();
   
   const textsToTranslate: { slide: string, id: string, text: string, pBlock: string, runs?: { rPr: string, normRPr?: string, text: string }[] }[] = [];
   const slideContents: Record<string, string> = {};
 
-  const unescapeXml = (text: string) => text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+  const unescapeXml = (text: string) => text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
   const escapeXml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
   for (const slideFile of slideFiles) {
@@ -1128,7 +1261,8 @@ export const processPptx = async (
             const runs: { rPr: string, normRPr?: string, text: string }[] = [];
             
             rMatches.forEach((rBlock) => {
-              const tMatch = rBlock.match(/<a:t>([\s\S]*?)<\/a:t>/);
+              // [修正] 用會吃屬性的 regex，才抓得到 <a:t xml:space="preserve">
+              const tMatch = rBlock.match(PPTX_T_RE);
               if (tMatch && tMatch[1]) {
                 const text = unescapeXml(tMatch[1]);
                 const rPrMatch = rBlock.match(/<a:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:rPr>)/);
@@ -1161,6 +1295,10 @@ export const processPptx = async (
 
   updateProgress(30, 'translating');
 
+  // id -> 在 textsToTranslate 中的位置，避免每個段落都跑一次 findIndex
+  const indexById = new Map<string, number>();
+  textsToTranslate.forEach((t, i) => indexById.set(t.id, i));
+
   const batchSize = 10;
   const concurrency = 3;
   const translatedResults: Record<string, string>[] = [];
@@ -1172,7 +1310,14 @@ export const processPptx = async (
     for (let j = 0; j < concurrency && (i + j * batchSize) < textsToTranslate.length; j++) {
       const start = i + j * batchSize;
       const batch = textsToTranslate.slice(start, start + batchSize).map(item => item.text);
-      promises.push(translateBatch(batch, targetLanguages, industry));
+      promises.push(
+        translateBatch(batch, targetLanguages, industry).then((res) => {
+          // 保險：API 少回或多回都會讓後面所有段落錯位，補齊到原長度
+          const fixed = res.slice(0, batch.length);
+          while (fixed.length < batch.length) fixed.push({});
+          return fixed;
+        })
+      );
     }
     
     const results = await Promise.all(promises);
@@ -1194,93 +1339,90 @@ export const processPptx = async (
     const loadedZip = await zip.loadAsync(file);
 
     for (const slideFile of slideFiles) {
-      let content = slideContents[slideFile];
+      const originalContent = slideContents[slideFile];
+      if (!originalContent) continue;
       const slideTexts = textsToTranslate.filter(t => t.slide === slideFile);
       
       let pIndex = 0;
-      content = content.replace(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g, (pBlock) => {
+      let content = originalContent.replace(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g, (pBlock) => {
         const currentIndex = pIndex++;
         const currentItem = slideTexts.find(t => t.id === `${slideFile}_${currentIndex}`);
         
         if (currentItem) {
-          const globalIndex = textsToTranslate.findIndex(t => t.id === currentItem.id);
+          const globalIndex = indexById.get(currentItem.id) ?? -1;
           
           let appendedRuns = '';
           langs.forEach(lang => {
             const rawTranslatedText = translatedResults[globalIndex]?.[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
             
-            appendedRuns += `<a:br/>`;
-            
-            if (currentItem.runs && currentItem.runs.length > 0) {
-              let longestRun = currentItem.runs[0];
-              for (const run of currentItem.runs) {
-                if (run.text.length > longestRun.text.length) {
-                  longestRun = run;
-                }
-              }
-              const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'pptx');
+            const runs = currentItem.runs || [];
+            let longestRun = runs[0] || { rPr: '', text: '' };
+            for (const run of runs) {
+              if (run.text.length > longestRun.text.length) longestRun = run;
+            }
+            const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'pptx');
 
-              const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
-              let match;
-              let lastIndex = 0;
-              let hasTags = false;
+            // [修正] 換行要帶 rPr，否則行高用預設字級
+            appendedRuns += makePptxBr(defaultRPr);
+
+            const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
+            let match;
+            let lastIndex = 0;
+            let hasTags = false;
+            
+            while ((match = fRegex.exec(translatedText)) !== null) {
+              hasTags = true;
+              const id = parseInt(match[1], 10);
+              const originalRPr = runs[id] ? runs[id].rPr : longestRun.rPr;
+              const rPr = adjustXmlRPrForLanguage(originalRPr, lang, 'pptx');
               
-              while ((match = fRegex.exec(translatedText)) !== null) {
-                hasTags = true;
-                const id = parseInt(match[1], 10);
-                const text = match[2];
-                const originalRPr = currentItem.runs[id] ? currentItem.runs[id].rPr : longestRun.rPr;
-                const rPr = adjustXmlRPrForLanguage(originalRPr, lang, 'pptx');
-                
-                if (match.index > lastIndex) {
-                   const betweenText = translatedText.substring(lastIndex, match.index);
-                   if (betweenText) {
-                     const cleanBetween = stripTags(betweenText);
-                     appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanBetween)}</a:t></a:r>`;
-                   }
-                }
-                
-                if (text) {
-                  let finalText = stripTags(text);
-                  const originalText = currentItem.runs[id]?.text || '';
-                  if (originalText.endsWith(' ') && !finalText.endsWith(' ')) {
-                    finalText += ' ';
-                  }
-                  if (originalText.startsWith(' ') && !finalText.startsWith(' ')) {
-                    finalText = ' ' + finalText;
-                  }
-                  appendedRuns += `<a:r>${rPr}<a:t>${escapeXml(finalText)}</a:t></a:r>`;
-                }
-                lastIndex = fRegex.lastIndex;
+              if (match.index > lastIndex) {
+                 const betweenText = stripTags(translatedText.substring(lastIndex, match.index));
+                 if (betweenText) {
+                   appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(betweenText))}</a:r>`;
+                 }
               }
               
-              if (!hasTags) {
-                const cleanText = stripTags(translatedText);
-                appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
-              } else if (lastIndex < translatedText.length) {
-                const remainingText = translatedText.substring(lastIndex);
-                if (remainingText) {
-                  const cleanText = stripTags(remainingText);
-                  appendedRuns += `<a:r>${defaultRPr}<a:t>${escapeXml(cleanText)}</a:t></a:r>`;
-                }
+              let finalText = stripTags(match[2]);
+              if (finalText) {
+                const originalText = runs[id]?.text || '';
+                if (originalText.endsWith(' ') && !finalText.endsWith(' ')) finalText += ' ';
+                if (originalText.startsWith(' ') && !finalText.startsWith(' ')) finalText = ' ' + finalText;
+                appendedRuns += `<a:r>${rPr}${makePptxT(escapeXml(finalText))}</a:r>`;
               }
-            } else {
-               const fallbackRPr = adjustXmlRPrForLanguage('', lang, 'pptx');
-               appendedRuns += `<a:r>${fallbackRPr}<a:t>${escapeXml(stripTags(translatedText))}</a:t></a:r>`;
+              lastIndex = fRegex.lastIndex;
+            }
+            
+            // 沒有標籤 → 整段；有標籤 → 收尾剩下的部分。
+            // 兩種情況都要過 stripTags，才不會把壞掉的標籤印到投影片上。
+            const tail = hasTags ? translatedText.substring(lastIndex) : translatedText;
+            const cleanTail = stripTags(tail);
+            if (cleanTail) {
+              appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(cleanTail))}</a:r>`;
             }
           });
           
-          return pBlock.replace(/<\/a:p>$/, appendedRuns + '</a:p>');
+          // [修正] 插在 <a:endParaRPr> 之前，不能直接接在 </a:p> 前
+          return insertRunsIntoPptxParagraph(pBlock, appendedRuns);
         }
         
         return pBlock;
       });
       
+      // [修正] 依文字增長比例重算自動縮放，避免字爆出框
+      content = rescalePptxAutofit(content, originalContent);
+      
       loadedZip.file(slideFile, content);
     }
 
-    const blob = await loadedZip.generateAsync({ type: 'blob' });
+    // [修正] JSZip 預設是 STORE(不壓縮)，輸出檔會膨脹好幾倍
+    const blob = await loadedZip.generateAsync({
+      type: 'blob',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+      mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    });
     const prefix = outputMode === 'separate' ? `${langs[0]}_` : 'translated_';
     generatedFiles.push({ blob, name: `${prefix}${file.name}` });
   }
