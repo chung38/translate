@@ -38,6 +38,7 @@ import { DeletedModal } from './components/DeletedModal';
 import { UserProfile } from './types';
 import { useTranslation } from './hooks/useTranslation';
 import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
+import type { PptxLayoutMode } from './utils/documentProcessors';
 import { 
   auth, 
   db, 
@@ -100,6 +101,8 @@ export default function App() {
   const [processingFiles, setProcessingFiles] = useState<File[]>([]);
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>(['英文']);
   const [outputMode, setOutputMode] = useState<'combined' | 'separate'>('combined');
+  // PPTX 版面模式：append = 同一頁雙語對照；duplicate-slide = 另外插一頁純譯文
+  const [pptxLayoutMode, setPptxLayoutMode] = useState<PptxLayoutMode>('append');
   const [industry, setIndustry] = useState('');
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [uploadStatus, setUploadStatus] = useState<Record<string, 'uploading' | 'success' | 'error'>>({});
@@ -646,7 +649,7 @@ export default function App() {
               results = await processPdf(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
               break;
             case 'pptx':
-              results = await processPptx(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
+              results = await processPptx(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode, pptxLayoutMode);
               break;
             default:
               console.warn(`不支援的檔案格式: ${currentFile.name}`);
@@ -1095,6 +1098,48 @@ export default function App() {
                         className="w-4 h-4 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
                       />
                       <span className="text-sm font-medium text-slate-700">分開為多個檔案</span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
+              {files.some(f => f.name.toLowerCase().endsWith('.pptx')) && (
+                <div>
+                  <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-4 ml-1">
+                    簡報版面模式
+                  </label>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <label className={`flex items-start gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${pptxLayoutMode === 'append' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
+                      <input
+                        type="radio"
+                        name="pptxLayoutMode"
+                        value="append"
+                        checked={pptxLayoutMode === 'append'}
+                        onChange={() => setPptxLayoutMode('append')}
+                        className="w-4 h-4 mt-0.5 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
+                      />
+                      <span className="text-sm font-medium text-slate-700">
+                        同頁對照
+                        <span className="block text-xs font-normal text-slate-500 mt-0.5">
+                          譯文接在原文下方，頁數不變。文字較多的頁面會自動縮小字級。
+                        </span>
+                      </span>
+                    </label>
+                    <label className={`flex items-start gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${pptxLayoutMode === 'duplicate-slide' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
+                      <input
+                        type="radio"
+                        name="pptxLayoutMode"
+                        value="duplicate-slide"
+                        checked={pptxLayoutMode === 'duplicate-slide'}
+                        onChange={() => setPptxLayoutMode('duplicate-slide')}
+                        className="w-4 h-4 mt-0.5 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
+                      />
+                      <span className="text-sm font-medium text-slate-700">
+                        另加譯文頁
+                        <span className="block text-xs font-normal text-slate-500 mt-0.5">
+                          原稿頁保持不動，後面插入一頁純譯文。版面不變形，頁數會變兩倍。
+                        </span>
+                      </span>
                     </label>
                   </div>
                 </div>
