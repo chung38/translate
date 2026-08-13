@@ -296,15 +296,29 @@ const PPTX_TEXT_PART_RE =
 // 但 255 個 bodyPr 裡有 183 個「完全沒有 autofit 設定」——也就是說 PowerPoint
 // 不會幫你縮，文字就直接爆出去；表格更是沒有 autofit 這種東西，列高一定被撐開。
 // 所以最可靠的做法是「直接改 sz」，不要指望 autofit。
+export type PptxLayoutMode = 'append' | 'duplicate-slide';
+
 export const PPTX_LAYOUT = {
+  // 'append'          = 譯文接在原文後面（同一頁雙語，預設）
+  // 'duplicate-slide' = 原稿頁完全不動，後面插入一頁「只有譯文」的延伸頁。
+  //                     版面 100% 不變形，代價是頁數變兩倍。
+  mode: 'append' as PptxLayoutMode,
+
   translationFontScale: 0.9,   // 一般文字方塊：譯文字級縮放
   tableTranslationScale: 0.75, // 表格儲存格：譯文字級縮放
   tableOriginalScale: 0.85,    // 表格儲存格：原文也一起縮，列高才不會被撐高
+  // 延伸頁模式下同一格只有譯文、沒有原文，不用縮這麼多
+  duplicateTextScale: 1.0,
+  duplicateTableScale: 0.85,
+
   minFontSize: 600,            // 字級下限（6pt，單位是 1/100 pt）
   autoFitOverflowingShapes: true, // 沒設 autofit 的文字方塊，補上 normAutofit 當保險
   // spAutoFit 是「方塊跟著文字長大」，加了譯文就會往下撐、壓到旁邊的表格或圖。
   // 開啟後改成 normAutofit：方塊維持原大小，改成把字縮小。
   convertGrowToShrink: true,
+  // noAutofit 是「不要自動調整大小」。原檔設計時文字剛好塞滿，加了譯文一定爆框。
+  // 這份簡報殘餘的溢出全部屬於這一類（含目錄頁 SmartArt 的 12 個方塊）。
+  overrideNoAutofit: true,
 };
 
 // 只改 rPr 開頭標籤裡的 sz，不會動到子元素
@@ -335,7 +349,13 @@ const ensureNormAutofit = (body: string, fontScale: number) => {
           `<a:normAutofit fontScale="${fsAttr}" lnSpcReduction="10000"/>`)
       : body;
   }
-  if (/<a:(normAutofit|noAutofit)\b/.test(body)) return body;
+  if (/<a:noAutofit\b[^>]*\/>/.test(body)) {
+    return PPTX_LAYOUT.overrideNoAutofit
+      ? body.replace(/<a:noAutofit\b[^>]*\/>/,
+          `<a:normAutofit fontScale="${fsAttr}" lnSpcReduction="10000"/>`)
+      : body;
+  }
+  if (/<a:normAutofit\b/.test(body)) return body;
   const fs = Math.max(25000, Math.round(fontScale * 100000));
   const tag = `<a:normAutofit fontScale="${fs}" lnSpcReduction="10000"/>`;
 
@@ -360,6 +380,142 @@ const spansOf = (content: string, re: RegExp): Span[] => {
   return out;
 };
 const spanAt = (spans: Span[], pos: number) => spans.find(s => s.start <= pos && pos < s.end);
+
+// ─── 延伸頁面：在原稿頁後面插入一頁「只有譯文」的投影片 ──────────────────
+// 這是版面完全不變形的做法：原稿頁一個字都不動，譯文放到新的一頁，
+// 沿用同一個版面配置、同樣的圖片與位置，只是把文字換成譯文。
+//
+// 要動到的封裝檔案：
+//   ppt/slides/slideN.xml            新投影片本體
+//   ppt/slides/_rels/slideN.xml.rels 沿用原頁的關聯（圖片等共用部件）
+//   ppt/diagrams/*                   SmartArt 必須另外複製一份，
+//                                    否則兩頁共用同一份資料會同時被改掉
+//   [Content_Types].xml              註冊新部件
+//   ppt/_rels/presentation.xml.rels  新投影片的關聯
+//   ppt/presentation.xml             sldIdLst 決定頁序
+
+const DIAGRAM_PART_RE = /^ppt\/diagrams\/(data|layout|quickStyle|colors|drawing)(\d+)\.xml$/;
+
+export const insertTranslatedSlides = async (
+  zipObj: any,
+  slideOrder: string[],                       // 依 sldIdLst 順序的 ppt/slides/slideN.xml
+  buildTranslatedOnly: (path: string) => string | null,
+) => {
+  const files: Record<string, any> = zipObj.files;
+
+  const readText = async (p: string) => (files[p] ? await zipObj.file(p).async('text') : null);
+
+  let contentTypes = await readText('[Content_Types].xml');
+  let presRels = await readText('ppt/_rels/presentation.xml.rels');
+  let presentation = await readText('ppt/presentation.xml');
+  if (!contentTypes || !presRels || !presentation) return;   // 結構不如預期就放棄，不要弄壞檔案
+
+  // 不要用動態組出來的 RegExp，樣板字串裡的反斜線很容易多跳脫一層
+  const nextFreeIndex = (prefix: string, suffix: string) => {
+    let max = 0;
+    for (const name of Object.keys(files)) {
+      if (!name.startsWith(prefix) || !name.endsWith(suffix)) continue;
+      const mid = name.slice(prefix.length, name.length - suffix.length);
+      if (/^\d+$/.test(mid)) max = Math.max(max, parseInt(mid, 10));
+    }
+    return max + 1;
+  };
+
+  let slideIdx = nextFreeIndex('ppt/slides/slide', '.xml');
+  let diagramIdx = nextFreeIndex('ppt/diagrams/data', '.xml');
+
+  const relIds = [...presRels.matchAll(/Id="rId(\d+)"/g)].map(m => parseInt(m[1], 10));
+  let nextRId = Math.max(0, ...relIds) + 1;
+
+  const sldIds = [...presentation.matchAll(/<p:sldId id="(\d+)"/g)].map(m => parseInt(m[1], 10));
+  let nextSldId = Math.max(255, ...sldIds) + 1;
+
+  const slideCT = '<Override PartName="{P}" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>';
+  const addOverride = (partName: string, template: string) => {
+    if (contentTypes!.includes(`PartName="${partName}"`)) return;
+    contentTypes = contentTypes!.replace('</Types>', template.replace('{P}', partName) + '</Types>');
+  };
+  const copyOverrideFor = (fromPart: string, toPart: string) => {
+    const m = contentTypes!.match(new RegExp(`<Override PartName="/${fromPart.replace(/[/.]/g, '\\$&')}"[^>]*/>`));
+    if (m) addOverride('/' + toPart, m[0].replace(`/${fromPart}`, '{P}').replace('{P}', '{P}'));
+  };
+
+  for (const slidePath of slideOrder) {
+    const translated = buildTranslatedOnly(slidePath);
+    if (translated === null) continue;
+
+    const n = slidePath.match(/slide(\d+)\.xml$/);
+    if (!n) continue;
+    const oldNum = n[1];
+    const newNum = slideIdx++;
+    const newPath = `ppt/slides/slide${newNum}.xml`;
+
+    let content = translated;
+
+    // 沿用原頁的關聯檔
+    let rels = await readText(`ppt/slides/_rels/slide${oldNum}.xml.rels`);
+
+    // SmartArt：複製一整組 diagram 部件，讓新頁有自己的資料
+    if (rels && /\.\.\/diagrams\//.test(rels)) {
+      const usedNums = new Set<string>();
+      for (const m of rels.matchAll(/Target="\.\.\/diagrams\/(?:data|layout|quickStyle|colors|drawing)(\d+)\.xml"/g)) {
+        usedNums.add(m[1]);
+      }
+      for (const num of usedNums) {
+        const newDiagNum = diagramIdx++;
+        for (const kind of ['data', 'layout', 'quickStyle', 'colors', 'drawing']) {
+          const from = `ppt/diagrams/${kind}${num}.xml`;
+          const to = `ppt/diagrams/${kind}${newDiagNum}.xml`;
+          const body = await readText(from);
+          if (body === null) continue;
+          // data 與 drawing 兩份都存著文字，兩份都要換成譯文
+          zipObj.file(to, kind === 'data' || kind === 'drawing' ? buildTranslatedOnly(from) ?? body : body);
+          copyOverrideFor(from, to);
+          const dRels = await readText(`ppt/diagrams/_rels/${kind}${num}.xml.rels`);
+          if (dRels !== null) zipObj.file(`ppt/diagrams/_rels/${kind}${newDiagNum}.xml.rels`, dRels);
+        }
+        rels = rels.replace(
+          new RegExp(`Target="\\.\\./diagrams/(data|layout|quickStyle|colors|drawing)${num}\\.xml"`, 'g'),
+          `Target="../diagrams/$1${newDiagNum}.xml"`
+        );
+      }
+    }
+
+    zipObj.file(newPath, content);
+    if (rels !== null) zipObj.file(`ppt/slides/_rels/slide${newNum}.xml.rels`, rels);
+    addOverride(`/${newPath}`, slideCT);
+
+    // 掛到簡報上，並排在原稿頁的正後方
+    const newRId = `rId${nextRId++}`;
+    presRels = presRels.replace('</Relationships>',
+      `<Relationship Id="${newRId}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${newNum}.xml"/></Relationships>`);
+
+    const origRId = (presRels.match(
+      new RegExp(`<Relationship Id="(rId\\d+)"[^>]*Target="slides/slide${oldNum}\\.xml"/>`)
+    ) || [])[1];
+    const newSldId = `<p:sldId id="${nextSldId++}" r:id="${newRId}"/>`;
+    if (origRId && presentation.includes(`r:id="${origRId}"/>`)) {
+      presentation = presentation.replace(
+        new RegExp(`<p:sldId id="\\d+" r:id="${origRId}"/>`),
+        (m) => m + newSldId
+      );
+    } else {
+      presentation = presentation.replace('</p:sldIdLst>', newSldId + '</p:sldIdLst>');
+    }
+  }
+
+  zipObj.file('[Content_Types].xml', contentTypes);
+  zipObj.file('ppt/_rels/presentation.xml.rels', presRels);
+  zipObj.file('ppt/presentation.xml', presentation);
+};
+
+// 把段落裡原本的 run 換掉（而不是接在後面）
+const replaceRunsInPptxParagraph = (pBlock: string, runsXml: string) => {
+  const stripped = pBlock
+    .replace(/<a:r\b[^>]*>[\s\S]*?<\/a:r>/g, '')
+    .replace(/<a:br\b[^>]*(?:\/>|>[\s\S]*?<\/a:br>)/g, '');
+  return insertRunsIntoPptxParagraph(stripped, runsXml);
+};
 
 const normalizeExcelFont = (font: any) => {
   if (!font) return '';
@@ -1451,7 +1607,9 @@ export const processPptx = async (
   translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
   updateProgress: (p: number, status?: TranslationStatus) => void,
   isCancelledRef: React.MutableRefObject<boolean>,
-  outputMode: 'combined' | 'separate' = 'combined'
+  outputMode: 'combined' | 'separate' = 'combined',
+  // 版面模式：由畫面上的選項傳入，沒傳就沿用 PPTX_LAYOUT.mode
+  layoutMode: PptxLayoutMode = PPTX_LAYOUT.mode
 ) => {
   updateProgress(10, 'processing');
   
@@ -1558,11 +1716,15 @@ export const processPptx = async (
     const zip = new JSZip();
     const loadedZip = await zip.loadAsync(file);
 
-    for (const slideFile of slideFiles) {
+    const duplicateMode = layoutMode === 'duplicate-slide';
+
+    // 依 slideFile 產生譯文版內容；replaceMode=true 代表「取代原文」（延伸頁用）
+    const buildContent = (slideFile: string, replaceMode: boolean): string | null => {
       const originalContent = slideContents[slideFile];
-      if (!originalContent) continue;
+      if (!originalContent) return null;
       
       let pIndex = 0;
+      let touched = false;
       let content = originalContent.replace(new RegExp(P_RE.source, 'g'), (pBlock) => {
         const currentItem = itemById.get(`${slideFile}_${pIndex++}`);
         if (!currentItem) return pBlock;
@@ -1572,9 +1734,9 @@ export const processPptx = async (
         if (todo.length === 0) return pBlock;
 
         const itemTranslations = translationsById.get(currentItem.id) || {};
-        const transScale = currentItem.inTable
-          ? PPTX_LAYOUT.tableTranslationScale
-          : PPTX_LAYOUT.translationFontScale;
+        const transScale = replaceMode
+          ? (currentItem.inTable ? PPTX_LAYOUT.duplicateTableScale : PPTX_LAYOUT.duplicateTextScale)
+          : (currentItem.inTable ? PPTX_LAYOUT.tableTranslationScale : PPTX_LAYOUT.translationFontScale);
 
         let appendedRuns = '';
         todo.forEach(lang => {
@@ -1589,7 +1751,8 @@ export const processPptx = async (
           }
           const defaultRPr = scaleRPrSize(adjustXmlRPrForLanguage(longestRun.rPr, lang, 'pptx'), transScale);
 
-          appendedRuns += makePptxBr(defaultRPr);
+          // 取代模式下不需要換行分隔（整段就是譯文）
+          if (!replaceMode || appendedRuns) appendedRuns += makePptxBr(defaultRPr);
 
           const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
           let match;
@@ -1622,6 +1785,11 @@ export const processPptx = async (
           if (cleanTail) appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(cleanTail))}</a:r>`;
         });
 
+        if (!appendedRuns) return pBlock;
+        touched = true;
+
+        if (replaceMode) return replaceRunsInPptxParagraph(pBlock, appendedRuns);
+
         // 表格列高是被文字撐開的，沒有 autofit 可用，所以原文也要一起縮
         const base = currentItem.inTable
           ? scaleParagraphFontSizes(pBlock, PPTX_LAYOUT.tableOriginalScale)
@@ -1630,9 +1798,12 @@ export const processPptx = async (
         return insertRunsIntoPptxParagraph(base, appendedRuns);
       });
       
+      if (!touched) return null;   // 這一頁沒有任何譯文 → 不用產生延伸頁
+
       content = rescalePptxAutofit(content, originalContent);
       
-      // 沒設 autofit 的文字方塊：文字變多時補上 normAutofit，避免直接爆出框
+      // 沒設 autofit / 設成 noAutofit 或 spAutoFit 的文字方塊：
+      // 文字變多時改成 normAutofit，避免直接爆出框
       if (PPTX_LAYOUT.autoFitOverflowingShapes) {
         const oldBodies = originalContent.match(PPTX_TXBODY_RE) || [];
         let bi = 0;
@@ -1644,7 +1815,18 @@ export const processPptx = async (
         });
       }
       
-      loadedZip.file(slideFile, content);
+      return content;
+    };
+
+    if (duplicateMode) {
+      // 原稿頁完全不動，只在後面插入譯文頁
+      const slidesInOrder = slideFiles.filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f));
+      await insertTranslatedSlides(loadedZip, slidesInOrder, (path) => buildContent(path, true));
+    } else {
+      for (const slideFile of slideFiles) {
+        const content = buildContent(slideFile, false);
+        if (content !== null) loadedZip.file(slideFile, content);
+      }
     }
 
     const blob = await loadedZip.generateAsync({
