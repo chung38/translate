@@ -86,6 +86,16 @@ export const alreadyHasLanguage = (text: string, lang: string): boolean => {
   }
 };
 
+// 譯文和原文一模一樣（型號、代碼、數字、公司名，或 LLM 直接回傳原句）
+// 就不要再貼一次 —— 這是舊版輸出裡 36 個段落被無意義複製的原因。
+const normalizeForCompare = (t: string) =>
+  stripTags(t || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+export const isEchoTranslation = (source: string, translated: string) => {
+  const b = normalizeForCompare(translated);
+  return !b || b === normalizeForCompare(source);
+};
+
 // 這一項還缺哪些語言
 export const neededLanguages = (text: string, targetLanguages: string[]) =>
   targetLanguages.filter(lang => !alreadyHasLanguage(text, lang));
@@ -95,7 +105,7 @@ export const neededLanguages = (text: string, targetLanguages: string[]) =>
 // 回傳以 id 為 key 的結果，取代原本用陣列位置對應 —— 位置對應只要 API 少回
 // 一筆，後面所有段落都會錯位。
 export const translateItemsByLanguage = async (
-  items: { id: string; text: string }[],
+  items: { id: string; text: string; scopeText?: string }[],
   targetLanguages: string[],
   industry: string,
   translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
@@ -107,8 +117,10 @@ export const translateItemsByLanguage = async (
 
   for (const item of items) {
     out.set(item.id, {});
-    const needed = neededLanguages(item.text, targetLanguages);
-    if (needed.length === 0) continue;   // 整項都已經有目標語言 → 完全不送 API
+    // scopeText = 判斷範圍（同一個文字方塊 / 儲存格 / 相鄰段落），
+    // 因為原檔常見的排法是「中文一段、越南文另一段」，只看單段抓不到。
+    const needed = neededLanguages(item.scopeText ?? item.text, targetLanguages);
+    if (needed.length === 0) continue;   // 這個範圍已經有目標語言 → 完全不送 API
     const key = needed.join('\u0001');
     if (!groups.has(key)) groups.set(key, []);
     (groups.get(key) as { id: string; text: string }[]).push(item);
@@ -278,6 +290,76 @@ const rescalePptxAutofit = (newContent: string, oldContent: string) => {
 // ppt/diagrams/drawingN.xml 的快取版本 —— 兩邊都要改，只改 data 不會有變化。
 const PPTX_TEXT_PART_RE =
   /^ppt\/(slides\/slide\d+\.xml|notesSlides\/notesSlide\d+\.xml|diagrams\/(?:data|drawing)\d+\.xml|charts\/chart\d+\.xml)$/;
+
+// ─── PPTX 版面控制 ─────────────────────────────────────────────────────────
+// 附加譯文等於把文字量變成 2 倍以上。實測這份簡報：93% 的 run 有明確 sz、
+// 但 255 個 bodyPr 裡有 183 個「完全沒有 autofit 設定」——也就是說 PowerPoint
+// 不會幫你縮，文字就直接爆出去；表格更是沒有 autofit 這種東西，列高一定被撐開。
+// 所以最可靠的做法是「直接改 sz」，不要指望 autofit。
+export const PPTX_LAYOUT = {
+  translationFontScale: 0.9,   // 一般文字方塊：譯文字級縮放
+  tableTranslationScale: 0.75, // 表格儲存格：譯文字級縮放
+  tableOriginalScale: 0.85,    // 表格儲存格：原文也一起縮，列高才不會被撐高
+  minFontSize: 600,            // 字級下限（6pt，單位是 1/100 pt）
+  autoFitOverflowingShapes: true, // 沒設 autofit 的文字方塊，補上 normAutofit 當保險
+  // spAutoFit 是「方塊跟著文字長大」，加了譯文就會往下撐、壓到旁邊的表格或圖。
+  // 開啟後改成 normAutofit：方塊維持原大小，改成把字縮小。
+  convertGrowToShrink: true,
+};
+
+// 只改 rPr 開頭標籤裡的 sz，不會動到子元素
+const scaleRPrSize = (rPr: string, factor: number) => {
+  if (!rPr || factor === 1) return rPr;
+  const open = rPr.match(/^<a:(?:rPr|endParaRPr)\b[^>]*?\/?>/);
+  if (!open) return rPr;
+  const scaled = open[0].replace(/\ssz="(\d+)"/, (_m, sz: string) =>
+    ` sz="${Math.max(PPTX_LAYOUT.minFontSize, Math.round(parseInt(sz, 10) * factor))}"`);
+  return scaled + rPr.slice(open[0].length);
+};
+
+// 把整個段落（含原文 run 與 endParaRPr）的字級一起縮
+const scaleParagraphFontSizes = (pBlock: string, factor: number) => {
+  if (factor === 1) return pBlock;
+  return pBlock.replace(/<a:(rPr|endParaRPr)\b[^>]*?\/?>/g, (tag) => scaleRPrSize(tag, factor));
+};
+
+// 幫沒有 autofit 設定的 bodyPr 補上 normAutofit。
+// bodyPr 的子元素順序：prstTxWarp? → (noAutofit|normAutofit|spAutoFit)? → scene3d? …
+const ensureNormAutofit = (body: string, fontScale: number) => {
+  const fsAttr = Math.max(25000, Math.round(fontScale * 100000));
+
+  // spAutoFit：方塊會跟著文字長大 → 改成維持大小、把字縮小
+  if (/<a:spAutoFit\b[^>]*\/>/.test(body)) {
+    return PPTX_LAYOUT.convertGrowToShrink
+      ? body.replace(/<a:spAutoFit\b[^>]*\/>/,
+          `<a:normAutofit fontScale="${fsAttr}" lnSpcReduction="10000"/>`)
+      : body;
+  }
+  if (/<a:(normAutofit|noAutofit)\b/.test(body)) return body;
+  const fs = Math.max(25000, Math.round(fontScale * 100000));
+  const tag = `<a:normAutofit fontScale="${fs}" lnSpcReduction="10000"/>`;
+
+  // prstTxWarp 必須排在 autofit 之前
+  const warp = body.match(/<a:prstTxWarp\b[^>]*?(?:\/>|>[\s\S]*?<\/a:prstTxWarp>)/);
+  if (warp) return body.replace(warp[0], warp[0] + tag);
+
+  return body.replace(/<a:bodyPr\b[^>]*?(\/?)>/, (m, selfClose: string) =>
+    selfClose === '/'
+      ? m.slice(0, -2) + '>' + tag + '</a:bodyPr>'
+      : m + tag
+  );
+};
+
+// 找出某個位置落在哪一個區段內
+type Span = { start: number; end: number; text?: string };
+const spansOf = (content: string, re: RegExp): Span[] => {
+  const out: Span[] = [];
+  let m: RegExpExecArray | null;
+  const r = new RegExp(re.source, 'g');
+  while ((m = r.exec(content)) !== null) out.push({ start: m.index, end: m.index + m[0].length, text: m[0] });
+  return out;
+};
+const spanAt = (spans: Span[], pos: number) => spans.find(s => s.start <= pos && pos < s.end);
 
 const normalizeExcelFont = (font: any) => {
   if (!font) return '';
@@ -640,9 +722,19 @@ export const processDocx = async (
 
   updateProgress(30, 'translating');
 
+  // 判斷範圍取「前一段 + 本段 + 後一段」——雙語文件常見的排法是
+  // 中文一段、譯文緊接著下一段，只看單段抓不到原檔已有的譯文。
+  const docxScopeText = (i: number) => {
+    const cur = textsToTranslate[i];
+    return [textsToTranslate[i - 1], cur, textsToTranslate[i + 1]]
+      .filter(t => t && t.file === cur.file)
+      .map(t => stripTags(t.text))
+      .join('\n');
+  };
+
   // 已經含有目標語言的段落不會送 API，結果以 markerId 對應而非陣列位置
   const translationsById = await translateItemsByLanguage(
-    textsToTranslate.map(t => ({ id: t.markerId, text: t.text })),
+    textsToTranslate.map((t, i) => ({ id: t.markerId, text: t.text, scopeText: docxScopeText(i) })),
     targetLanguages, industry, translateBatch, isCancelledRef,
     (done, total) => updateProgress(30 + (done / total) * 50)
   );
@@ -693,11 +785,13 @@ export const processDocx = async (
           }
 
           let appendedRuns = '';
+          const currentScope = docxScopeText(textsToTranslate.indexOf(currentItem));
           langs.forEach(lang => {
-            // 原文本來就已經是這個語言 → 不重複附加
-            if (alreadyHasLanguage(currentItem.text, lang)) return;
+            // 這附近本來就已經有這個語言 → 不重複附加
+            if (alreadyHasLanguage(currentScope, lang)) return;
             const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
+            if (isEchoTranslation(currentItem.text, translatedText)) return;
             
             // 換行分隔
             appendedRuns += `<w:r><w:br/></w:r>`;
@@ -886,8 +980,12 @@ export const processExcel = async (
     updateProgress(10 + (processedWorksheets / totalWorksheets) * 20, 'translating');
 
     // 已經含有目標語言的儲存格不會送 API，結果以 儲存格座標 對應而非陣列位置
+    // 判斷範圍取「同一列」——雙語表格常見 A 欄中文、B 欄越南文
+    const rowText = new Map<number, string>();
+    textsToTranslate.forEach(t => rowText.set(t.row, (rowText.get(t.row) || '') + '\n' + stripTags(t.text)));
+
     const translationsById = await translateItemsByLanguage(
-      textsToTranslate.map(t => ({ id: `${t.row}:${t.col}`, text: t.text })),
+      textsToTranslate.map(t => ({ id: `${t.row}:${t.col}`, text: t.text, scopeText: rowText.get(t.row) })),
       targetLanguages, industry, translateBatch, isCancelledRef,
       (done, total) => {
         const sheetProgress = (done / total) * (60 / totalWorksheets);
@@ -902,7 +1000,9 @@ export const processExcel = async (
       // 原文本來就已經是該語言的，直接不列入，後面就不會附加
       const translations: Record<string, string> = {};
       targetLanguages.forEach(lang => {
-        if (!alreadyHasLanguage(item.text, lang)) translations[lang] = raw[lang] || '(翻譯失敗)';
+        if (!alreadyHasLanguage(rowText.get(item.row) || item.text, lang)) {
+          translations[lang] = raw[lang] || '(翻譯失敗)';
+        }
       });
       allTranslations.push({
         sheet: worksheet.name,
@@ -964,6 +1064,7 @@ export const processExcel = async (
               if (!(lang in translationItem.translations)) return;
               const rawTranslatedText = translationItem.translations[lang] || '(翻譯失敗)';
               const translatedText = sanitizeOutputText(rawTranslatedText, lang);
+              if (isEchoTranslation(translationItem.original, translatedText)) return;
               const adjustedDefaultFont = adjustFontForLanguage(defaultFont, lang);
 
               const hasMergedRichText = !!(translationItem.mergedRichText && translationItem.mergedRichText.length > 0);
@@ -1358,70 +1459,92 @@ export const processPptx = async (
   const zip = new JSZip();
   const loadedZip = await zip.loadAsync(file);
   
-  // [修正] 除了投影片，備忘稿、SmartArt(data + drawing 兩份)、圖表也要一起翻，
-  // 否則 SmartArt 會維持原文，看起來就像「有些地方沒翻、版面錯亂」。
+  // 除了投影片，備忘稿、SmartArt(data + drawing 兩份)、圖表也要一起翻
   const slideFiles = Object.keys(loadedZip.files)
     .filter(name => PPTX_TEXT_PART_RE.test(name))
     .sort();
   
-  const textsToTranslate: { slide: string, id: string, text: string, pBlock: string, runs?: { rPr: string, normRPr?: string, text: string }[] }[] = [];
+  type PptxItem = {
+    slide: string;
+    id: string;
+    text: string;
+    scopeText: string;   // 同一個文字方塊的全部文字 → 用來判斷「這裡是不是已經有譯文了」
+    inTable: boolean;
+    runs: { rPr: string, normRPr?: string, text: string }[];
+  };
+  const textsToTranslate: PptxItem[] = [];
   const slideContents: Record<string, string> = {};
+  const itemById = new Map<string, PptxItem>();
 
   const unescapeXml = (text: string) => text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
   const escapeXml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
+  const plainTextOf = (xml: string) => {
+    let out = '';
+    let m: RegExpExecArray | null;
+    const re = new RegExp(PPTX_T_RE_SRC, 'g');
+    while ((m = re.exec(xml)) !== null) out += unescapeXml(m[1]) + '\n';
+    return out;
+  };
+
+  const P_RE = /<a:p\b[^>]*>[\s\S]*?<\/a:p>/;
+
   for (const slideFile of slideFiles) {
     if (isCancelledRef.current) throw new Error('Cancelled');
     const content = await loadedZip.file(slideFile)?.async('text');
-    if (content) {
-      slideContents[slideFile] = content;
-      
-      const pMatches = content.match(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g);
-      if (pMatches) {
-        pMatches.forEach((pBlock, index) => {
-          const rMatches = pBlock.match(/<a:r\b[^>]*>[\s\S]*?<\/a:r>/g);
-          if (rMatches) {
-            let taggedText = '';
-            const runs: { rPr: string, normRPr?: string, text: string }[] = [];
-            
-            rMatches.forEach((rBlock) => {
-              // [修正] 用會吃屬性的 regex，才抓得到 <a:t xml:space="preserve">
-              const tMatch = rBlock.match(PPTX_T_RE);
-              if (tMatch && tMatch[1]) {
-                const text = unescapeXml(tMatch[1]);
-                const rPrMatch = rBlock.match(/<a:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:rPr>)/);
-                const rPr = rPrMatch ? rPrMatch[0] : '';
-                const normRPr = normalizePptxRPr(rPr);
-                
-                if (text) {
-                  const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
-                  if (lastRun && lastRun.normRPr === normRPr) {
-                    lastRun.text += text;
-                  } else {
-                    runs.push({ rPr, normRPr, text });
-                  }
-                }
-              }
-            });
-            
-            runs.forEach((run, idx) => {
-              taggedText += `[f${idx}]${run.text}[/f${idx}]`;
-            });
-            
-            if (taggedText.trim().length > 0) {
-              textsToTranslate.push({ slide: slideFile, id: `${slideFile}_${index}`, text: taggedText, pBlock, runs });
-            }
-          }
-        });
-      }
+    if (!content) continue;
+    slideContents[slideFile] = content;
+
+    // 文字方塊 / 表格的範圍，用來決定每個段落的判斷範圍與是否在表格內
+    const bodySpans = spansOf(content, PPTX_TXBODY_RE).map(s => ({ ...s, text: plainTextOf(s.text || '') }));
+    const tableSpans = spansOf(content, /<a:tbl>[\s\S]*?<\/a:tbl>/);
+
+    let pIndex = 0;
+    let m: RegExpExecArray | null;
+    const pRe = new RegExp(P_RE.source, 'g');
+
+    while ((m = pRe.exec(content)) !== null) {
+      const pBlock = m[0];
+      const index = pIndex++;
+      const rMatches = pBlock.match(/<a:r\b[^>]*>[\s\S]*?<\/a:r>/g);
+      if (!rMatches) continue;
+
+      const runs: { rPr: string, normRPr?: string, text: string }[] = [];
+      rMatches.forEach((rBlock) => {
+        const tMatch = rBlock.match(PPTX_T_RE);
+        if (!tMatch || !tMatch[1]) return;
+        const text = unescapeXml(tMatch[1]);
+        if (!text) return;
+        const rPrMatch = rBlock.match(/<a:rPr\b[^>]*?(?:\/>|>[\s\S]*?<\/a:rPr>)/);
+        const rPr = rPrMatch ? rPrMatch[0] : '';
+        const normRPr = normalizePptxRPr(rPr);
+        const lastRun = runs.length > 0 ? runs[runs.length - 1] : null;
+        if (lastRun && lastRun.normRPr === normRPr) lastRun.text += text;
+        else runs.push({ rPr, normRPr, text });
+      });
+
+      let taggedText = '';
+      runs.forEach((run, idx) => { taggedText += `[f${idx}]${run.text}[/f${idx}]`; });
+      if (taggedText.trim().length === 0) continue;
+
+      const item: PptxItem = {
+        slide: slideFile,
+        id: `${slideFile}_${index}`,
+        text: taggedText,
+        scopeText: spanAt(bodySpans, m.index)?.text || runs.map(r => r.text).join(''),
+        inTable: !!spanAt(tableSpans, m.index),
+        runs,
+      };
+      textsToTranslate.push(item);
+      itemById.set(item.id, item);
     }
   }
 
   updateProgress(30, 'translating');
 
-  // 已經含有目標語言的段落不會送 API，結果以 id 對應而非陣列位置
+  // 同一個文字方塊裡已經有目標語言的，整個方塊都不送 API
   const translationsById = await translateItemsByLanguage(
-    textsToTranslate.map(t => ({ id: t.id, text: t.text })),
+    textsToTranslate.map(t => ({ id: t.id, text: t.text, scopeText: t.scopeText })),
     targetLanguages, industry, translateBatch, isCancelledRef,
     (done, total) => updateProgress(30 + (done / total) * 50)
   );
@@ -1438,84 +1561,92 @@ export const processPptx = async (
     for (const slideFile of slideFiles) {
       const originalContent = slideContents[slideFile];
       if (!originalContent) continue;
-      const slideTexts = textsToTranslate.filter(t => t.slide === slideFile);
       
       let pIndex = 0;
-      let content = originalContent.replace(/<a:p\b[^>]*>[\s\S]*?<\/a:p>/g, (pBlock) => {
-        const currentIndex = pIndex++;
-        const currentItem = slideTexts.find(t => t.id === `${slideFile}_${currentIndex}`);
-        
-        if (currentItem) {
-          const itemTranslations = translationsById.get(currentItem.id) || {};
-          
-          let appendedRuns = '';
-          langs.forEach(lang => {
-            // 原文本來就已經是這個語言 → 不重複附加
-            if (alreadyHasLanguage(currentItem.text, lang)) return;
-            const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
-            const translatedText = sanitizeOutputText(rawTranslatedText, lang);
-            
-            const runs = currentItem.runs || [];
-            let longestRun = runs[0] || { rPr: '', text: '' };
-            for (const run of runs) {
-              if (run.text.length > longestRun.text.length) longestRun = run;
-            }
-            const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'pptx');
+      let content = originalContent.replace(new RegExp(P_RE.source, 'g'), (pBlock) => {
+        const currentItem = itemById.get(`${slideFile}_${pIndex++}`);
+        if (!currentItem) return pBlock;
 
-            // [修正] 換行要帶 rPr，否則行高用預設字級
-            appendedRuns += makePptxBr(defaultRPr);
+        // 這個文字方塊本來就已經有這些語言 → 一個字都不加
+        const todo = langs.filter(lang => !alreadyHasLanguage(currentItem.scopeText, lang));
+        if (todo.length === 0) return pBlock;
 
-            const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
-            let match;
-            let lastIndex = 0;
-            let hasTags = false;
-            
-            while ((match = fRegex.exec(translatedText)) !== null) {
-              hasTags = true;
-              const id = parseInt(match[1], 10);
-              const originalRPr = runs[id] ? runs[id].rPr : longestRun.rPr;
-              const rPr = adjustXmlRPrForLanguage(originalRPr, lang, 'pptx');
-              
-              if (match.index > lastIndex) {
-                 const betweenText = stripTags(translatedText.substring(lastIndex, match.index));
-                 if (betweenText) {
-                   appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(betweenText))}</a:r>`;
-                 }
-              }
-              
-              let finalText = stripTags(match[2]);
-              if (finalText) {
-                const originalText = runs[id]?.text || '';
-                if (originalText.endsWith(' ') && !finalText.endsWith(' ')) finalText += ' ';
-                if (originalText.startsWith(' ') && !finalText.startsWith(' ')) finalText = ' ' + finalText;
-                appendedRuns += `<a:r>${rPr}${makePptxT(escapeXml(finalText))}</a:r>`;
-              }
-              lastIndex = fRegex.lastIndex;
-            }
-            
-            // 沒有標籤 → 整段；有標籤 → 收尾剩下的部分。
-            // 兩種情況都要過 stripTags，才不會把壞掉的標籤印到投影片上。
-            const tail = hasTags ? translatedText.substring(lastIndex) : translatedText;
-            const cleanTail = stripTags(tail);
-            if (cleanTail) {
-              appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(cleanTail))}</a:r>`;
-            }
-          });
+        const itemTranslations = translationsById.get(currentItem.id) || {};
+        const transScale = currentItem.inTable
+          ? PPTX_LAYOUT.tableTranslationScale
+          : PPTX_LAYOUT.translationFontScale;
+
+        let appendedRuns = '';
+        todo.forEach(lang => {
+          const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
+          const translatedText = sanitizeOutputText(rawTranslatedText, lang);
+          if (isEchoTranslation(currentItem.text, translatedText)) return;
           
-          // [修正] 插在 <a:endParaRPr> 之前，不能直接接在 </a:p> 前
-          return insertRunsIntoPptxParagraph(pBlock, appendedRuns);
-        }
-        
-        return pBlock;
+          const runs = currentItem.runs;
+          let longestRun = runs[0] || { rPr: '', text: '' };
+          for (const run of runs) {
+            if (run.text.length > longestRun.text.length) longestRun = run;
+          }
+          const defaultRPr = scaleRPrSize(adjustXmlRPrForLanguage(longestRun.rPr, lang, 'pptx'), transScale);
+
+          appendedRuns += makePptxBr(defaultRPr);
+
+          const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
+          let match;
+          let lastIndex = 0;
+          let hasTags = false;
+          
+          while ((match = fRegex.exec(translatedText)) !== null) {
+            hasTags = true;
+            const id = parseInt(match[1], 10);
+            const originalRPr = runs[id] ? runs[id].rPr : longestRun.rPr;
+            const rPr = scaleRPrSize(adjustXmlRPrForLanguage(originalRPr, lang, 'pptx'), transScale);
+            
+            if (match.index > lastIndex) {
+               const betweenText = stripTags(translatedText.substring(lastIndex, match.index));
+               if (betweenText) appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(betweenText))}</a:r>`;
+            }
+            
+            let finalText = stripTags(match[2]);
+            if (finalText) {
+              const originalText = runs[id]?.text || '';
+              if (originalText.endsWith(' ') && !finalText.endsWith(' ')) finalText += ' ';
+              if (originalText.startsWith(' ') && !finalText.startsWith(' ')) finalText = ' ' + finalText;
+              appendedRuns += `<a:r>${rPr}${makePptxT(escapeXml(finalText))}</a:r>`;
+            }
+            lastIndex = fRegex.lastIndex;
+          }
+          
+          const tail = hasTags ? translatedText.substring(lastIndex) : translatedText;
+          const cleanTail = stripTags(tail);
+          if (cleanTail) appendedRuns += `<a:r>${defaultRPr}${makePptxT(escapeXml(cleanTail))}</a:r>`;
+        });
+
+        // 表格列高是被文字撐開的，沒有 autofit 可用，所以原文也要一起縮
+        const base = currentItem.inTable
+          ? scaleParagraphFontSizes(pBlock, PPTX_LAYOUT.tableOriginalScale)
+          : pBlock;
+
+        return insertRunsIntoPptxParagraph(base, appendedRuns);
       });
       
-      // [修正] 依文字增長比例重算自動縮放，避免字爆出框
       content = rescalePptxAutofit(content, originalContent);
+      
+      // 沒設 autofit 的文字方塊：文字變多時補上 normAutofit，避免直接爆出框
+      if (PPTX_LAYOUT.autoFitOverflowingShapes) {
+        const oldBodies = originalContent.match(PPTX_TXBODY_RE) || [];
+        let bi = 0;
+        content = content.replace(PPTX_TXBODY_RE, (body) => {
+          const before = pptxTextLength(oldBodies[bi++] || '');
+          const after = pptxTextLength(body);
+          if (!before || after <= before) return body;
+          return ensureNormAutofit(body, 1 / Math.sqrt(after / before));
+        });
+      }
       
       loadedZip.file(slideFile, content);
     }
 
-    // [修正] JSZip 預設是 STORE(不壓縮)，輸出檔會膨脹好幾倍
     const blob = await loadedZip.generateAsync({
       type: 'blob',
       compression: 'DEFLATE',
