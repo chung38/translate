@@ -727,8 +727,43 @@ const forceLeftAlignInPPr = (pBlock: string): string => {
   return pBlock;
 };
 
+// ─── XML 合法字元過濾 ──────────────────────────────────────────────────────
+// XML 1.0 只允許 #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]。
+// 翻譯 API 偶爾會回傳控制字元（\u000B、\u0001…）或截斷造成的落單代理對，
+// 這些字元 escapeXml 不會處理，寫進 <a:t> 之後整份 XML 就解析不了 ——
+// PowerPoint / Word 開檔時會直接跳「需要修復」。
+export const stripInvalidXmlChars = (text: string) => {
+  if (!text) return text;
+  let out = '';
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c >= 0xD800 && c <= 0xDBFF) {
+      const next = text.charCodeAt(i + 1);
+      if (next >= 0xDC00 && next <= 0xDFFF) { out += text[i] + text[i + 1]; i++; }
+      continue;                                  // 落單的高位代理 → 丟掉
+    }
+    if (c >= 0xDC00 && c <= 0xDFFF) continue;    // 落單的低位代理 → 丟掉
+    if (c === 0x9 || c === 0xA || c === 0xD) { out += text[i]; continue; }
+    if (c < 0x20 || c === 0xFFFE || c === 0xFFFF) continue;
+    out += text[i];
+  }
+  return out;
+};
+
+// 最後一道保險：寫回壓縮檔之前確認產出的 XML 真的解析得動。
+// 萬一還有沒想到的狀況，寧可那一頁沒有譯文，也不要整份檔案打不開。
+export const isWellFormedXml = (xml: string) => {
+  if (typeof DOMParser === 'undefined') return true;   // 非瀏覽器環境略過
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'application/xml');
+    return doc.getElementsByTagName('parsererror').length === 0;
+  } catch {
+    return false;
+  }
+};
+
 export const sanitizeOutputText = (text: string, lang: string) => {
-  let cleaned = text.normalize('NFC').replace(/[·‧•]/g, ' ').replace(/\u00A0/g, ' ');
+  let cleaned = stripInvalidXmlChars(text).normalize('NFC').replace(/[·‧•]/g, ' ').replace(/\u00A0/g, ' ');
   const base = langBase(lang);
   if (base === 'vi' || base === 'th' || base === 'en' || base === 'id') {
     cleaned = cleaned.replace(/\[f\d+\]\s*\[\/f\d+\]/g, '');
@@ -883,7 +918,7 @@ export const processDocx = async (
   );
   
   const unescapeXml = (text: string) => text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'");
-  const escapeXml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  const escapeXml = (text: string) => stripInvalidXmlChars(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
   type DocxItem = {
     file: string;
@@ -1091,6 +1126,10 @@ export const processDocx = async (
 
       content = content.replace(/(<w:tbl\b[^>]*>)(?!\s*<w:tblPr\b)/g, '$1<w:tblPr><w:tblLayout w:type="fixed"/></w:tblPr>');
       
+      if (!isWellFormedXml(content)) {
+        console.error(`[docx] ${docFile} 產出的 XML 不合法，已略過這個部件的譯文`);
+        continue;
+      }
       loadedZip.file(docFile, content);
     }
 
@@ -1697,7 +1736,7 @@ export const processPptx = async (
   const itemById = new Map<string, PptxItem>();
 
   const unescapeXml = (text: string) => text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
-  const escapeXml = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+  const escapeXml = (text: string) => stripInvalidXmlChars(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 
   const plainTextOf = (xml: string) => {
     let out = '';
@@ -1883,11 +1922,24 @@ export const processPptx = async (
     if (duplicateMode) {
       // 原稿頁完全不動，只在後面插入譯文頁
       const slidesInOrder = slideFiles.filter(f => /^ppt\/slides\/slide\d+\.xml$/.test(f));
-      await insertTranslatedSlides(loadedZip, slidesInOrder, (path) => buildContent(path, true));
+      await insertTranslatedSlides(loadedZip, slidesInOrder, (path) => {
+        const built = buildContent(path, true);
+        if (built !== null && !isWellFormedXml(built)) {
+          console.error(`[pptx] ${path} 產出的 XML 不合法，已略過這一頁的延伸頁`);
+          return null;
+        }
+        return built;
+      });
     } else {
       for (const slideFile of slideFiles) {
         const content = buildContent(slideFile, false);
-        if (content !== null) loadedZip.file(slideFile, content);
+        if (content === null) continue;
+        if (!isWellFormedXml(content)) {
+          // 保住整份檔案：這一頁維持原樣，不要寫入壞掉的 XML
+          console.error(`[pptx] ${slideFile} 產出的 XML 不合法，已略過這一頁的譯文`);
+          continue;
+        }
+        loadedZip.file(slideFile, content);
       }
     }
 
