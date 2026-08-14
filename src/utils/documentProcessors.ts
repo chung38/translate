@@ -542,6 +542,33 @@ export const insertTranslatedSlides = async (
   zipObj.file('[Content_Types].xml', contentTypes);
   zipObj.file('ppt/_rels/presentation.xml.rels', presRels);
   zipObj.file('ppt/presentation.xml', presentation);
+
+  // docProps/app.xml 記著投影片張數與每一頁的標題。插入延伸頁之後這份統計就對不上
+  // （29 張變 57 張，但 app.xml 還寫 29），PowerPoint 會判定檔案損毀。
+  // HeadingPairs / TitlesOfParts 兩段是選用的，直接拿掉讓 PowerPoint 下次存檔時
+  // 自己重建，比硬湊 vector size 可靠。
+  const appXml = await readText('docProps/app.xml');
+  if (appXml) {
+    const count = (prefix: string) =>
+      Object.keys(zipObj.files).filter(n => n.startsWith(prefix) && n.endsWith('.xml')).length;
+    zipObj.file('docProps/app.xml', appXml
+      .replace(/<HeadingPairs>[\s\S]*?<\/HeadingPairs>/, '')
+      .replace(/<TitlesOfParts>[\s\S]*?<\/TitlesOfParts>/, '')
+      .replace(/<Slides>\d+<\/Slides>/, `<Slides>${count('ppt/slides/slide')}</Slides>`)
+      .replace(/<Notes>\d+<\/Notes>/, `<Notes>${count('ppt/notesSlides/notesSlide')}</Notes>`)
+    );
+  }
+};
+
+// JSZip 在寫入新路徑時會順手補上資料夾條目（ppt/、ppt/slides/_rels/ …）。
+// OPC 封裝規定每個 zip 項目都必須是一個 part，結尾是 / 的資料夾條目並不合法，
+// 原始的 pptx 一個都沒有。產生檔案之前清掉。
+const stripZipFolderEntries = (zipObj: any) => {
+  // 注意：不能用 zipObj.remove()，那會連同資料夾底下的所有檔案一起刪掉。
+  // 直接把 files 這個索引裡的資料夾項目移除即可。
+  for (const name of Object.keys(zipObj.files)) {
+    if (zipObj.files[name]?.dir) delete zipObj.files[name];
+  }
 };
 
 // 把段落裡原本的 run 換掉（而不是接在後面）
@@ -1863,6 +1890,8 @@ export const processPptx = async (
         if (content !== null) loadedZip.file(slideFile, content);
       }
     }
+
+    stripZipFolderEntries(loadedZip);
 
     const blob = await loadedZip.generateAsync({
       type: 'blob',
