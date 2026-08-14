@@ -78,13 +78,34 @@ async function startServer() {
 
   // 設定 API 請求次數限制 (Rate Limiting)
   // 限制每個 IP 在 15 分鐘內最多只能發送 100 次請求
+  // ── 登入驗證 middleware ────────────────────────────────────────────────
+  // 沒有這一段，任何人都能直接 POST /api/translate，用你的 DeepSeek 金鑰。
+  const requireAuth = async (req: any, res: any, next: any) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      return res.status(401).json({ error: { message: '請先登入後再使用翻譯功能。' } });
+    }
+    try {
+      const decoded = await getAdminAuth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      if (!decoded.email_verified) {
+        return res.status(403).json({ error: { message: '請先完成 Email 驗證。' } });
+      }
+      req.user = decoded;
+      next();
+    } catch {
+      return res.status(401).json({ error: { message: '登入狀態已失效，請重新登入。' } });
+    }
+  };
+
   const apiLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
     max: 100,
     message: { error: { message: '請求次數過多，請稍後再試。' } },
     standardHeaders: true,
     legacyHeaders: false,
-    keyGenerator: (req) => {
+    keyGenerator: (req: any) => {
+      // 已登入就用 uid 當 key（同一間工廠常常共用同一個對外 IP）
+      if (req.user?.uid) return `uid:${req.user.uid}`;
       // 處理 Forwarded header 警告
       const forwarded = req.headers['forwarded'];
       if (forwarded && typeof forwarded === 'string') {
@@ -211,7 +232,7 @@ async function startServer() {
   });
 
   // DeepSeek Proxy API
-  app.post("/api/translate", apiLimiter, async (req, res) => {
+  app.post("/api/translate", requireAuth, apiLimiter, async (req, res) => {
     const { prompt } = req.body;
     const apiKey = process.env.DEEPSEEK_API_KEY;
 
