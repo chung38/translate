@@ -1,13 +1,80 @@
 rules_version = '2';
+
+// 取代原本的 allow read, write: if true;
+// 部署前務必先在 Firebase Console → Firestore → Rules 的 Playground，
+// 或用 firebase emulators:start 實際測過，避免把自己鎖在外面。
 service cloud.firestore {
-  match /databases/ai-studio-73f1054c-98a8-42f0-9773-7ee439bbea70/documents {
-    match /{document=**} {
-      allow read, write: if true;
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
     }
-  }
-  match /databases/(default)/documents {
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // 注意：這裡每次判斷都會產生一次額外讀取
+    function isAdmin() {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // 使用者只能碰自己這一份，而且 role / quota / isPaid 一律不准自己改
+    function notTouchingPrivileged() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+        .hasAny(['role', 'quota', 'isPaid', 'uid', 'email', 'createdAt']);
+    }
+
+    match /users/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();   // 一般使用者不能列舉全部帳號
+
+      allow create: if isOwner(uid)
+        && request.resource.data.role == 'user'
+        && request.resource.data.quota == 2
+        && request.resource.data.isPaid == false;
+
+      allow update: if isAdmin() || (isOwner(uid) && notTouchingPrivileged());
+      allow delete: if isOwner(uid) || isAdmin();
+
+      match /history/{docId} {
+        allow read, create, delete: if isOwner(uid) || isAdmin();
+        allow update: if isAdmin();
+      }
+    }
+
+    match /payments/{orderId} {
+      allow get: if isSignedIn() && (resource.data.uid == request.auth.uid || isAdmin());
+      allow list: if isAdmin();
+      // 使用者只能開一筆 pending 的訂單，狀態要改成 completed 只能由後端／管理者
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.status == 'pending';
+      allow update, delete: if isAdmin();
+    }
+
+    // 其餘一律拒絕
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }
+
+// ── 套用後需要一併調整的地方 ──────────────────────────────────────────────
+//
+// 1. App.tsx 約 210 行
+//    query(collection(db, 'users'), where('email', '==', user.email), limit(1))
+//    這是列舉整個 users 集合，一般使用者不再有權限，會直接失敗。
+//    這段是「舊帳號資料搬移」用的，建議改成 Cloud Function 用 Admin SDK 做，
+//    或者確認資料已經搬完之後整段移除。
+//
+// 2. App.tsx 約 240 / 293 行
+//    前端自己寫 role: 'admin' 現在會被擋下來。
+//    第一個管理員請直接在 Firebase Console 手動把 users/{uid}.role 設成 admin，
+//    前端那兩段自動升級的程式碼移除。
+//
+// 3. 額度扣減（quota / history 筆數）目前完全在瀏覽器判斷，
+//    規則擋得住「直接改 quota」，但擋不住「不寫 history 就直接翻譯」。
+//    真的要收費的話，額度檢查必須搬到 /api/translate 後端。
