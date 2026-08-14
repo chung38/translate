@@ -423,6 +423,7 @@ export const insertTranslatedSlides = async (
 
   let slideIdx = nextFreeIndex('ppt/slides/slide', '.xml');
   let diagramIdx = nextFreeIndex('ppt/diagrams/data', '.xml');
+  let notesIdx = nextFreeIndex('ppt/notesSlides/notesSlide', '.xml');
 
   const relIds = [...presRels.matchAll(/Id="rId(\d+)"/g)].map(m => parseInt(m[1], 10));
   let nextRId = Math.max(0, ...relIds) + 1;
@@ -478,6 +479,40 @@ export const insertTranslatedSlides = async (
           new RegExp(`Target="\\.\\./diagrams/(data|layout|quickStyle|colors|drawing)${num}\\.xml"`, 'g'),
           `Target="../diagrams/$1${newDiagNum}.xml"`
         );
+      }
+    }
+
+    // 備忘稿是 1:1 的關係：notesSlide 自己會回指它所屬的那一張投影片。
+    // 直接沿用原頁的關聯會變成兩張投影片共用同一份備忘稿，而備忘稿只回指得到
+    // 其中一張 —— PowerPoint 會判定檔案損毀並跳出「修復」對話框。
+    // 所以備忘稿也要複製一份，並且把回指改成指向新頁。
+    if (rels) {
+      const noteMatch = rels.match(/Target="\.\.\/notesSlides\/notesSlide(\d+)\.xml"/);
+      if (noteMatch) {
+        const oldNoteNum = noteMatch[1];
+        const newNoteNum = notesIdx++;
+        const from = `ppt/notesSlides/notesSlide${oldNoteNum}.xml`;
+        const to = `ppt/notesSlides/notesSlide${newNoteNum}.xml`;
+        const noteBody = await readText(from);
+        if (noteBody !== null) {
+          zipObj.file(to, buildTranslatedOnly(from) ?? noteBody);
+          copyOverrideFor(from, to);
+
+          const noteRels = await readText(`ppt/notesSlides/_rels/notesSlide${oldNoteNum}.xml.rels`);
+          if (noteRels !== null) {
+            zipObj.file(
+              `ppt/notesSlides/_rels/notesSlide${newNoteNum}.xml.rels`,
+              noteRels.replace(
+                new RegExp(`Target="\\.\\./slides/slide${oldNum}\\.xml"`, 'g'),
+                `Target="../slides/slide${newNum}.xml"`
+              )
+            );
+          }
+          rels = rels.replace(noteMatch[0], `Target="../notesSlides/notesSlide${newNoteNum}.xml"`);
+        } else {
+          // 找不到備忘稿本體就乾脆拿掉這條關聯，不要留下壞掉的指向
+          rels = rels.replace(/<Relationship[^>]*Target="\.\.\/notesSlides\/notesSlide\d+\.xml"[^>]*\/>/, '');
+        }
       }
     }
 
