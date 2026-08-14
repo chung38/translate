@@ -204,7 +204,7 @@ export default function App() {
     const initProfile = async () => {
       try {
         const userSnap = await getDoc(userRef);
-        const isAdminEmail = user.email === 'chen.chung.shih@gmail.com';
+        // 管理員身分改由 Firestore 的 users/{uid}.role 決定，不再用寫死的 email 判斷
 
         if (!userSnap.exists()) {
           const q = query(collection(db, 'users'), where('email', '==', user.email), limit(1));
@@ -230,17 +230,20 @@ export default function App() {
             }
           }
 
+          // 注意：...existingData 必須放在最前面。
+          // 原本放在最後，會把下面算好的 role / isPaid / quota / displayName
+          // 又整個蓋回舊值，導致管理員自動升級對搬移過來的帳號永遠失效。
           const newProfile: UserProfile = {
+            ...existingData,
             uid: user.uid,
             email: user.email || null,
             emailVerified: user.emailVerified,
-            displayName: user.displayName || (user.email ? user.email.split('@')[0] : '未命名用戶'),
-            photoURL: user.photoURL || null,
+            displayName: existingData.displayName || user.displayName || (user.email ? user.email.split('@')[0] : '未命名用戶'),
+            photoURL: existingData.photoURL || user.photoURL || null,
             createdAt: Timestamp.now(),
-            role: (isAdminEmail && user.emailVerified) ? 'admin' : (existingData.role || 'user'),
+            role: existingData.role || 'user',
             isPaid: existingData.isPaid || false,
             quota: existingData.quota !== undefined ? existingData.quota : 2,
-            ...existingData
           };
           
           Object.keys(newProfile).forEach(key => {
@@ -274,11 +277,6 @@ export default function App() {
           let updatedData = { ...currentData };
           let needsUpdate = false;
 
-          if (isAdminEmail && !user.emailVerified && currentData.role === 'admin') {
-            updatedData.role = 'user';
-            needsUpdate = true;
-          }
-          
           if (currentData.emailVerified !== user.emailVerified) {
             updatedData.emailVerified = user.emailVerified;
             needsUpdate = true;
@@ -289,10 +287,7 @@ export default function App() {
           }
           
           setUserProfile(updatedData);
-          
-          if (isAdminEmail && user.emailVerified && currentData.role !== 'admin') {
-            await setDoc(userRef, { role: 'admin' }, { merge: true });
-          }
+          // 管理員權限一律由 Firebase Console 或後端設定，前端不再自行寫入 role。
         }
 
         unsubscribeSnapshot = onSnapshot(userRef, async (doc) => {
@@ -315,12 +310,9 @@ export default function App() {
               return;
             }
 
-            if (user.email === 'chen.chung.shih@gmail.com') {
-              if (user.emailVerified) {
-                setUserProfile(data);
-              } else {
-                setUserProfile({ ...data, role: 'user' });
-              }
+            // 未完成 Email 驗證時，畫面上不給管理員權限（真正的權限以規則為準）
+            if (data.role === 'admin' && !user.emailVerified) {
+              setUserProfile({ ...data, role: 'user' });
             } else {
               setUserProfile(data);
             }
@@ -596,7 +588,7 @@ export default function App() {
       return;
     }
 
-    const isAdmin = userProfile?.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com';
+    const isAdmin = userProfile?.role === 'admin';
     const quota = userProfile?.quota || 2;
 
     if (!isAdmin) {
@@ -774,7 +766,7 @@ export default function App() {
                       </span>
                       {userProfile && (
                         <div className="flex items-center gap-1.5 ml-1">
-                          {(userProfile.role === 'admin' || user?.email === 'chen.chung.shih@gmail.com') ? (
+                          {userProfile.role === 'admin' ? (
                             <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
                           ) : userProfile.isPaid ? (
                             <div className="flex items-center gap-1">

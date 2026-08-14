@@ -1,13 +1,12 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, User, createUserWithEmailAndPassword, signInWithEmailAndPassword, deleteUser, updateProfile, sendEmailVerification, sendPasswordResetEmail } from 'firebase/auth';
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, addDoc, query, orderBy, onSnapshot, getDocFromServer, getDocs, Timestamp, where, limit } from 'firebase/firestore';
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, addDoc, query, orderBy, onSnapshot, getDocs, Timestamp, where, limit } from 'firebase/firestore';
 
 // Import the Firebase configuration
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase SDK
 const app = initializeApp(firebaseConfig);
-console.log("Firestore Database ID from config:", firebaseConfig.firestoreDatabaseId);
 // Use getFirestore with the database ID
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth();
@@ -70,22 +69,12 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   }
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  // 完整資訊只留在 console；丟出去的訊息不要夾帶 uid / email，
+  // 否則這包 JSON 會直接顯示在畫面上或被前端錯誤追蹤服務收走。
+  console.error('Firestore Error: ', errInfo);
+  const raw = error instanceof Error ? error.message : String(error);
+  throw new Error(`資料庫操作失敗（${operationType}）：${raw}`);
 }
-
-// Validate Connection to Firestore
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("Please check your Firebase configuration. ");
-    }
-    // Skip logging for other errors, as this is simply a connection test.
-  }
-}
-testConnection();
 
 export { 
   signInWithPopup,
