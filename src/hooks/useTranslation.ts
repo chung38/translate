@@ -1,7 +1,7 @@
 import React, { useState, useRef } from 'react';
 import { User } from 'firebase/auth';
 import { doc, setDoc, collection, Timestamp } from 'firebase/firestore';
-import { db } from '../firebase';
+import { db, auth } from '../firebase';
 import { jsonrepair } from 'jsonrepair';
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
@@ -151,10 +151,18 @@ export const useTranslation = (
       // Increase timeout to 5 minutes (300000ms) to handle large batches and server-side retries
       const timeoutId = setTimeout(() => controller.abort(), 300000);
 
+      // 後端會驗這個 token；沒有它，任何人都能拿這個端點當免費翻譯 proxy
+      const idToken = await auth.currentUser?.getIdToken();
+      if (!idToken) {
+        clearTimeout(timeoutId);
+        throw new Error('登入狀態已失效，請重新登入後再試。');
+      }
+
       const response = await fetch(DEEPSEEK_PROXY_URL, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${idToken}`
         },
         body: JSON.stringify({ prompt }),
         signal: controller.signal
@@ -237,7 +245,7 @@ export const useTranslation = (
             if (fuzzyKey) {
               value = item[fuzzyKey];
             } else if (keys.length === 1 && targetLangs.length === 1) {
-              value = item[keys];
+              value = item[keys[0]];   // 原本是 item[keys]，把陣列當成 key 用
             }
           }
 
