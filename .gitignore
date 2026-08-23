@@ -6,3 +6,8 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# 測試用檔案（原本 19 個 test_*.docx/pptx 進了版控，其中幾個還是壞的）
+test_*.docx
+test_*.pptx
+test_*.xlsx
