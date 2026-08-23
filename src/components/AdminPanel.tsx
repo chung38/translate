@@ -290,19 +290,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
-            className="bg-white/90 backdrop-blur-2xl w-full max-w-4xl max-h-[90vh] rounded-[32px] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white overflow-hidden flex flex-col"
+            className="bg-white  w-full max-w-4xl max-h-[90vh] rounded-[32px] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white overflow-hidden flex flex-col"
           >
-            <div className="p-6 border-b border-slate-200 flex items-center justify-between bg-white/50">
+            <div className="p-6 border-b border-[var(--rule)] flex items-center justify-between bg-white/50">
               <div className="flex items-center gap-3">
-                <div className="p-2 bg-violet-100 rounded-xl border border-violet-200">
-                  <Shield className="w-6 h-6 text-violet-600" />
+                <div className="p-2 bg-[var(--signal-dim)] rounded-xl border border-[var(--rule)]">
+                  <Shield className="w-6 h-6 text-[var(--signal)]" />
                 </div>
                 <div>
-                  <h2 className="text-xl font-bold text-slate-800">管理後台</h2>
+                  <h2 className="text-xl font-bold text-[var(--ink)]">管理後台</h2>
                   <div className="flex gap-4 mt-1">
                     <button 
                       onClick={() => setAdminTab('users')}
-                      className={`text-xs font-bold uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'text-violet-600' : 'text-slate-500 hover:text-slate-700'}`}
+                      className={`text-xs font-bold uppercase tracking-wider transition-colors ${adminTab === 'users' ? 'text-[var(--signal)]' : 'text-[var(--muted)] hover:text-slate-700'}`}
                     >
                       用戶管理
                     </button>
@@ -311,7 +311,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                         setAdminTab('history');
                         fetchAllHistory();
                       }}
-                      className={`text-xs font-bold uppercase tracking-wider transition-colors ${adminTab === 'history' ? 'text-violet-600' : 'text-slate-500 hover:text-slate-700'}`}
+                      className={`text-xs font-bold uppercase tracking-wider transition-colors ${adminTab === 'history' ? 'text-[var(--signal)]' : 'text-[var(--muted)] hover:text-slate-700'}`}
                     >
                       全域紀錄
                     </button>
@@ -322,7 +322,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                 {adminTab === 'users' && (
                   <button 
                     onClick={() => setShowAddUserForm(!showAddUserForm)}
-                    className="flex items-center gap-1 px-3 py-1.5 bg-violet-100 text-violet-700 border border-violet-200 text-xs font-bold rounded-xl hover:bg-violet-200 transition-all shadow-sm"
+                    className="flex items-center gap-1 px-3 py-1.5 bg-[var(--signal-dim)] text-[var(--signal-ink)] border border-[var(--rule)] text-xs font-bold rounded-xl hover:bg-violet-200 transition-all shadow-sm"
                   >
                     <LogIn className="w-3.5 h-3.5" />
                     {showAddUserForm ? '取消新增' : '新增用戶'}
@@ -332,42 +332,42 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                   onClick={onClose}
                   className="p-2 hover:bg-slate-100 rounded-full transition-colors"
                 >
-                  <X className="w-6 h-6 text-slate-400 hover:text-slate-600" />
+                  <X className="w-6 h-6 text-[var(--muted)] hover:text-slate-600" />
                 </button>
               </div>
             </div>
 
             {showAddUserForm && adminTab === 'users' && (
-              <div className="p-6 bg-violet-50 border-b border-violet-100 flex flex-col gap-3">
+              <div className="p-6 bg-[var(--signal-dim)] border-b border-violet-100 flex flex-col gap-3">
                 <div className="flex flex-col sm:flex-row gap-3 items-end">
                   <div className="flex-1 space-y-1">
-                    <label className="text-[10px] font-bold text-violet-600 uppercase tracking-wider">帳戶名稱</label>
+                    <label className="text-[10px] font-bold text-[var(--signal)] uppercase tracking-wider">帳戶名稱</label>
                     <input 
                       type="text" 
                       placeholder="用戶名稱"
                       value={newUserDisplayName}
                       onChange={(e) => setNewUserDisplayName(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                      className="w-full px-3 py-2 bg-white border border-[var(--rule)] rounded-xl text-sm text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                     />
                   </div>
                   <div className="flex-1 space-y-1">
-                    <label className="text-[10px] font-bold text-violet-600 uppercase tracking-wider">用戶信箱</label>
+                    <label className="text-[10px] font-bold text-[var(--signal)] uppercase tracking-wider">用戶信箱</label>
                     <input 
                       type="email" 
                       placeholder="example@gmail.com"
                       value={newUserEmail}
                       onChange={(e) => setNewUserEmail(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                      className="w-full px-3 py-2 bg-white border border-[var(--rule)] rounded-xl text-sm text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                     />
                   </div>
                   <div className="flex-1 space-y-1">
-                    <label className="text-[10px] font-bold text-violet-600 uppercase tracking-wider">登入密碼</label>
+                    <label className="text-[10px] font-bold text-[var(--signal)] uppercase tracking-wider">登入密碼</label>
                     <input 
                       type="password" 
                       placeholder="至少 6 位字元"
                       value={newUserPassword}
                       onChange={(e) => setNewUserPassword(e.target.value)}
-                      className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                      className="w-full px-3 py-2 bg-white border border-[var(--rule)] rounded-xl text-sm text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                     />
                   </div>
                   <button 
@@ -387,15 +387,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
               </div>
             )}
 
-            <div className="p-6 bg-slate-50 border-b border-slate-200">
+            <div className="p-6 bg-[var(--paper)] border-b border-[var(--rule)]">
               <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--muted)]" />
                 <input 
                   type="text" 
                   placeholder={adminTab === 'users' ? "搜尋用戶信箱或名稱..." : "搜尋檔案名稱或用戶..."}
                   value={adminSearch}
                   onChange={(e) => setAdminSearch(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/50 transition-all placeholder:text-slate-400"
+                  className="w-full pl-10 pr-4 py-2 bg-white border border-[var(--rule)] rounded-xl text-sm text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50 focus:border-violet-500/50 transition-all placeholder:text-[var(--muted)]"
                 />
               </div>
             </div>
@@ -412,21 +412,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                     })
                     .map((u) => (
                     <React.Fragment key={u.uid}>
-                      <div className="p-4 rounded-2xl border border-slate-200 hover:border-violet-300 hover:bg-violet-50/50 transition-all flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white/60">
+                      <div className="p-4 rounded-2xl border border-[var(--rule)] hover:border-violet-300 hover:bg-[var(--signal-dim)]/50 transition-all flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white">
                         <div className="flex items-center gap-3 min-w-0">
                           {u.photoURL ? (
-                            <img src={u.photoURL} alt="" className="w-10 h-10 rounded-full border border-slate-200" referrerPolicy="no-referrer" />
+                            <img src={u.photoURL} alt="" className="w-10 h-10 rounded-full border border-[var(--rule)]" referrerPolicy="no-referrer" />
                           ) : (
-                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center border border-slate-200">
-                              <UserIcon className="w-5 h-5 text-slate-400" />
+                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center border border-[var(--rule)]">
+                              <UserIcon className="w-5 h-5 text-[var(--muted)]" />
                             </div>
                           )}
                           <div className="min-w-0">
                             <div className="flex items-center gap-2">
-                              <p className="text-sm font-bold text-slate-800 truncate">{u.displayName || '未命名用戶'}</p>
+                              <p className="text-sm font-bold text-[var(--ink)] truncate">{u.displayName || '未命名用戶'}</p>
                             </div>
                             <div className="flex items-center gap-1.5">
-                              <p className="text-xs text-slate-500 truncate">{u.email}</p>
+                              <p className="text-xs text-[var(--muted)] truncate">{u.email}</p>
                               {u.emailVerified !== undefined && (
                                 <span className={`px-1.5 py-0.5 text-[9px] font-bold rounded uppercase ${u.emailVerified ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
                                   {u.emailVerified ? '已驗證' : '未驗證'}
@@ -438,11 +438,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
 
                         <div className="flex flex-wrap items-center gap-4">
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">角色權限</span>
+                            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-bold">角色權限</span>
                             <select 
                               value={u.role}
                               onChange={(e) => updateUserPermission(u.uid, { role: e.target.value as 'user' | 'admin' })}
-                              className="text-xs font-medium bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                              className="text-xs font-medium bg-white border border-[var(--rule)] rounded-lg px-2 py-1 text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                             >
                               <option value="user">一般用戶</option>
                               <option value="admin">管理員</option>
@@ -450,14 +450,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                           </div>
 
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">付費狀態</span>
+                            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-bold">付費狀態</span>
                             <button 
                               onClick={() => updateUserPermission(u.uid, { isPaid: !u.isPaid })}
                               className={`
                                 px-3 py-1 rounded-lg text-xs font-bold transition-all
                                 ${u.isPaid 
                                   ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200' 
-                                  : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}
+                                  : 'bg-slate-100 text-[var(--muted)] hover:bg-slate-200'}
                               `}
                             >
                               {u.isPaid ? 'PRO (已付費)' : 'FREE (未付費)'}
@@ -465,12 +465,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                           </div>
 
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">剩餘額度</span>
+                            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-bold">剩餘額度</span>
                             <input 
                               type="number" 
                               value={u.quota}
                               onChange={(e) => updateUserPermission(u.uid, { quota: parseInt(e.target.value) || 0 })}
-                              className="w-16 text-xs font-medium bg-white border border-slate-200 rounded-lg px-2 py-1 text-slate-800 focus:outline-none focus:ring-2 focus:ring-violet-500/50"
+                              className="w-16 text-xs font-medium bg-white border border-[var(--rule)] rounded-lg px-2 py-1 text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                             />
                           </div>
 
@@ -490,7 +490,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                           <div className="flex gap-2">
                             <button 
                               onClick={() => setDeletingUserId(null)}
-                              className="px-3 py-1 text-xs font-bold text-slate-500 hover:text-slate-800"
+                              className="px-3 py-1 text-xs font-bold text-[var(--muted)] hover:text-[var(--ink)]"
                             >
                               取消
                             </button>
@@ -516,23 +516,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                       return fileMatch || emailMatch;
                     })
                     .map((item) => (
-                    <div key={item.id} className="p-4 rounded-2xl border border-slate-200 bg-white/60 flex items-center justify-between gap-4">
+                    <div key={item.id} className="p-4 rounded-2xl border border-[var(--rule)] bg-white flex items-center justify-between gap-4">
                       <div className="flex items-center gap-3 min-w-0">
-                        <div className="p-2 bg-indigo-50 rounded-lg border border-indigo-100">
-                          <FileIcon className="w-4 h-4 text-indigo-600" />
+                        <div className="p-2 bg-[var(--signal-dim)] rounded-lg border border-indigo-100">
+                          <FileIcon className="w-4 h-4 text-[var(--signal)]" />
                         </div>
                         <div className="min-w-0">
                           <p className="text-sm font-bold text-slate-700 truncate">{item.fileName}</p>
                           <div className="flex items-center gap-2 mt-0.5">
-                            <span className="text-[10px] text-slate-500 font-medium">{item.userEmail}</span>
+                            <span className="text-[10px] text-[var(--muted)] font-medium">{item.userEmail}</span>
                             <span className="text-[10px] text-slate-300">•</span>
-                            <span className="text-[10px] text-slate-400">{item.timestamp?.toDate().toLocaleString()}</span>
+                            <span className="text-[10px] text-[var(--muted)]">{item.timestamp?.toDate().toLocaleString()}</span>
                           </div>
                         </div>
                       </div>
                       <div className="flex gap-1">
                         {item.targetLanguages?.map((l: string) => (
-                          <span key={l} className="px-1.5 py-0.5 bg-indigo-100 text-indigo-700 text-[9px] font-bold rounded uppercase">
+                          <span key={l} className="px-1.5 py-0.5 bg-[var(--signal-dim)] text-[var(--signal-ink)] text-[9px] font-bold rounded uppercase">
                             {l}
                           </span>
                         ))}
@@ -542,7 +542,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                   {allHistory.length === 0 && (
                     <div className="text-center py-12">
                       <Clock className="w-12 h-12 text-slate-200 mx-auto mb-4" />
-                      <p className="text-slate-500 text-sm">尚無全域翻譯紀錄</p>
+                      <p className="text-[var(--muted)] text-sm">尚無全域翻譯紀錄</p>
                     </div>
                   )}
                 </div>

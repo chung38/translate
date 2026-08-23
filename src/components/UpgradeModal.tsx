@@ -96,29 +96,29 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 bg-slate-900/40 backdrop-blur-md z-[110] flex items-center justify-center p-4"
+          className="fixed inset-0 bg-slate-900/40  z-[110] flex items-center justify-center p-4"
         >
           <motion.div 
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
-            className="bg-white/90 backdrop-blur-2xl w-full max-w-md rounded-[32px] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white overflow-hidden"
+            className="bg-white  w-full max-w-md rounded-[32px] shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-white overflow-hidden"
           >
             <div className="p-8 text-center">
-              <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-6 border border-indigo-100">
-                <Languages className="w-10 h-10 text-indigo-600" />
+              <div className="w-20 h-20 bg-[var(--signal-dim)] rounded-full flex items-center justify-center mx-auto mb-6 border border-indigo-100">
+                <Languages className="w-10 h-10 text-[var(--signal)]" />
               </div>
-              <h2 className="text-2xl font-bold text-slate-800 mb-2">升級專業版</h2>
-              <p className="text-slate-500 mb-8">解鎖更多翻譯額度，享受流暢體驗</p>
+              <h2 className="text-2xl font-bold text-[var(--ink)] mb-2">升級專業版</h2>
+              <p className="text-[var(--muted)] mb-8">解鎖更多翻譯額度，享受流暢體驗</p>
               
-              <div className="bg-slate-50 rounded-2xl p-6 mb-8 border border-slate-200">
+              <div className="bg-[var(--paper)] rounded-2xl p-6 mb-8 border border-[var(--rule)]">
                 <div className="flex items-center justify-between mb-4">
                   <span className="text-slate-600 font-medium">方案內容</span>
-                  <span className="text-indigo-600 font-bold">20 份檔案額度</span>
+                  <span className="text-[var(--signal)] font-bold">20 份檔案額度</span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-slate-600 font-medium">價格</span>
-                  <span className="text-2xl font-black text-slate-800">$200 <span className="text-sm font-normal text-slate-400">TWD</span></span>
+                  <span className="text-2xl font-black text-[var(--ink)]">$200 <span className="text-sm font-normal text-[var(--muted)]">TWD</span></span>
                 </div>
               </div>
 
@@ -126,7 +126,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 {isPaying && (
                   <button 
                     onClick={checkPaymentStatusManually}
-                    className="w-full py-4 bg-indigo-50 text-indigo-700 rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-indigo-100 transition-all border border-indigo-200"
+                    className="w-full py-4 bg-[var(--signal-dim)] text-[var(--signal-ink)] rounded-2xl font-bold flex items-center justify-center gap-2 hover:bg-[var(--signal-dim)] transition-all border border-[var(--rule)]"
                   >
                     <RefreshCw className="w-5 h-5" />
                     手動檢查支付狀態
@@ -147,7 +147,7 @@ export const UpgradeModal: React.FC<UpgradeModalProps> = ({
                 </button>
                 <button 
                   onClick={onClose}
-                  className="w-full py-4 text-slate-500 font-medium hover:text-slate-800 transition-colors"
+                  className="w-full py-4 text-[var(--muted)] font-medium hover:text-[var(--ink)] transition-colors"
                 >
                   稍後再說
                 </button>

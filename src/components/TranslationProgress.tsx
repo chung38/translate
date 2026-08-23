@@ -23,21 +23,21 @@ export const TranslationProgress: React.FC<TranslationProgressProps> = React.mem
           initial={{ opacity: 0, height: 0 }}
           animate={{ opacity: 1, height: 'auto' }}
           exit={{ opacity: 0, height: 0 }}
-          className="mt-8 pt-8 border-t border-slate-200"
+          className="mt-8 pt-8 border-t border-[var(--rule)]"
         >
           <div className="flex justify-between items-center mb-2">
             <span className="text-sm font-medium text-slate-600">
               {statusMessage}
             </span>
             {(status === 'processing' || status === 'translating' || status === 'generating') && (
-              <span className="text-xs font-mono text-indigo-600">{progress}%</span>
+              <span className="text-xs font-mono text-[var(--signal)]">{progress}%</span>
             )}
           </div>
           <div className="w-full h-1.5 bg-slate-200 rounded-full overflow-hidden mb-4">
             <motion.div 
               initial={{ width: 0 }}
               animate={{ width: `${progress}%` }}
-              className="h-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]"
+              className="h-full bg-[var(--signal)] shadow-[0_0_10px_rgba(99,102,241,0.5)]"
             />
           </div>
 
@@ -63,10 +63,10 @@ export const TranslationProgress: React.FC<TranslationProgressProps> = React.mem
                 return (
                   <div key={file.name} className="flex flex-col gap-1">
                     <div className="flex justify-between items-center">
-                      <span className="text-xs text-slate-500 truncate pr-4" title={file.name}>
+                      <span className="text-xs text-[var(--muted)] truncate pr-4" title={file.name}>
                         {file.name}
                       </span>
-                      <span className="text-xs font-mono text-indigo-500 shrink-0">
+                      <span className="text-xs font-mono text-[var(--signal)] shrink-0">
                         {currentProgress}%
                       </span>
                     </div>

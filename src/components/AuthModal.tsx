@@ -206,7 +206,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
           >
             <button 
               onClick={onClose}
-              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 transition-colors"
+              className="absolute top-4 right-4 text-[var(--muted)] hover:text-slate-600 transition-colors"
             >
               <X className="w-5 h-5" />
             </button>
@@ -216,10 +216,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                 <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center mx-auto mb-4">
                   <UserIcon className="w-6 h-6 text-emerald-600" />
                 </div>
-                <h2 className="text-2xl font-bold text-slate-900">
+                <h2 className="text-2xl font-bold text-[var(--ink)]">
                   {authMode === 'login' ? '歡迎回來' : authMode === 'register' ? '建立帳號' : '重設密碼'}
                 </h2>
-                <p className="text-sm text-slate-500 mt-1">
+                <p className="text-sm text-[var(--muted)] mt-1">
                   {authMode === 'login' ? '請登入您的帳號以繼續' : authMode === 'register' ? '註冊一個新帳號開始使用' : '輸入您的電子郵件，我們將發送密碼重設連結給您'}
                 </p>
               </div>
@@ -248,13 +248,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               {authMode === 'reset' ? (
                 <form onSubmit={handleResetPassword} className="space-y-4">
                   <div>
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 ml-1">電子郵件</label>
+                    <label className="block text-xs font-bold text-[var(--muted)] uppercase tracking-wider mb-1 ml-1">電子郵件</label>
                     <input 
                       type="email" 
                       value={email}
                       onChange={(e) => setEmail(e.target.value)}
                       placeholder="your@email.com"
-                      className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-slate-800"
+                      className="w-full px-4 py-3 bg-[var(--paper)] border border-[var(--rule)] rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-[var(--ink)]"
                       required
                     />
                   </div>
@@ -279,7 +279,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                     <button 
                       type="button"
                       onClick={() => { setAuthMode('login'); setError(null); setResetSent(false); }}
-                      className="text-sm text-slate-500 hover:underline"
+                      className="text-sm text-[var(--muted)] hover:underline"
                     >
                       返回登入
                     </button>
@@ -290,31 +290,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                   <form onSubmit={handleEmailAuth} className="space-y-4">
                     {authMode === 'register' && (
                       <div>
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 ml-1">帳戶名稱</label>
+                        <label className="block text-xs font-bold text-[var(--muted)] uppercase tracking-wider mb-1 ml-1">帳戶名稱</label>
                         <input 
                           type="text" 
                           value={displayName}
                           onChange={(e) => setDisplayName(e.target.value)}
                           placeholder="您的名字"
-                          className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-slate-800"
+                          className="w-full px-4 py-3 bg-[var(--paper)] border border-[var(--rule)] rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-[var(--ink)]"
                           required
                         />
                       </div>
                     )}
                     <div>
-                      <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-1 ml-1">電子郵件</label>
+                      <label className="block text-xs font-bold text-[var(--muted)] uppercase tracking-wider mb-1 ml-1">電子郵件</label>
                       <input 
                         type="email" 
                         value={email}
                         onChange={(e) => setEmail(e.target.value)}
                         placeholder="your@email.com"
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-slate-800"
+                        className="w-full px-4 py-3 bg-[var(--paper)] border border-[var(--rule)] rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-[var(--ink)]"
                         required
                       />
                     </div>
                     <div>
                       <div className="flex items-center justify-between mb-1 ml-1">
-                        <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">密碼</label>
+                        <label className="block text-xs font-bold text-[var(--muted)] uppercase tracking-wider">密碼</label>
                         {authMode === 'login' && (
                           <button 
                             type="button" 
@@ -330,7 +330,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
                         placeholder="••••••••"
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-slate-800"
+                        className="w-full px-4 py-3 bg-[var(--paper)] border border-[var(--rule)] rounded-xl focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 outline-none transition-all text-[var(--ink)]"
                         required
                       />
                     </div>
@@ -357,26 +357,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
 
                   <div className="relative my-8">
                     <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-slate-200"></div>
+                      <div className="w-full border-t border-[var(--rule)]"></div>
                     </div>
                     <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-white px-4 text-slate-400 font-medium">或使用</span>
+                      <span className="bg-white px-4 text-[var(--muted)] font-medium">或使用</span>
                     </div>
                   </div>
 
                   <button 
                     onClick={handleGoogleLogin}
                     disabled={authLoading}
-                    className={`w-full py-3 bg-white border border-slate-200 text-slate-700 font-bold rounded-xl transition-all flex items-center justify-center gap-3 ${
+                    className={`w-full py-3 bg-white border border-[var(--rule)] text-slate-700 font-bold rounded-xl transition-all flex items-center justify-center gap-3 ${
                       inWebView 
                         ? 'opacity-40 cursor-not-allowed' 
                         : authLoading 
                           ? 'opacity-50 cursor-not-allowed' 
-                          : 'hover:bg-slate-50'
+                          : 'hover:bg-[var(--paper)]'
                     }`}
                   >
                     {authLoading ? (
-                      <Loader2 className="w-5 h-5 animate-spin text-slate-400" />
+                      <Loader2 className="w-5 h-5 animate-spin text-[var(--muted)]" />
                     ) : (
                       <svg className="w-5 h-5" viewBox="0 0 24 24">
                         <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>

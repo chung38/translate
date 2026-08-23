@@ -39,6 +39,7 @@ import { UserProfile } from './types';
 import { useTranslation } from './hooks/useTranslation';
 import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
 import type { PptxLayoutMode } from './utils/documentProcessors';
+import { OutputPreview } from './components/OutputPreview';
 import { 
   auth, 
   db, 
@@ -72,6 +73,15 @@ import type { User } from './firebase';
 // Error Boundary Component (Placeholder for functional compatibility)
 const ErrorBoundary: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
+};
+
+// 標題的譯文（跟語言選擇連動，讓首屏本身就是一個雙語範例）
+const HERO_SUBTITLE: Record<string, string> = {
+  '越南文': 'Trạm dịch tài liệu',
+  '泰文': 'สถานีแปลเอกสาร',
+  '印尼文': 'Stasiun terjemahan dokumen',
+  '英文': 'Document translation workbench',
+  '繁體中文': '文件翻譯工作台',
 };
 
 const AVAILABLE_LANGUAGES = [
@@ -678,12 +688,7 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <div className="min-h-screen h-screen overflow-auto bg-slate-50 font-sans text-slate-800 relative">
-
-        {/* Background Accents */}
-        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-indigo-100/40 via-slate-50 to-slate-50 -z-10" />
-        <div className="absolute top-[-10%] right-[-5%] w-[500px] h-[500px] bg-indigo-400/10 blur-[100px] rounded-full -z-10 pointer-events-none" />
-        <div className="absolute bottom-[-10%] left-[-5%] w-[500px] h-[500px] bg-violet-400/10 blur-[100px] rounded-full -z-10 pointer-events-none" />
+      <div className="app-shell h-screen overflow-auto font-sans">
 
         {/* Deleted Account Modal */}
         <DeletedModal 
@@ -725,9 +730,14 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-4xl mx-auto p-3 sm:p-5 md:p-6 md:pt-10 relative z-10">
+        <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:p-5 md:p-6 md:pt-10">
           {/* Header */}
-          <header className="mb-8 md:mb-12">
+          <header className="mb-7 md:mb-9">
+            <div className="flex items-center justify-between gap-4 pb-3 mb-6 border-b border-[var(--rule)]">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <span className="w-7 h-7 rounded-[7px] bg-[var(--ink)] text-white flex items-center justify-center text-[13px] font-bold leading-none shrink-0">文</span>
+                <span className="text-[13px] font-semibold text-[var(--ink)] truncate">文件翻譯工作台</span>
+              </div>
 
             {/* Auth Bar — 標題上方，非左對齊中間內容區塊 */}
             {isAuthReady && (
@@ -735,13 +745,13 @@ export default function App() {
                 initial={{ opacity: 0, y: -6 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.05, duration: 0.4 }}
-                className="flex justify-start mb-3"
+                className="flex items-center gap-2"
               >
                 {user ? (
                   <div className="flex items-center gap-2">
                     <button 
                       onClick={() => setShowHistory(!showHistory)}
-                      className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-indigo-600 transition-colors"
+                      className="iconbtn"
                       title="翻譯紀錄"
                     >
                       <Clock className="w-5 h-5" />
@@ -749,36 +759,36 @@ export default function App() {
                     {userProfile?.role === 'admin' && (
                       <button 
                         onClick={() => setShowAdminPanel(true)}
-                        className="p-2 bg-white/70 backdrop-blur-md rounded-full shadow-sm border border-white text-slate-500 hover:text-violet-600 transition-colors"
+                        className="iconbtn"
                         title="管理後台"
                       >
                         <Shield className="w-5 h-5" />
                       </button>
                     )}
-                    <div className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-3 py-1.5 rounded-full shadow-sm border border-white">
+                    <div className="flex items-center gap-2 bg-[var(--card)] border border-[var(--rule)] px-3 py-1.5 rounded-[8px]">
                       {user.photoURL ? (
                         <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
                       ) : (
-                        <UserIcon className="w-4 h-4 text-slate-400" />
+                        <UserIcon className="w-4 h-4 text-[var(--muted)]" />
                       )}
-                      <span className="text-sm font-medium text-slate-800 inline-block max-w-[120px] truncate sm:max-w-[200px]">
+                      <span className="text-sm font-medium text-[var(--ink)] inline-block max-w-[120px] truncate sm:max-w-[200px]">
                         {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
                       </span>
                       {userProfile && (
                         <div className="flex items-center gap-1.5 ml-1">
                           {userProfile.role === 'admin' ? (
-                            <span className="px-2 py-0.5 bg-violet-100 border border-violet-200 text-violet-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Admin</span>
+                            <span className="tag tag--signal">Admin</span>
                           ) : userProfile.isPaid ? (
                             <div className="flex items-center gap-1">
-                              <span className="px-2 py-0.5 bg-indigo-100 border border-indigo-200 text-indigo-700 text-[10px] font-bold rounded-full uppercase tracking-wider">Pro</span>
-                              <span className="text-[10px] text-indigo-700 font-bold">{userProfile.quota}次</span>
+                              <span className="tag tag--signal">Pro</span>
+                              <span className="num text-[10px] text-[var(--signal-ink)]">{userProfile.quota}次</span>
                             </div>
                           ) : (
                             <div className="flex items-center gap-1">
-                              <span className="px-2 py-0.5 bg-slate-100 border border-slate-200 text-slate-500 text-[10px] font-bold rounded-full uppercase tracking-wider">
+                              <span className="tag">
                                 {userProfile.isPaid ? 'Pro' : 'Free'}
                               </span>
-                              <span className="text-[10px] text-slate-500 font-medium">({dbHistory.length}/{userProfile.quota})</span>
+                              <span className="num text-[10px] text-[var(--muted)]">({dbHistory.length}/{userProfile.quota})</span>
                             </div>
                           )}
                         </div>
@@ -793,12 +803,12 @@ export default function App() {
                               setError('發送驗證信失敗，請稍後再試。');
                             }
                           }}
-                          className="ml-2 px-2 py-0.5 bg-amber-100 border border-amber-200 text-amber-700 text-[9px] font-bold rounded-full hover:bg-amber-200 transition-colors"
+                          className="tag tag--brass ml-2 hover:brightness-95"
                         >
                           重發驗證信
                         </button>
                       )}
-                      <button onClick={handleLogout} className="ml-2 text-slate-400 hover:text-red-500 transition-colors">
+                      <button onClick={handleLogout} className="ml-2 text-[var(--muted)] hover:text-[var(--alert)] transition-colors">
                         <LogOut className="w-4 h-4" />
                       </button>
                     </div>
@@ -806,51 +816,52 @@ export default function App() {
                 ) : (
                   <button 
                     onClick={handleLogin}
-                    className="flex items-center gap-2 bg-white/70 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-white text-slate-800 font-medium hover:bg-white transition-colors"
+                    className="flex items-center gap-2 bg-[var(--card)] border border-[var(--rule)] px-4 py-2 rounded-[8px] text-[var(--ink)] font-medium hover:border-[var(--signal)] transition-colors"
                   >
-                    <LogIn className="w-4 h-4 text-indigo-600" />
+                    <LogIn className="w-4 h-4 text-[var(--signal)]" />
                     <span>登入</span>
                   </button>
                 )}
               </motion.div>
             )}
+            </div>
 
-            {/* Title */}
-            <div className="space-y-2 text-center">
-              <motion.h1 
-                initial={{ opacity: 0, y: 10 }}
+            {/* Title — 標題本身就用這個工具的輸出格式排：原文在上，譯文在下 */}
+            <div>
+              <motion.h1
+                initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1, duration: 0.5 }}
-                className="text-3xl md:text-5xl font-bold tracking-tight text-slate-900 flex items-center justify-center gap-4"
+                transition={{ duration: 0.4 }}
+                className="bititle__src"
               >
-                <div className="relative flex-shrink-0">
-                  <div className="absolute inset-0 bg-indigo-200 blur-xl rounded-full" />
-                  <div className="relative w-12 h-12 md:w-14 md:h-14 bg-gradient-to-tr from-indigo-600 to-violet-600 rounded-2xl shadow-[0_8px_20px_-6px_rgba(79,70,229,0.5)] flex items-center justify-center transform -rotate-3 hover:rotate-0 transition-all duration-300">
-                    <Languages className="w-7 h-7 md:w-8 md:h-8 text-white" />
-                  </div>
-                </div>
-                <span className="font-tech">全能文件<span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">多語翻譯器</span></span>
+                文件翻譯工作台
               </motion.h1>
-
-              <motion.p
+              <div className="bititle__rule" />
+              <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
-                transition={{ delay: 0.2, duration: 0.5 }}
-                className="text-indigo-600/80 text-sm md:text-base font-medium tracking-wide uppercase"
+                transition={{ delay: 0.12, duration: 0.4 }}
+                className="bititle__tgt"
               >
-                Professional AI-powered document translation
-              </motion.p>
+                {(selectedLanguages.length ? selectedLanguages : ['越南文']).map(l => (
+                  <span key={l}>{HERO_SUBTITLE[l] ?? l}</span>
+                ))}
+              </motion.div>
+              <p className="mt-3.5 text-sm text-[var(--muted)] max-w-lg leading-relaxed">
+                譯文直接排進原檔，版面與表格保留。原檔已有的語言不會再翻一次。
+              </p>
             </div>
           </header>
 
-        {/* Main Card */}
+        {/* 工作台：左邊設定、右邊即時預覽 */}
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-5 items-start">
         <motion.div 
-          initial={{ opacity: 0, y: 30 }}
+          initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="bg-white/90 backdrop-blur-2xl rounded-3xl shadow-xl shadow-slate-200/50 border border-white overflow-hidden"
+          transition={{ delay: 0.15 }}
+          className="panel"
         >
-          <div className="p-4 sm:p-6 md:p-8">
+          <div className="p-4 sm:p-6 md:p-7">
             {/* Error Message — 顯示在頂部 */}
             <AnimatePresence>
             {error && (
@@ -859,27 +870,28 @@ export default function App() {
                 initial={{ opacity: 0, y: -8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
-                className="mb-4 p-3 bg-red-50 border border-red-200 rounded-xl flex items-start gap-3 text-red-600 text-sm"
+                className="note note--alert mb-4"
               >
-                <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="font-medium">發生錯誤</p>
-                  <p className="text-red-500 mt-0.5">{error}</p>
+                  <p className="mt-0.5">{error}</p>
                 </div>
-                <button onClick={() => setError(null)} className="text-red-400 hover:text-red-600 transition-colors ml-2 flex-shrink-0">
+                <button onClick={() => setError(null)} className="opacity-60 hover:opacity-100 transition-opacity ml-2 shrink-0">
                   <X className="w-4 h-4" />
                 </button>
               </motion.div>
             )}
             </AnimatePresence>
 
-            {/* Upload Section — 縮小版 */}
+            {/* Upload Section */}
+            <div className="step">
+              <span className="step__n">01</span>
+              <span className="step__label">要翻譯的檔案</span>
+            </div>
             <div 
               onClick={() => fileInputRef.current?.click()}
-              className={`
-                relative group cursor-pointer border-2 border-dashed rounded-2xl p-5 md:p-6 transition-all duration-300
-                ${files.length > 0 ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-400 hover:bg-slate-50/50'}
-              `}
+              className={`group ${files.length > 0 ? 'dropzone dropzone--filled' : 'dropzone'}`}
             >
               <input 
                 type="file" 
@@ -891,15 +903,12 @@ export default function App() {
               />
               
               <div className="flex items-center gap-4">
-                <div className={`
-                  w-10 h-10 rounded-full flex-shrink-0 flex items-center justify-center transition-all duration-500 group-hover:scale-110
-                  ${files.length > 0 ? 'bg-indigo-100 text-indigo-600 shadow-[0_0_12px_rgba(79,70,229,0.2)]' : 'bg-slate-100 text-slate-400'}
-                `}>
+                <div className="filerow__icon">
                   <Upload className="w-5 h-5" />
                 </div>
                 <div>
-                  <p className="text-sm font-medium text-slate-800">點擊或拖拽上傳文件</p>
-                  <p className="text-xs text-slate-400 font-light mt-0.5">支援 .docx, .xlsx, .pdf, .pptx（可多選）</p>
+                  <p className="text-sm font-medium text-[var(--ink)]">選擇檔案，或拖進來</p>
+                  <p className="text-xs text-[var(--muted)] mt-0.5">Word、Excel、PowerPoint、PDF，可一次選多份</p>
                 </div>
               </div>
             </div>
@@ -913,20 +922,20 @@ export default function App() {
                   className="mt-6 space-y-2"
                 >
                   {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
-                    <div className="p-4 bg-amber-50 border border-amber-200 rounded-xl flex items-start gap-3 mb-4">
-                      <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
-                      <div className="text-sm text-amber-800">
+                    <div className="note note--brass mb-4">
+                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                      <div>
                         <p className="font-bold mb-1">PDF 翻譯注意事項</p>
                         <p>系統目前僅能擷取 PDF 中的「純文字」進行翻譯，將會**遺失原有的表格與排版**。若為揃描檔或圖片 PDF，系統會自動啟用 OCR (光學字元辨識) 進行處理，但辨識可能需要較長時間。若您的 PDF 包含表格或特殊字體（可能導致亂碼），強烈建議您先將其轉換為 Word 或 Excel 檔案後再進行翻譯。</p>
                       </div>
                     </div>
                   )}
                   <div className="flex justify-between items-center px-1 mb-2">
-                    <span className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">待處理檔案 ({files.length})</span>
+                    <span className="text-[13px] font-semibold text-[var(--ink)]">待處理檔案 ({files.length})</span>
                     {status === 'idle' && (
                       <button 
                         onClick={() => setFiles([])}
-                        className="text-[10px] text-red-500 hover:underline"
+                        className="text-xs text-[var(--alert)] hover:underline"
                       >
                         全部清除
                       </button>
@@ -938,30 +947,30 @@ export default function App() {
                       initial={{ opacity: 0, x: -10 }}
                       animate={{ opacity: 1, x: 0 }}
                       exit={{ opacity: 0, x: 10 }}
-                      className="flex items-center justify-between p-4 bg-white/60 rounded-2xl border border-white hover:bg-white hover:shadow-sm transition-all"
+                      className="filerow"
                     >
                       <div className="flex items-center gap-4 min-w-0">
-                        <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600 shadow-sm">
+                        <div className="filerow__icon">
                           {f.name.endsWith('.docx') && <FileText className="w-5 h-5" />}
                           {f.name.endsWith('.xlsx') && <FileSpreadsheet className="w-5 h-5" />}
                           {f.name.endsWith('.pdf') && <FileIcon className="w-5 h-5" />}
                           {f.name.endsWith('.pptx') && <Presentation className="w-5 h-5" />}
                         </div>
                         <div className="min-w-0">
-                          <p className="text-sm font-medium text-slate-800 truncate">{f.name}</p>
-                          <p className="text-[10px] text-slate-500 font-light">{(f.size / 1024).toFixed(1)} KB</p>
+                          <p className="text-sm font-medium text-[var(--ink)] truncate">{f.name}</p>
+                          <p className="num text-[10px] text-[var(--muted)] mt-0.5">{(f.size / 1024).toFixed(1)} KB</p>
                         </div>
                       </div>
                       
                       <div className="flex items-center gap-4">
                         {status !== 'idle' && status !== 'error' && (
                           <div className="flex flex-col items-end gap-1.5">
-                            <span className="text-[10px] font-mono font-bold text-indigo-600">
+                            <span className="num text-[10px] text-[var(--signal)]">
                               {fileProgress[f.name] || 0}%
                             </span>
-                            <div className="w-16 h-1 bg-slate-200 rounded-full overflow-hidden">
+                            <div className="meter">
                               <div 
-                                className="h-full bg-indigo-500 transition-all duration-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]" 
+                                className="meter__fill" 
                                 style={{ width: `${fileProgress[f.name] || 0}%` }}
                               />
                             </div>
@@ -970,12 +979,12 @@ export default function App() {
                         
                         {status === 'idle' && uploadStatus[f.name] === 'uploading' && (
                           <div className="flex flex-col items-end gap-1.5">
-                            <span className="text-[10px] font-mono font-bold text-blue-500">
+                            <span className="num text-[10px] text-[var(--muted)]">
                               {Math.round(uploadProgress[f.name] || 0)}%
                             </span>
-                            <div className="w-16 h-1 bg-slate-200 rounded-full overflow-hidden">
+                            <div className="meter">
                               <div 
-                                className="h-full bg-blue-500 transition-all duration-200 shadow-[0_0_10px_rgba(59,130,246,0.5)]" 
+                                className="meter__fill" 
                                 style={{ width: `${uploadProgress[f.name] || 0}%` }}
                               />
                             </div>
@@ -984,15 +993,15 @@ export default function App() {
 
                         {status === 'idle' && uploadStatus[f.name] === 'success' && (
                           <div className="flex items-center gap-2">
-                            <span className="text-[10px] text-emerald-600 font-medium bg-emerald-50 px-2 py-1 rounded-full flex items-center gap-1">
+                            <span className="tag tag--signal flex items-center gap-1">
                               <CheckCircle2 className="w-3 h-3" />
                               上傳成功
                             </span>
                             <button 
                               onClick={() => removeFile(idx)}
-                              className="p-2 hover:bg-red-50 rounded-full text-slate-400 hover:text-red-500 transition-all"
+                              className="p-1.5 rounded-[6px] text-[var(--muted)] hover:text-[var(--alert)] hover:bg-[var(--alert-dim)] transition-all"
                             >
-                              <AlertCircle className="w-4 h-4 rotate-45" />
+                              <X className="w-4 h-4" />
                             </button>
                           </div>
                         )}
@@ -1000,15 +1009,15 @@ export default function App() {
                         {status === 'idle' && !uploadStatus[f.name] && (
                           <button 
                             onClick={() => removeFile(idx)}
-                            className="p-2 hover:bg-red-50 rounded-full text-slate-400 hover:text-red-500 transition-all"
+                            className="p-1.5 rounded-[6px] text-[var(--muted)] hover:text-[var(--alert)] hover:bg-[var(--alert-dim)] transition-all"
                           >
-                            <AlertCircle className="w-4 h-4 rotate-45" />
+                            <X className="w-4 h-4" />
                           </button>
                         )}
 
                         {status === 'completed' && fileProgress[f.name] === 100 && (
-                          <div className="w-8 h-8 rounded-full bg-emerald-50 flex items-center justify-center">
-                            <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                          <div className="w-7 h-7 rounded-full bg-[var(--signal-dim)] flex items-center justify-center">
+                            <CheckCircle2 className="w-4 h-4 text-[var(--signal)]" />
                           </div>
                         )}
                       </div>
@@ -1019,44 +1028,41 @@ export default function App() {
             </AnimatePresence>
 
             {/* Settings */}
-            <div className="mt-10 space-y-8">
+            <div className="mt-8 space-y-7">
               <div>
-                <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-3 ml-1">
-                  工廠行業 <span className="text-slate-400 font-normal normal-case tracking-normal">(可選，使翻譯更精準)</span>
-                </label>
+                <div className="step">
+                  <span className="step__n">02</span>
+                  <span className="step__label">產業別<span className="step__hint">　選填，用來校準專有名詞</span></span>
+                </div>
                 <div className="relative">
                   <input
                     type="text"
                     value={industry}
                     onChange={(e) => setIndustry(e.target.value)}
                     placeholder="例如：電子、紡織、汽車..."
-                    className="w-full px-5 py-3.5 rounded-xl border border-slate-200 bg-white/50 focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-400/10 outline-none transition-all text-sm text-slate-800 placeholder:text-slate-400"
+                    className="input"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-4 ml-1">
-                  選擇目標語言 <span className="text-slate-400 font-normal normal-case tracking-normal">(可多選)</span>
-                </label>
+                <div className="step">
+                  <span className="step__n">03</span>
+                  <span className="step__label">翻成哪些語言<span className="step__hint">　可複選</span></span>
+                </div>
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
                   {AVAILABLE_LANGUAGES.map((lang) => (
                     <button
                       key={lang.id}
                       onClick={() => toggleLanguage(lang.name)}
-                      className={`
-                        group relative flex items-center justify-between px-4 py-3.5 rounded-xl border transition-all duration-300
-                        ${selectedLanguages.includes(lang.name) 
-                          ? 'border-indigo-400 bg-indigo-50/80 text-indigo-700 shadow-sm' 
-                          : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30 text-slate-600'}
-                      `}
+                      className={selectedLanguages.includes(lang.name) ? 'chip chip--on' : 'chip'}
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="text-lg">{lang.flag}</span>
-                        <span className="text-xs font-medium tracking-wide">{lang.name}</span>
-                      </div>
+                      <span className="flex items-center gap-2.5">
+                        <span className="text-base">{lang.flag}</span>
+                        <span>{lang.name}</span>
+                      </span>
                       {selectedLanguages.includes(lang.name) && (
-                        <CheckCircle2 className="w-4 h-4 text-indigo-500" />
+                        <CheckCircle2 className="w-4 h-4 text-[var(--signal)]" />
                       )}
                     </button>
                   ))}
@@ -1065,31 +1071,32 @@ export default function App() {
 
               {selectedLanguages.length > 1 && (
                 <div>
-                  <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-4 ml-1">
-                    輸出檔案模式
-                  </label>
+                  <div className="step">
+                    <span className="step__n">04</span>
+                    <span className="step__label">輸出成幾個檔案</span>
+                  </div>
                   <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={`flex items-center gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'combined' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
+                    <label className={outputMode === 'combined' ? 'optcard optcard--on' : 'optcard'}>
                       <input 
                         type="radio" 
                         name="outputMode" 
                         value="combined" 
                         checked={outputMode === 'combined'} 
                         onChange={() => setOutputMode('combined')}
-                        className="w-4 h-4 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
+                        className="w-4 h-4"
                       />
-                      <span className="text-sm font-medium text-slate-700">合併為單一檔案</span>
+                      <span className="optcard__title">合併為單一檔案</span>
                     </label>
-                    <label className={`flex items-center gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${outputMode === 'separate' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
+                    <label className={outputMode === 'separate' ? 'optcard optcard--on' : 'optcard'}>
                       <input 
                         type="radio" 
                         name="outputMode" 
                         value="separate" 
                         checked={outputMode === 'separate'} 
                         onChange={() => setOutputMode('separate')}
-                        className="w-4 h-4 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
+                        className="w-4 h-4"
                       />
-                      <span className="text-sm font-medium text-slate-700">分開為多個檔案</span>
+                      <span className="optcard__title">分開為多個檔案</span>
                     </label>
                   </div>
                 </div>
@@ -1097,38 +1104,39 @@ export default function App() {
 
               {files.some(f => f.name.toLowerCase().endsWith('.pptx')) && (
                 <div>
-                  <label className="block text-xs uppercase tracking-widest font-bold text-slate-500 mb-4 ml-1">
-                    簡報版面模式
-                  </label>
+                  <div className="step">
+                    <span className="step__n">05</span>
+                    <span className="step__label">簡報版面<span className="step__hint">　只影響 PowerPoint</span></span>
+                  </div>
                   <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={`flex items-start gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${pptxLayoutMode === 'append' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
+                    <label className={pptxLayoutMode === 'append' ? 'optcard optcard--on' : 'optcard'}>
                       <input
                         type="radio"
                         name="pptxLayoutMode"
                         value="append"
                         checked={pptxLayoutMode === 'append'}
                         onChange={() => setPptxLayoutMode('append')}
-                        className="w-4 h-4 mt-0.5 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
+                        className="w-4 h-4"
                       />
-                      <span className="text-sm font-medium text-slate-700">
+                      <span className="optcard__title">
                         同頁對照
-                        <span className="block text-xs font-normal text-slate-500 mt-0.5">
+                        <span className="optcard__desc">
                           譯文接在原文下方，頁數不變。文字較多的頁面會自動縮小字級。
                         </span>
                       </span>
                     </label>
-                    <label className={`flex items-start gap-3 px-4 py-3.5 rounded-xl border cursor-pointer transition-all duration-300 flex-1 ${pptxLayoutMode === 'duplicate-slide' ? 'border-indigo-400 bg-indigo-50/80' : 'border-slate-200 bg-white/50 hover:border-indigo-300 hover:bg-indigo-50/30'}`}>
+                    <label className={pptxLayoutMode === 'duplicate-slide' ? 'optcard optcard--on' : 'optcard'}>
                       <input
                         type="radio"
                         name="pptxLayoutMode"
                         value="duplicate-slide"
                         checked={pptxLayoutMode === 'duplicate-slide'}
                         onChange={() => setPptxLayoutMode('duplicate-slide')}
-                        className="w-4 h-4 mt-0.5 text-indigo-600 border-slate-300 bg-white focus:ring-indigo-500"
+                        className="w-4 h-4"
                       />
-                      <span className="text-sm font-medium text-slate-700">
+                      <span className="optcard__title">
                         另加譯文頁
-                        <span className="block text-xs font-normal text-slate-500 mt-0.5">
+                        <span className="optcard__desc">
                           原稿頁保持不動，後面插入一頁純譯文。版面不變形，頁數會變兩倍。
                         </span>
                       </span>
@@ -1141,7 +1149,7 @@ export default function App() {
                 {!user ? (
                   <button
                     onClick={handleLogin}
-                    className="w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:shadow-[0_8px_20px_rgba(99,102,241,0.3)] hover:-translate-y-0.5 active:scale-[0.98]"
+                    className="btn btn--primary"
                   >
                     <LogIn className="w-5 h-5 shrink-0" />
                     <span className="truncate">請先登入以開始翻譯</span>
@@ -1160,7 +1168,7 @@ export default function App() {
                         setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。');
                       }
                     }}
-                    className="w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3 bg-gradient-to-r from-amber-500 to-orange-500 text-white hover:shadow-[0_8px_20px_rgba(245,158,11,0.3)] hover:-translate-y-0.5 active:scale-[0.98]"
+                    className="btn btn--brass"
                   >
                     <AlertCircle className="w-5 h-5 shrink-0" />
                     <span className="truncate">請先驗證 Email 以開始翻譯</span>
@@ -1169,12 +1177,7 @@ export default function App() {
                   <button
                     disabled={files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading}
                     onClick={processFiles}
-                    className={`
-                      w-full h-[56px] md:h-[64px] rounded-2xl font-semibold text-sm tracking-widest uppercase transition-all duration-500 flex items-center justify-center gap-3
-                      ${files.length === 0 || selectedLanguages.length === 0 || status === 'processing' || status === 'translating' || status === 'generating' || isUploading
-                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed border border-slate-200'
-                        : 'bg-gradient-to-r from-indigo-600 to-violet-600 text-white hover:shadow-[0_8px_20px_rgba(99,102,241,0.3)] hover:-translate-y-0.5 active:scale-[0.98]'}
-                    `}
+                    className="btn btn--primary"
                   >
                     {status === 'idle' && (
                       <>
@@ -1208,7 +1211,7 @@ export default function App() {
                 {(status === 'processing' || status === 'translating' || status === 'generating') && (
                   <button
                     onClick={cancelTranslation}
-                    className="w-full h-[48px] rounded-[20px] font-medium text-red-500 hover:bg-red-50 transition-all text-sm border border-red-200"
+                    className="btn btn--quiet"
                   >
                     取消翻譯
                   </button>
@@ -1227,6 +1230,24 @@ export default function App() {
 
           </div>
         </motion.div>
+
+        {/* 預覽欄：捲動時固定，讓選項一改就看得到結果 */}
+        <motion.aside
+          initial={{ opacity: 0, y: 16 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.22 }}
+          className="lg:sticky lg:top-6 space-y-3"
+        >
+          <OutputPreview
+            languages={selectedLanguages}
+            layoutMode={pptxLayoutMode}
+            hasPptx={files.some(f => f.name.toLowerCase().endsWith('.pptx'))}
+          />
+          <p className="text-xs text-[var(--muted)] leading-relaxed px-1">
+            示意圖，實際字級會依原檔的版面自動調整。表格內的譯文會縮小，避免撐開欄高。
+          </p>
+        </motion.aside>
+        </div>
       </div>
     </div>
     </ErrorBoundary>

@@ -22,7 +22,7 @@ export const DeletedModal: React.FC<DeletedModalProps> = ({ isOpen, onClose }) =
               <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <AlertCircle className="w-8 h-8 text-red-600" />
               </div>
-              <h3 className="text-xl font-bold text-slate-900 mb-2">帳號已被刪除</h3>
+              <h3 className="text-xl font-bold text-[var(--ink)] mb-2">帳號已被刪除</h3>
               <p className="text-slate-600 mb-6">
                 此帳號已被管理員刪除。若要繼續使用，請重新註冊。
               </p>
