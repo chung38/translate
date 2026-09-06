@@ -8,7 +8,7 @@ import {
   signInWithPopup,
   signInWithRedirect,
   getRedirectResult,
-  isMobileDevice,
+  // isMobileDevice 已不再需要（改用 popup，不分裝置）
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
   updateProfile,
@@ -160,31 +160,40 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     setAuthLoading(true);
     setError(null);
     try {
-      if (isMobileDevice()) {
-        await signInWithRedirect(auth, googleProvider);
-        return;
-      } else {
-        await signInWithPopup(auth, googleProvider);
-        onClose();
-        if (onSuccess) onSuccess();
-      }
+      // 手機不要再用 signInWithRedirect。
+      // Firebase 的 redirect 流程靠一個連到 <專案>.firebaseapp.com 的跨來源 iframe
+      // 把登入結果傳回來，但本站在 pages.dev、authDomain 在 firebaseapp.com，不同源。
+      // Safari 16.1+、Chrome 115+、Firefox 109+ 會擋掉這種第三方儲存存取，
+      // 症狀就是：Google 那邊帳號選完、跳回網站卻仍然是未登入狀態。
+      // popup 走 window.postMessage，不受這個限制，現在的手機瀏覽器都支援。
+      await signInWithPopup(auth, googleProvider);
+      onClose();
+      if (onSuccess) onSuccess();
     } catch (err: any) {
       if (err.code === 'auth/popup-closed-by-user') return;
       if (err.code === 'auth/cancelled-popup-request') return;
-      
+
+      // 少數瀏覽器會擋 popup，這時才退回 redirect
+      if (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment') {
+        try {
+          await signInWithRedirect(auth, googleProvider);
+          return;
+        } catch {
+          setError('這個瀏覽器擋住了 Google 登入視窗。請改用帳號密碼登入，或換 Chrome / Safari 開啟本頁。');
+          return;
+        }
+      }
+
       console.error('Google login error:', err);
       let msg = 'Google 登入失敗';
-      if (err.code === 'auth/popup-blocked') msg = '彈出視窗被封鎖，請允許彈出視窗或改用帳密登入';
-      else if (err.code === 'auth/unauthorized-domain') msg = '此網域未授權，請聯繫管理員';
+      if (err.code === 'auth/unauthorized-domain') msg = '此網域未授權，請聯繫管理員';
       else if (err.code === 'auth/disallowed-useragent' || (err.message && err.message.includes('disallowed_useragent'))) {
         msg = '您的瀏覽器不支援 Google 登入，請改用系統預設瀏覽器開啟本頁面。';
         setInWebView(true);
       }
       setError(msg);
     } finally {
-      if (!isMobileDevice()) {
-        setAuthLoading(false);
-      }
+      setAuthLoading(false);
     }
   };
 
@@ -385,7 +394,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                         <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
                       </svg>
                     )}
-                    {inWebView ? 'Google 登入（不支援此環境）' : authLoading ? '跳轉至 Google 登入中...' : 'Google 登入'}
+                    {inWebView ? 'Google 登入（不支援此環境）' : authLoading ? '登入中...' : 'Google 登入'}
                   </button>
 
                   <div className="mt-8 text-center">
