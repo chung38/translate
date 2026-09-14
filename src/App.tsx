@@ -134,7 +134,9 @@ export default function App() {
     isCancelledRef,
     saveToFirestore,
     translateBatch,
-    cancelTranslation
+    cancelTranslation,
+    qualityIssues,
+    clearQualityIssues
   } = useTranslation(user);
 
   const [reloadCounter, setReloadCounter] = useState(0);
@@ -617,11 +619,14 @@ export default function App() {
     try {
       setStatus('processing');
       setError(null);
+      clearQualityIssues();
       setProgress(0);
       setFileProgress({});
       isCancelledRef.current = false;
 
       const filesToProcess = [...files];
+      const failedFiles: { name: string; reason: string }[] = [];
+      let succeededCount = 0;
       setProcessingFiles(filesToProcess);
       for (let i = 0; i < filesToProcess.length; i++) {
         if (isCancelledRef.current) break;
@@ -666,17 +671,35 @@ export default function App() {
             }
           }
 
+          succeededCount++;
           setFiles(prev => prev.filter(f => f !== currentFile));
         } catch (fileErr) {
           console.error(`處理檔案 ${currentFile.name} 時發生錯誤:`, fileErr);
-          setError(`處理 ${currentFile.name} 時發生錯誤: ${fileErr instanceof Error ? fileErr.message : '未知錯誤'}`);
+          failedFiles.push({
+            name: currentFile.name,
+            reason: fileErr instanceof Error ? fileErr.message : '未知錯誤',
+          });
         }
       }
-      
+
       if (!isCancelledRef.current) {
-        setStatus('completed');
-        setStatusMessage('所有翻譯已完成！');
-        setProgress(100);
+        // 有檔案失敗時不能再顯示「全部完成」，否則畫面會同時出現錯誤和完成
+        if (failedFiles.length > 0) {
+          setError(
+            failedFiles.map(f => `${f.name}：${f.reason}`).join('\n')
+          );
+          setStatus('error');
+          setStatusMessage(
+            succeededCount > 0
+              ? `完成 ${succeededCount} 份，${failedFiles.length} 份失敗`
+              : `${failedFiles.length} 份檔案都沒有成功`
+          );
+          setProgress(0);
+        } else {
+          setStatus('completed');
+          setStatusMessage('所有翻譯已完成！');
+          setProgress(100);
+        }
       }
     } catch (err) {
       console.error(err);
@@ -877,7 +900,7 @@ export default function App() {
                 <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                 <div className="flex-1">
                   <p className="font-medium">發生錯誤</p>
-                  <p className="mt-0.5">{error}</p>
+                  <p className="mt-0.5 whitespace-pre-line">{error}</p>
                 </div>
                 <button onClick={() => setError(null)} className="opacity-60 hover:opacity-100 transition-opacity ml-2 shrink-0">
                   <X className="w-4 h-4" />
@@ -885,6 +908,35 @@ export default function App() {
               </motion.div>
             )}
             </AnimatePresence>
+
+            {qualityIssues.length > 0 && (
+              <div className="note note--brass mb-4">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-bold mb-1">
+                    有 {qualityIssues.length} 段建議人工確認
+                  </p>
+                  <p className="mb-1">
+                    這些段落重翻兩次後仍疑似沒有翻到（常見於人名、品牌、料號，或原文本來就是外文）。
+                    檔案已經正常產出，這些段落維持原樣。
+                  </p>
+                  <ul className="list-disc pl-4 space-y-0.5">
+                    {qualityIssues.slice(0, 10).map((issue, i) => (
+                      <li key={i}>[{issue.lang}] {issue.source}</li>
+                    ))}
+                  </ul>
+                  {qualityIssues.length > 10 && (
+                    <p className="mt-1">…等共 {qualityIssues.length} 段</p>
+                  )}
+                </div>
+                <button
+                  onClick={() => clearQualityIssues()}
+                  className="opacity-60 hover:opacity-100 transition-opacity ml-2 shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
 
             {/* Upload Section */}
             <div className="step">
