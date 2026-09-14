@@ -38,7 +38,7 @@ import { DeletedModal } from './components/DeletedModal';
 import { UserProfile } from './types';
 import { useTranslation } from './hooks/useTranslation';
 import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
-import type { PptxLayoutMode } from './utils/documentProcessors';
+import type { PptxLayoutMode, PdfLayoutMode } from './utils/documentProcessors';
 import { OutputPreview } from './components/OutputPreview';
 import { 
   auth, 
@@ -113,6 +113,8 @@ export default function App() {
   const [outputMode, setOutputMode] = useState<'combined' | 'separate'>('combined');
   // PPTX 版面模式：append = 同一頁雙語對照；duplicate-slide = 另外插一頁純譯文
   const [pptxLayoutMode, setPptxLayoutMode] = useState<PptxLayoutMode>('append');
+  // PDF 版面模式：compare = 原文／譯文對照條列；duplicate-page = 一頁原檔、一頁翻譯
+  const [pdfLayoutMode, setPdfLayoutMode] = useState<PdfLayoutMode>('duplicate-page');
   const [industry, setIndustry] = useState('');
   const [uploadProgress, setUploadProgress] = useState<Record<string, number>>({});
   const [uploadStatus, setUploadStatus] = useState<Record<string, 'uploading' | 'success' | 'error'>>({});
@@ -648,7 +650,7 @@ export default function App() {
               results = await processExcel(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
               break;
             case 'pdf':
-              results = await processPdf(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode);
+              results = await processPdf(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode, pdfLayoutMode);
               break;
             case 'pptx':
               results = await processPptx(currentFile, selectedLanguages, industry, translateBatch, updateFileProgress, isCancelledRef, outputMode, pptxLayoutMode);
@@ -926,7 +928,7 @@ export default function App() {
                       <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                       <div>
                         <p className="font-bold mb-1">PDF 翻譯注意事項</p>
-                        <p>系統目前僅能擷取 PDF 中的「純文字」進行翻譯，將會**遺失原有的表格與排版**。若為揃描檔或圖片 PDF，系統會自動啟用 OCR (光學字元辨識) 進行處理，但辨識可能需要較長時間。若您的 PDF 包含表格或特殊字體（可能導致亂碼），強烈建議您先將其轉換為 Word 或 Excel 檔案後再進行翻譯。</p>
+                        <p>PDF 無法像 Word 一樣直接改寫內文，系統是擷取文字翻譯後另外產生版面。選「一頁原檔一頁翻譯」時，原稿頁會原樣保留（轉成圖片），後面插入一頁依原位置排版的譯文頁；選「對照條列」則是整份重排成原文／譯文清單。若為掃描檔或圖片 PDF，系統會自動啟用 OCR（光學字元辨識），辨識需要較長時間，且位置可能不精準。表格密集或特殊字體的檔案，仍建議先轉成 Word 或 Excel 再翻譯。</p>
                       </div>
                     </div>
                   )}
@@ -1144,7 +1146,52 @@ export default function App() {
                   </div>
                 </div>
               )}
-              
+
+              {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
+                <div>
+                  <div className="step">
+                    <span className="step__n">
+                      {files.some(f => f.name.toLowerCase().endsWith('.pptx')) ? '06' : '05'}
+                    </span>
+                    <span className="step__label">PDF 版面<span className="step__hint">　只影響 PDF</span></span>
+                  </div>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <label className={pdfLayoutMode === 'duplicate-page' ? 'optcard optcard--on' : 'optcard'}>
+                      <input
+                        type="radio"
+                        name="pdfLayoutMode"
+                        value="duplicate-page"
+                        checked={pdfLayoutMode === 'duplicate-page'}
+                        onChange={() => setPdfLayoutMode('duplicate-page')}
+                        className="w-4 h-4"
+                      />
+                      <span className="optcard__title">
+                        一頁原檔一頁翻譯
+                        <span className="optcard__desc">
+                          原稿頁原樣保留，後面插入一頁譯文，譯文放在原文的相同位置。頁數會變兩倍。
+                        </span>
+                      </span>
+                    </label>
+                    <label className={pdfLayoutMode === 'compare' ? 'optcard optcard--on' : 'optcard'}>
+                      <input
+                        type="radio"
+                        name="pdfLayoutMode"
+                        value="compare"
+                        checked={pdfLayoutMode === 'compare'}
+                        onChange={() => setPdfLayoutMode('compare')}
+                        className="w-4 h-4"
+                      />
+                      <span className="optcard__title">
+                        原文譯文對照條列
+                        <span className="optcard__desc">
+                          整份重排成「一行原文、一行譯文」的清單，不保留原始版面。適合只要看文字內容。
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+              )}
+
               <div className="flex flex-col gap-3 pt-6">
                 {!user ? (
                   <button
