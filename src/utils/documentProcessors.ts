@@ -63,9 +63,58 @@ const countScripts = (text: string): ScriptCounts => {
 };
 
 // 「夠多」的定義：佔比 ≥ 30%，或絕對字數 ≥ 10。
-// 這樣像「多說好話、多做好事、多幫助別人 Say good things, do good deeds...」
-// 這種中英混排的句子，翻英文時會被判定為已經有英文而跳過。
-const isSubstantial = (n: number, total: number) => n > 0 && (n / total >= 0.3 || n >= 10);
+const isSubstantial = (n: number, total: number) =>
+  n > 0 && (n / total >= 0.3 || n >= 10);
+
+// 印尼文與英文都使用拉丁字母，不能只靠字母比例辨識。
+// 以下常見功能詞可排除 Interlock、LOTO、HMI 等英文技術詞造成的誤判。
+const INDONESIAN_HINT_WORDS = new Set([
+  'yang', 'dan', 'untuk', 'dengan', 'dari', 'pada', 'tidak', 'akan',
+  'dalam', 'karena', 'jika', 'atau', 'sebagai', 'adalah', 'juga', 'ini',
+  'itu', 'harus', 'dapat', 'saat', 'setelah', 'sebelum', 'agar', 'oleh',
+  'kepada', 'ketika', 'semua', 'kami', 'anda', 'mereka', 'pekerja',
+  'pekerjaan', 'keselamatan', 'kesehatan', 'mesin', 'bahaya', 'peralatan',
+  'perlindungan', 'pelindung', 'karyawan', 'perusahaan', 'lingkungan',
+  'melakukan', 'menggunakan', 'memastikan', 'terjadi', 'berada', 'secara'
+]);
+
+const ENGLISH_HINT_WORDS = new Set([
+  'the', 'and', 'of', 'to', 'in', 'is', 'are', 'for', 'with', 'this',
+  'that', 'from', 'by', 'as', 'on', 'be', 'must', 'should', 'can', 'will',
+  'when', 'if', 'or', 'not', 'have', 'has', 'after', 'before', 'during',
+  'into', 'your', 'you', 'workers', 'safety', 'machine', 'equipment',
+  'protection', 'hazard'
+]);
+
+const getLatinWords = (text: string): string[] =>
+  stripTags(text || '')
+    .normalize('NFC')
+    .toLowerCase()
+    .match(/[a-z\u00c0-\u024f\u1e00-\u1eff]+/g) || [];
+
+// 保守辨識：誤判成「已有譯文」會造成漏翻，因此不確定時寧可再翻一次。
+const looksLikeLatinLanguage = (
+  text: string,
+  hintWords: Set<string>,
+  minimumHits = 2
+): boolean => {
+  const plain = stripTags(text || '').trim();
+  if (!plain) return false;
+
+  const counts = countScripts(plain);
+  const words = getLatinWords(plain);
+  if (words.length < 2 || counts.latin === 0) return false;
+
+  const hits = words.reduce((sum, word) => sum + (hintWords.has(word) ? 1 : 0), 0);
+  if (hits < minimumHits) return false;
+
+  const latinShare = counts.total > 0 ? counts.latin / counts.total : 0;
+  if (latinShare < 0.35) return false;
+
+  if (hits >= 4) return true;
+  if (minimumHits === 1 && words.length >= 6 && latinShare >= 0.55) return true;
+  return hits / words.length >= 0.12;
+};
 
 export const alreadyHasLanguage = (text: string, lang: string): boolean => {
   const plain = stripTags(text || '').trim();
@@ -79,9 +128,8 @@ export const alreadyHasLanguage = (text: string, lang: string): boolean => {
     case 'ko': return isSubstantial(c.hangul, c.total);
     case 'th': return isSubstantial(c.thai, c.total);
     case 'vi': return c.viet > 0 && isSubstantial(c.latin, c.total);
-    // 英文/印尼文都是無附加符號的拉丁字母，用越南文附加符號排除誤判
-    case 'en':
-    case 'id': return c.viet === 0 && isSubstantial(c.latin, c.total);
+    case 'id': return c.viet === 0 && looksLikeLatinLanguage(plain, INDONESIAN_HINT_WORDS);
+    case 'en': return c.viet === 0 && looksLikeLatinLanguage(plain, ENGLISH_HINT_WORDS, 1);
     default: return false;
   }
 };
@@ -105,7 +153,12 @@ export const neededLanguages = (text: string, targetLanguages: string[]) =>
 // 回傳以 id 為 key 的結果，取代原本用陣列位置對應 —— 位置對應只要 API 少回
 // 一筆，後面所有段落都會錯位。
 export const translateItemsByLanguage = async (
-  items: { id: string; text: string; scopeText?: string }[],
+  items: {
+    id: string;
+    text: string;
+    scopeText?: string;
+    scopeTexts?: string[];
+  }[],
   targetLanguages: string[],
   industry: string,
   translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
@@ -117,9 +170,14 @@ export const translateItemsByLanguage = async (
 
   for (const item of items) {
     out.set(item.id, {});
-    // scopeText = 判斷範圍（同一個文字方塊 / 儲存格 / 相鄰段落），
-    // 因為原檔常見的排法是「中文一段、越南文另一段」，只看單段抓不到。
-    const needed = neededLanguages(item.scopeText ?? item.text, targetLanguages);
+    // scopeTexts 會讓相鄰段落分開辨識，避免中文與英文技術詞串接後
+    // 被誤認成印尼文；其他檔案格式仍可沿用單一 scopeText。
+    const scopes = item.scopeTexts?.length
+      ? item.scopeTexts
+      : [item.scopeText ?? item.text];
+    const needed = targetLanguages.filter(
+      lang => !scopes.some(scope => alreadyHasLanguage(scope, lang))
+    );
     if (needed.length === 0) continue;   // 這個範圍已經有目標語言 → 完全不送 API
     const key = needed.join('\u0001');
     if (!groups.has(key)) groups.set(key, []);
@@ -147,10 +205,12 @@ export const translateItemsByLanguage = async (
         slices.push(slice);
         promises.push(
           translateBatch(slice.map(s => s.text), langs, industry).then(res => {
-            // API 少回或多回都會讓後面錯位，補齊/截斷到原長度
-            const fixed = res.slice(0, slice.length);
-            while (fixed.length < slice.length) fixed.push({});
-            return fixed;
+            if (res.length !== slice.length) {
+              throw new Error(
+                `翻譯回傳筆數不一致：送出 ${slice.length} 段，實際收到 ${res.length} 段`
+              );
+            }
+            return res;
           })
         );
       }
@@ -975,19 +1035,20 @@ export const processDocx = async (
 
   updateProgress(30, 'translating');
 
-  // 判斷範圍取「前一段 + 本段 + 後一段」——雙語文件常見的排法是
-  // 中文一段、譯文緊接著下一段，只看單段抓不到原檔已有的譯文。
-  const docxScopeText = (i: number) => {
+  // DOCX 的相鄰段落要分開判斷，不能先串成同一段。
+  // 只檢查本段與下一段：原檔常見「中文 → 譯文」排列；不看上一段可避免
+  // 「上一題的印尼文」讓下一題尚未翻譯的中文被錯誤跳過。
+  const docxScopeTexts = (i: number): string[] => {
     const cur = textsToTranslate[i];
-    return [textsToTranslate[i - 1], cur, textsToTranslate[i + 1]]
-      .filter(t => t && t.file === cur.file)
+    return [cur, textsToTranslate[i + 1]]
+      .filter((t): t is typeof cur => !!t && t.file === cur.file)
       .map(t => stripTags(t.text))
-      .join('\n');
+      .filter(Boolean);
   };
 
   // 已經含有目標語言的段落不會送 API，結果以 markerId 對應而非陣列位置
   const translationsById = await translateItemsByLanguage(
-    textsToTranslate.map((t, i) => ({ id: t.markerId, text: t.text, scopeText: docxScopeText(i) })),
+    textsToTranslate.map((t, i) => ({ id: t.markerId, text: t.text, scopeTexts: docxScopeTexts(i) })),
     targetLanguages, industry, translateBatch, isCancelledRef,
     (done, total) => updateProgress(30 + (done / total) * 50)
   );
@@ -1038,10 +1099,10 @@ export const processDocx = async (
           }
 
           let appendedRuns = '';
-          const currentScope = docxScopeText(textsToTranslate.indexOf(currentItem));
+          const currentScopes = docxScopeTexts(textsToTranslate.indexOf(currentItem));
           langs.forEach(lang => {
-            // 這附近本來就已經有這個語言 → 不重複附加
-            if (alreadyHasLanguage(currentScope, lang)) return;
+            // 本段或緊接的下一段已有該語言 → 不重複附加
+            if (currentScopes.some(scope => alreadyHasLanguage(scope, lang))) return;
             const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
             if (isEchoTranslation(currentItem.text, translatedText)) return;
