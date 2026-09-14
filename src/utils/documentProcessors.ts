@@ -1477,6 +1477,28 @@ export const processExcel = async (
   return generatedFiles;
 };
 
+// ─────────────────────────────────────────────────────────────
+// PDF 版面模式
+//   'compare'        = 目前的做法：整份重新排版成「原文 + 譯文」條列（沒有原頁畫面）
+//   'duplicate-page' = 一頁原檔、一頁翻譯：原稿頁原樣轉成圖片，
+//                      後面插入一頁「依原位置排版」的純譯文頁。
+// ─────────────────────────────────────────────────────────────
+export type PdfLayoutMode = 'compare' | 'duplicate-page';
+
+export const PDF_LAYOUT = {
+  mode: 'compare' as PdfLayoutMode,
+  pageImageScale: 2,        // 原稿頁轉圖的解析度倍率（越大越清楚、檔案越大）
+  pageImageQuality: 0.82,   // 原稿頁 JPEG 品質
+  textCanvasScale: 2,       // 譯文頁畫布倍率
+  minFontSize: 5,           // 譯文最小字級 (pt)
+  shrinkFloor: 0.45,        // 譯文最多縮到原字級的幾成（還是塞不下才會再往下縮）
+  lineHeightRatio: 1.15,    // 譯文換行行高
+  rightMargin: 12,          // 譯文可用寬度保留的右邊界
+  maxBlockLines: 6,         // 單一區塊最多允許展開幾行（避免蓋掉下一段）
+  ghostBackground: true,    // 譯文頁要不要墊一層很淡的原頁底圖（方便對照表格線、圖片位置）
+  ghostOpacity: 0.08,
+};
+
 export const processPdf = async (
   file: File,
   targetLanguages: string[],
@@ -1484,7 +1506,9 @@ export const processPdf = async (
   translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
   updateProgress: (p: number, status?: TranslationStatus) => void,
   isCancelledRef: React.MutableRefObject<boolean>,
-  outputMode: 'combined' | 'separate' = 'combined'
+  outputMode: 'combined' | 'separate' = 'combined',
+  // 版面模式：由畫面上的選項傳入，沒傳就沿用 PDF_LAYOUT.mode
+  layoutMode: PdfLayoutMode = PDF_LAYOUT.mode
 ): Promise<{ blob: Blob; name: string }[]> => {
   updateProgress(5, 'processing');
 
@@ -1566,7 +1590,7 @@ export const processPdf = async (
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       const ctx = canvas.getContext('2d')!;
-      await page.render({ canvasContext: ctx, viewport }).promise;
+      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
 
       const { createWorker } = await import('tesseract.js');
       const worker = await createWorker('chi_tra+eng');
@@ -1594,10 +1618,13 @@ export const processPdf = async (
 
   const allLineTexts: string[] = [];
   const linePageIdx: number[] = [];
+  // 每一頁自己的區塊清單（保留原始座標），「一頁原檔一頁翻譯」模式要靠它排版
+  const pageBlocks: { line: TextLine; gi: number }[][] = pages.map(() => []);
 
   for (let pi = 0; pi < pages.length; pi++) {
     for (const line of pages[pi].lines) {
       if (line.text.trim()) {
+        pageBlocks[pi].push({ line, gi: allLineTexts.length });
         allLineTexts.push(line.text);
         linePageIdx.push(pi);
       }
@@ -1654,6 +1681,208 @@ export const processPdf = async (
 
   const generatedFiles: { blob: Blob; name: string }[] = [];
 
+  const CJK_FONT_STACK = 'Arial, "Noto Sans TC", "Microsoft JhengHei", "Noto Sans Thai", sans-serif';
+  const fontFor = (size: number, bold = false) =>
+    `${bold ? 'bold ' : ''}${size}pt ${CJK_FONT_STACK}`;
+
+  // 依寬度換行：英數字整個單字不拆，中文/泰文逐字拆
+  const wrapByWidth = (
+    ctx: CanvasRenderingContext2D,
+    text: string,
+    maxWidth: number
+  ): string[] => {
+    if (maxWidth <= 0) return [text];
+    if (ctx.measureText(text).width <= maxWidth) return [text];
+    const tokens = text.match(/[A-Za-z0-9@._%+\-/]+|\s+|[\s\S]/g) || [text];
+    const out: string[] = [];
+    let cur = '';
+    for (const tk of tokens) {
+      const next = cur + tk;
+      if (cur && ctx.measureText(next).width > maxWidth) {
+        out.push(cur.replace(/\s+$/, ''));
+        cur = tk.replace(/^\s+/, '');
+      } else {
+        cur = next;
+      }
+    }
+    if (cur.trim()) out.push(cur.replace(/\s+$/, ''));
+    return out.length ? out : [text];
+  };
+
+  // ── 「依原位置排版」的譯文頁 ───────────────────────────────
+  // 把每一段譯文畫在原文原本的座標上，字級自動縮到塞得進原本的空間。
+  const drawTranslatedPage = (
+    pageIdx: number,
+    langs: string[],
+    ghost?: HTMLImageElement | null
+  ): HTMLCanvasElement => {
+    const { pdfWidth: PW, pdfHeight: PH } = pages[pageIdx];
+    const S = PDF_LAYOUT.textCanvasScale;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(PW * S));
+    canvas.height = Math.max(1, Math.round(PH * S));
+    const ctx = canvas.getContext('2d')!;
+    ctx.scale(S, S);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, PW, PH);
+
+    // 墊一層很淡的原稿底圖，對照表格線、圖片位置時比較好認
+    if (ghost && PDF_LAYOUT.ghostBackground) {
+      ctx.save();
+      ctx.globalAlpha = PDF_LAYOUT.ghostOpacity;
+      ctx.drawImage(ghost, 0, 0, PW, PH);
+      ctx.restore();
+    }
+
+    ctx.textBaseline = 'alphabetic';
+
+    const blocks = pageBlocks[pageIdx];
+
+    for (let k = 0; k < blocks.length; k++) {
+      const { line, gi } = blocks[k];
+      const translations = translatedLines[gi] || {};
+
+      // 這一段可以用的垂直空間 = 到下一段原文之間的距離
+      const nextY = k + 1 < blocks.length ? blocks[k + 1].line.y : 12;
+      const rawGap = line.y - nextY;
+      const gapBelow = Math.min(
+        Math.max(rawGap, line.fontSize * 1.05),
+        line.fontSize * PDF_LAYOUT.maxBlockLines
+      );
+      const slotH = gapBelow / Math.max(1, langs.length);
+
+      const availW = Math.max(60, PW - line.x - PDF_LAYOUT.rightMargin);
+      let cursorBaseline = PH - line.y;   // PDF 座標由下往上，畫布由上往下
+
+      langs.forEach((lang, langIdx) => {
+        const text = (translations[lang] || '').trim();
+        if (!text) return;
+
+        const color = TRANS_COLORS[langIdx % TRANS_COLORS.length];
+        let textX = line.x;
+        let labelW = 0;
+
+        let fs = Math.max(
+          PDF_LAYOUT.minFontSize,
+          Math.min(line.fontSize, slotH / PDF_LAYOUT.lineHeightRatio)
+        );
+        const floor = Math.max(PDF_LAYOUT.minFontSize, line.fontSize * PDF_LAYOUT.shrinkFloor);
+
+        if (langs.length > 1) {
+          ctx.font = fontFor(Math.max(PDF_LAYOUT.minFontSize, fs - 1), true);
+          labelW = ctx.measureText(`[${lang}] `).width;
+        }
+
+        // 先縮字級試著塞進這段的空間，塞不下再換行
+        let wrapped: string[] = [];
+        for (;;) {
+          ctx.font = fontFor(fs);
+          wrapped = wrapByWidth(ctx, text, availW - labelW);
+          const maxLines = Math.max(1, Math.floor(slotH / (fs * PDF_LAYOUT.lineHeightRatio)));
+          if (wrapped.length <= maxLines) break;
+          if (fs <= PDF_LAYOUT.minFontSize) break;
+          fs = Math.max(PDF_LAYOUT.minFontSize, fs - (fs > floor ? 0.5 : 0.25));
+        }
+
+        if (langs.length > 1) {
+          ctx.font = fontFor(Math.max(PDF_LAYOUT.minFontSize, fs - 1), true);
+          ctx.fillStyle = color;
+          ctx.fillText(`[${lang}] `, textX, cursorBaseline);
+          textX += ctx.measureText(`[${lang}] `).width + 1;
+        }
+
+        ctx.font = fontFor(fs);
+        ctx.fillStyle = color;
+        wrapped.forEach((w, wi) => {
+          ctx.fillText(w, wi === 0 ? textX : line.x, cursorBaseline);
+          cursorBaseline += fs * PDF_LAYOUT.lineHeightRatio;
+        });
+
+        // 下一個語言從這裡接著往下（至少空出一個 slot）
+        cursorBaseline = Math.max(
+          cursorBaseline,
+          (PH - line.y) + (langIdx + 1) * slotH
+        );
+      });
+    }
+
+    // 頁尾標記，方便對照
+    ctx.font = fontFor(7);
+    ctx.fillStyle = '#9ca3af';
+    const tag = `譯文　第 ${pageIdx + 1} / ${pages.length} 頁`;
+    ctx.fillText(tag, PW - ctx.measureText(tag).width - 16, PH - 10);
+
+    return canvas;
+  };
+
+  // ── 模式一：一頁原檔、一頁翻譯 ─────────────────────────────
+  if (layoutMode === 'duplicate-page') {
+    const docs: any[] = langGroups.map(() => null);
+
+    for (let pi = 0; pi < pages.length; pi++) {
+      if (isCancelledRef.current) throw new Error('Cancelled');
+
+      const { pdfWidth: PW, pdfHeight: PH } = pages[pi];
+      const orient: 'landscape' | 'portrait' = PW > PH ? 'landscape' : 'portrait';
+
+      // 1) 原稿頁：整頁原樣算圖（表格、圖片、版面都保留）
+      const pg = await pdf.getPage(pi + 1);
+      const vp = pg.getViewport({ scale: PDF_LAYOUT.pageImageScale });
+      const oc = document.createElement('canvas');
+      oc.width = Math.max(1, Math.round(vp.width));
+      oc.height = Math.max(1, Math.round(vp.height));
+      const octx = oc.getContext('2d')!;
+      octx.fillStyle = '#ffffff';
+      octx.fillRect(0, 0, oc.width, oc.height);
+      await pg.render({ canvas: oc, canvasContext: octx, viewport: vp }).promise;
+      const origImg = oc.toDataURL('image/jpeg', PDF_LAYOUT.pageImageQuality);
+      oc.width = 0;
+      oc.height = 0;
+      (pg as any).cleanup?.();
+
+      let ghost: HTMLImageElement | null = null;
+      if (PDF_LAYOUT.ghostBackground) {
+        try {
+          ghost = await new Promise<HTMLImageElement>((resolve, reject) => {
+            const im = new Image();
+            im.onload = () => resolve(im);
+            im.onerror = reject;
+            im.src = origImg;
+          });
+        } catch {
+          ghost = null;
+        }
+      }
+
+      // 2) 每一種語言組合各自輸出一份
+      for (let g = 0; g < langGroups.length; g++) {
+        if (!docs[g]) {
+          docs[g] = new jsPDF({ orientation: orient, unit: 'pt', format: [PW, PH] });
+        } else {
+          docs[g].addPage([PW, PH], orient);
+        }
+        docs[g].addImage(origImg, 'JPEG', 0, 0, PW, PH);
+
+        docs[g].addPage([PW, PH], orient);
+        const tCanvas = drawTranslatedPage(pi, langGroups[g], ghost);
+        docs[g].addImage(tCanvas.toDataURL('image/png'), 'PNG', 0, 0, PW, PH, undefined, 'FAST');
+        tCanvas.width = 0;
+        tCanvas.height = 0;
+      }
+
+      updateProgress(70 + ((pi + 1) / pages.length) * 30);
+    }
+
+    for (let g = 0; g < langGroups.length; g++) {
+      const prefix = outputMode === 'separate' ? `${langGroups[g][0]}_` : 'translated_';
+      generatedFiles.push({ blob: docs[g].output('blob'), name: `${prefix}${file.name}` });
+    }
+
+    updateProgress(100, 'completed');
+    return generatedFiles;
+  }
+
+  // ── 模式二（原本的做法）：整份重排成原文／譯文對照條列 ──────
   for (const langs of langGroups) {
     if (isCancelledRef.current) throw new Error('Cancelled');
 
@@ -1682,7 +1911,7 @@ export const processPdf = async (
       }
       doc.setFillColor(255, 255, 255);
       doc.rect(0, 0, pw, ph, 'F');
-      doc.addImage(tc.toDataURL('image/png'), 'PNG', 0, 0, pw, ph);
+      doc.addImage(tc.toDataURL('image/png'), 'PNG', 0, 0, pw, ph, undefined, 'FAST');
     };
 
     let isFirstPdfPage = true;
