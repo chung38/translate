@@ -213,6 +213,21 @@ export const useTranslation = (
     }
   };
 
+  // 把一批文字拆成兩半分別翻，再接回來（順序不變）
+  const splitAndTranslate = async (
+    texts: string[],
+    targetLangs: string[],
+    industry: string,
+    qualityRetryCount: number
+  ): Promise<Record<string, string>[]> => {
+    const mid = Math.ceil(texts.length / 2);
+    const [head, tail] = await Promise.all([
+      translateBatch(texts.slice(0, mid), targetLangs, industry, 0, qualityRetryCount),
+      translateBatch(texts.slice(mid), targetLangs, industry, 0, qualityRetryCount),
+    ]);
+    return [...head, ...tail];
+  };
+
   const translateBatch = async (
     texts: string[],
     targetLangs: string[],
@@ -345,6 +360,14 @@ export const useTranslation = (
       }
 
       if (parsed.translations.length !== texts.length) {
+        // 模型偶爾會漏掉（或多回）一筆，整批重送通常還是會漏在同一個地方。
+        // 改成拆成兩半分別翻，拆到最後一筆時就不可能對不齊。
+        if (texts.length > 1) {
+          console.warn(
+            `[Translation] 回傳筆數不一致：要求 ${texts.length} 筆、收到 ${parsed.translations.length} 筆，改成拆半重翻`
+          );
+          return await splitAndTranslate(texts, targetLangs, industry, qualityRetryCount);
+        }
         throw new Error(
           `API 回傳筆數不一致：要求 ${texts.length} 筆，實際收到 ${parsed.translations.length} 筆`
         );
@@ -449,8 +472,20 @@ export const useTranslation = (
       }
 
       if (isJsonError) {
-        // 結構不完整（筆數對不上、JSON 壞掉）時禁止生成看似成功、實際漏翻的文件。
-        throw err;
+        // 結構不完整時，先拆半再試一次；真的只剩一筆還是壞的，
+        // 就保留原文並列入「建議人工確認」，不要讓整份檔案直接失敗。
+        if (texts.length > 1) {
+          console.warn('[Translation] 結構持續異常，改成拆半重翻');
+          return await splitAndTranslate(texts, targetLangs, industry, qualityRetryCount);
+        }
+        console.warn('[Translation] 單筆結構持續異常，保留原文：', texts[0]);
+        reportQualityIssues(
+          targetLangs.map(lang => ({
+            lang,
+            source: stripAllTags(texts[0] || '').trim().slice(0, 60),
+          }))
+        );
+        return [Object.fromEntries(targetLangs.map(lang => [lang, texts[0] || ''])) as Record<string, string>];
       }
 
       if (isAuthError) {
