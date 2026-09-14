@@ -1495,9 +1495,58 @@ export const PDF_LAYOUT = {
   lineHeightRatio: 1.15,    // 譯文換行行高
   rightMargin: 12,          // 譯文可用寬度保留的右邊界
   maxBlockLines: 6,         // 單一區塊最多允許展開幾行（避免蓋掉下一段）
-  ghostBackground: true,    // 譯文頁要不要墊一層很淡的原頁底圖（方便對照表格線、圖片位置）
-  ghostOpacity: 0.08,
+  ghostBackground: true,    // 譯文頁要不要墊一層原頁底圖（方便對照表格線、圖片位置）
+  ghostOpacity: 0.28,       // 底圖濃度，太高會吃掉譯文可讀性
+  textBackdrop: true,       // 譯文下面墊一層半透明白底，深色底圖也看得清楚
+  textBackdropAlpha: 0.86,
+  // ── OCR（沒有文字層的掃描檔／簡報圖）────────────────────
+  ocrRenderScale: 2.5,        // OCR 用的解析度倍率，越大越準也越慢
+  ocrMinConfidence: 55,     // 低於這個信心的行直接丟掉（多半是圖形雜訊）
+  ocrDarkPageLuma: 110,     // 頁面平均亮度低於此值 → 深色底，OCR 前先反相
+  ocrMinChars: 2,           // 太短的行不要（單一符號多半是雜訊）
+  ocrColumnGapRatio: 0.06,  // 同一行中字距超過頁寬的幾成就視為另一欄，切開來
 };
+
+// OCR 常常把線條、圖示辨識成「( / oN / A > / WY」這種碎片。
+// 只留下「看得懂的字元佔多數」而且信心夠高的行。
+const isUsableOcrText = (text: string, confidence: number): boolean => {
+  const clean = (text || '').trim();
+  if (clean.length < PDF_LAYOUT.ocrMinChars) return false;
+  if (confidence < PDF_LAYOUT.ocrMinConfidence) return false;
+
+  const meaningful = (clean.match(/[\u3400-\u9fff\u0e00-\u0e7fA-Za-z0-9]/g) || []).length;
+  const visible = clean.replace(/\s/g, '').length || 1;
+  if (meaningful / visible < 0.6) return false;
+
+  // 沒有中文／泰文時，至少要有一個 3 個字母以上的字或 3 位以上數字，
+  // 否則像「ZZ 7」「A >」「| ve」這種圖形碎片會被當成文字
+  if (!/[\u3400-\u9fff\u0e00-\u0e7f]/.test(clean) && !/[A-Za-z]{3,}/.test(clean) && !/\d{3,}/.test(clean)) {
+    return false;
+  }
+  return true;
+};
+
+// 把 OCR 的幾個字合併成一段，並算出這一段的外框
+const CJK_EDGE_RE = /[\u3400-\u9fff\u3000-\u303f\uff00-\uffef]/;
+
+const joinOcrWords = (words: any[]) =>
+  words.reduce((acc: string, word: any, index: number) => {
+    const text = word.text || '';
+    if (index === 0) return text;
+    // 中文字之間不要補空白，英數字之間才要
+    const needSpace = !CJK_EDGE_RE.test(acc.slice(-1)) && !CJK_EDGE_RE.test(text.charAt(0));
+    return acc + (needSpace ? ' ' : '') + text;
+  }, '');
+
+const mergeOcrWords = (words: any[]) => ({
+  text: joinOcrWords(words),
+  bbox: {
+    x0: Math.min(...words.map(w => w.bbox.x0)),
+    y0: Math.min(...words.map(w => w.bbox.y0)),
+    x1: Math.max(...words.map(w => w.bbox.x1)),
+    y1: Math.max(...words.map(w => w.bbox.y1)),
+  },
+});
 
 export const processPdf = async (
   file: File,
@@ -1531,6 +1580,7 @@ export const processPdf = async (
     x: number;
     text: string;
     fontSize: number;
+    width?: number;   // 這一行原本佔多寬，用來判斷上下行是不是同一欄
   }
 
   interface PageData {
@@ -1552,10 +1602,12 @@ export const processPdf = async (
       const x = item.transform[4];
       const y = item.transform[5];
       const fontSize = Math.abs(item.transform[3]) || 12;
+      const itemWidth = typeof item.width === 'number' ? item.width : 0;
       const match = lines.find(
         l => Math.abs(l.y - y) < Math.max(l.fontSize, fontSize) * 0.6
       );
       if (match) {
+        match.width = Math.max(match.width || 0, x + itemWidth - Math.min(match.x, x));
         const needSpace =
           x > match.x && !match.text.endsWith(' ') && !item.str.startsWith(' ');
         match.text = x < match.x
@@ -1564,7 +1616,7 @@ export const processPdf = async (
         if (x < match.x) match.x = x;
         match.fontSize = Math.max(match.fontSize, fontSize);
       } else {
-        lines.push({ y, x, text: item.str, fontSize });
+        lines.push({ y, x, text: item.str, fontSize, width: itemWidth });
       }
     }
     return lines.sort((a, b) => b.y - a.y);
@@ -1584,23 +1636,108 @@ export const processPdf = async (
 
     if (textContent.items.map((i: any) => i.str || '').join('').trim().length < 20) {
       console.log(`Page ${pageNum}: 文字稀少，改用 OCR`);
-      const RENDER_SCALE = 2.0;
+      const RENDER_SCALE = PDF_LAYOUT.ocrRenderScale;
       const viewport = page.getViewport({ scale: RENDER_SCALE });
       const canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      const ctx = canvas.getContext('2d')!;
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
       await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+
+      // 深色底的投影片（白字黑底）直接丟給 OCR 幾乎都會變雜訊，先反相
+      let ocrSource: HTMLCanvasElement = canvas;
+      try {
+        const sample = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < sample.data.length; i += 4 * 16) {
+          sum += 0.299 * sample.data[i] + 0.587 * sample.data[i + 1] + 0.114 * sample.data[i + 2];
+          count++;
+        }
+        const luma = count ? sum / count : 255;
+        if (luma < PDF_LAYOUT.ocrDarkPageLuma) {
+          console.log(`Page ${pageNum}: 深色底 (亮度 ${Math.round(luma)})，OCR 前先反相`);
+          const inverted = document.createElement('canvas');
+          inverted.width = canvas.width;
+          inverted.height = canvas.height;
+          const ictx = inverted.getContext('2d')!;
+          ictx.filter = 'invert(1) grayscale(1)';
+          ictx.drawImage(canvas, 0, 0);
+          ocrSource = inverted;
+        }
+      } catch (lumaErr) {
+        console.warn('亮度偵測失敗，直接送原圖給 OCR', lumaErr);
+      }
 
       const { createWorker } = await import('tesseract.js');
       const worker = await createWorker('chi_tra+eng');
-      await (worker as any).setParameters({ tessedit_pageseg_mode: '11' });
-      const { data: { text } } = await worker.recognize(canvas);
+      // PSM 3 = 自動分析版面。原本的 11（稀疏文字）在圖形投影片上會產生大量雜訊行
+      await (worker as any).setParameters({
+        tessedit_pageseg_mode: '3',
+        preserve_interword_spaces: '1',
+      });
+      const { data } = await worker.recognize(ocrSource, {}, { blocks: true, text: true });
       await worker.terminate();
-      lines = text
-        .split('\n')
-        .filter(l => l.trim())
-        .map((t, i) => ({ y: origVp.height - i * 16, x: 0, text: t, fontSize: 12 }));
+
+      // 有 bbox 就照原圖位置擺，沒有才退回「從上往下排」的舊做法
+      const ocrLines: TextLine[] = [];
+      const blocks = (data as any).blocks || [];
+      for (const block of blocks) {
+        for (const paragraph of block.paragraphs || []) {
+          for (const line of paragraph.lines || []) {
+            // 投影片常常左右兩欄在同一個水平線上，OCR 會併成一行。
+            // 字距太大就切開，譯文才不會橫跨整頁。
+            const columnGap = origVp.width * PDF_LAYOUT.ocrColumnGapRatio * RENDER_SCALE;
+            const words = (line.words || []).filter((w: any) => (w.text || '').trim());
+            const segments: { text: string; bbox: any }[] = [];
+
+            if (words.length > 0) {
+              let current: any[] = [words[0]];
+              for (let wi = 1; wi < words.length; wi++) {
+                const prev = words[wi - 1];
+                const word = words[wi];
+                if (word.bbox.x0 - prev.bbox.x1 > columnGap) {
+                  segments.push(mergeOcrWords(current));
+                  current = [word];
+                } else {
+                  current.push(word);
+                }
+              }
+              segments.push(mergeOcrWords(current));
+            } else if (line.bbox) {
+              segments.push({ text: line.text || '', bbox: line.bbox });
+            }
+
+            for (const segment of segments) {
+              const text = (segment.text || '').replace(/\s+/g, ' ').trim();
+              if (!isUsableOcrText(text, line.confidence ?? 0)) continue;
+              const bbox = segment.bbox;
+              if (!bbox) continue;
+              const height = (bbox.y1 - bbox.y0) / RENDER_SCALE;
+              ocrLines.push({
+                x: bbox.x0 / RENDER_SCALE,
+                // TextLine.y 跟 PDF 一樣由下往上算
+                y: origVp.height - bbox.y1 / RENDER_SCALE,
+                text,
+                fontSize: Math.max(6, Math.min(48, height * 0.82)),
+                width: (bbox.x1 - bbox.x0) / RENDER_SCALE,
+              });
+            }
+          }
+        }
+      }
+
+      if (ocrLines.length > 0) {
+        lines = ocrLines.sort((a, b) => b.y - a.y);
+      } else {
+        lines = (data.text || '')
+          .split('\n')
+          .map(t => t.replace(/\s+/g, ' ').trim())
+          .filter(t => isUsableOcrText(t, 100))
+          .map((t, i) => ({ y: origVp.height - i * 16, x: 0, text: t, fontSize: 12 }));
+      }
     }
 
     pages.push({
@@ -1742,11 +1879,23 @@ export const processPdf = async (
       const { line, gi } = blocks[k];
       const translations = translatedLines[gi] || {};
 
-      // 這一段可以用的垂直空間 = 到下一段原文之間的距離
-      const nextY = k + 1 < blocks.length ? blocks[k + 1].line.y : 12;
+      // 這一段可以用的垂直空間 = 到「同一欄」下一段原文之間的距離。
+      // 投影片常常左右分欄，用全頁的下一行會把空間算成 0。
+      const lineWidth = line.width && line.width > 0 ? line.width : PW - line.x;
+      let nextY = 12;
+      for (let n = k + 1; n < blocks.length; n++) {
+        const other = blocks[n].line;
+        const otherWidth = other.width && other.width > 0 ? other.width : PW - other.x;
+        const overlap =
+          Math.min(line.x + lineWidth, other.x + otherWidth) - Math.max(line.x, other.x);
+        if (overlap > Math.min(lineWidth, otherWidth) * 0.3) {
+          nextY = other.y;
+          break;
+        }
+      }
       const rawGap = line.y - nextY;
       const gapBelow = Math.min(
-        Math.max(rawGap, line.fontSize * 1.05),
+        Math.max(rawGap, PDF_LAYOUT.minFontSize * PDF_LAYOUT.lineHeightRatio),
         line.fontSize * PDF_LAYOUT.maxBlockLines
       );
       const slotH = gapBelow / Math.max(1, langs.length);
@@ -1786,15 +1935,40 @@ export const processPdf = async (
 
         if (langs.length > 1) {
           ctx.font = fontFor(Math.max(PDF_LAYOUT.minFontSize, fs - 1), true);
+          const labelText = `[${lang}] `;
+          if (PDF_LAYOUT.textBackdrop) {
+            ctx.save();
+            ctx.globalAlpha = PDF_LAYOUT.textBackdropAlpha;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(textX - 1.5, cursorBaseline - fs * 0.95, ctx.measureText(labelText).width + 3, fs * 1.2);
+            ctx.restore();
+          }
           ctx.fillStyle = color;
-          ctx.fillText(`[${lang}] `, textX, cursorBaseline);
-          textX += ctx.measureText(`[${lang}] `).width + 1;
+          ctx.fillText(labelText, textX, cursorBaseline);
+          textX += ctx.measureText(labelText).width + 1;
         }
 
         ctx.font = fontFor(fs);
-        ctx.fillStyle = color;
         wrapped.forEach((w, wi) => {
-          ctx.fillText(w, wi === 0 ? textX : line.x, cursorBaseline);
+          const drawX = wi === 0 ? textX : line.x;
+
+          // 先墊一層半透明白底，底圖較深時譯文才看得清楚
+          if (PDF_LAYOUT.textBackdrop) {
+            const wWidth = ctx.measureText(w).width;
+            ctx.save();
+            ctx.globalAlpha = PDF_LAYOUT.textBackdropAlpha;
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(
+              (wi === 0 ? line.x : drawX) - 1.5,
+              cursorBaseline - fs * 0.95,
+              wWidth + (wi === 0 ? textX - line.x : 0) + 3,
+              fs * 1.2
+            );
+            ctx.restore();
+          }
+
+          ctx.fillStyle = color;
+          ctx.fillText(w, drawX, cursorBaseline);
           cursorBaseline += fs * PDF_LAYOUT.lineHeightRatio;
         });
 
