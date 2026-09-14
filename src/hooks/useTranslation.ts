@@ -3,6 +3,7 @@ import { User } from 'firebase/auth';
 import { doc, setDoc, collection, Timestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { jsonrepair } from 'jsonrepair';
+import { langBase } from '../utils/documentProcessors';
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
@@ -29,6 +30,33 @@ const hasExactSameTags = (source: string, target: string) => {
 };
 
 const stripAllTags = (text: string) => text.replace(/\[f\d+\]/g, '').replace(/\[\/f\d+\]/g, '');
+
+const HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+
+const containsHan = (text: string) => HAN_RE.test(stripAllTags(text || ''));
+
+const translationNeedsQualityRetry = (
+  source: string,
+  translated: string,
+  targetLang: string
+): boolean => {
+  const cleanSource = stripAllTags(source || '').trim();
+  const cleanTarget = stripAllTags(translated || '').trim();
+  if (!cleanTarget) return true;
+
+  const base = langBase(targetLang);
+  if (
+    containsHan(cleanSource) &&
+    ['id', 'en', 'vi', 'th'].includes(base) &&
+    containsHan(cleanTarget)
+  ) {
+    return true;
+  }
+
+  const normalizedSource = cleanSource.replace(/\s+/g, ' ').toLowerCase();
+  const normalizedTarget = cleanTarget.replace(/\s+/g, ' ').toLowerCase();
+  return containsHan(cleanSource) && normalizedSource === normalizedTarget;
+};
 
 const rebuildWithSourceTags = (source: string, translated: string) => {
   const srcMatches = [...source.matchAll(/\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g)];
@@ -107,7 +135,13 @@ export const useTranslation = (
     }
   };
 
-  const translateBatch = async (texts: string[], targetLangs: string[], industry: string, retryCount = 0): Promise<Record<string, string>[]> => {
+  const translateBatch = async (
+    texts: string[],
+    targetLangs: string[],
+    industry: string,
+    retryCount = 0,
+    qualityRetryCount = 0
+  ): Promise<Record<string, string>[]> => {
     if (texts.length === 0 || targetLangs.length === 0) return texts.map(() => ({}));
 
     try {
@@ -143,6 +177,10 @@ export const useTranslation = (
          - 若原文中存在連續多個空白字元（例如做為排版或手寫填寫空間的 \`年   月   日\` 或 \`Name:      \`），你**必須**在翻譯結果中原封不動保留對應的大片空白（例如 \`Năm   Tháng   Ngày\`）。
          - **但是！** 若原文是因為排版對齊，而在同一個詞彙的中文字之間插入了空格（例如 \`申  請  人:\` 或 \`工  作  地:\`），當翻譯成拼音語言（如英文、印文、越文）時，**絕對不准**將空格照抄分布到字母之間！請直接輸出正常拼寫的單字（例如輸出 \`Pemohon:\`，**嚴禁**輸出 \`P e m o h o n:\`；輸出 \`Người yêu cầu:\`，**嚴禁**輸出 \`N g ư ờ i  y ê u  c ầ u:\`）。
       12. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
+      13. **完整翻譯檢查：**
+         - 原文中的中文正文必須完整翻譯，不得因為句子內含英文專有名詞、設備名稱、縮寫或型號而略過其餘中文。
+         - Interlock、LOTO、HMI、AUTO、MANUAL、VETO、Human Limits 等術語可依語意保留，但周圍所有中文必須完整翻譯。
+         - 若目標語言為印尼文，譯文不得殘留中文字，也禁止出現「jika 不幸 menimbulkan」這類中印混雜內容。
 
       待翻譯內容陣列：
       ${JSON.stringify(texts)}`;
@@ -228,6 +266,12 @@ export const useTranslation = (
         throw new Error('API 回傳格式不正確 (缺少 translations 陣列)');
       }
 
+      if (parsed.translations.length !== texts.length) {
+        throw new Error(
+          `API 回傳筆數不一致：要求 ${texts.length} 筆，實際收到 ${parsed.translations.length} 筆`
+        );
+      }
+
       console.log('=== API RAW JSON OUTPUT ===');
       console.log(JSON.stringify(parsed.translations, null, 2));
       console.log('===========================');
@@ -255,11 +299,63 @@ export const useTranslation = (
         return newItem;
       });
 
+      // 中文殘留或空白譯文只重翻有問題的段落，最多兩次。
+      const MAX_QUALITY_RETRIES = 2;
+      if (qualityRetryCount < MAX_QUALITY_RETRIES) {
+        for (const lang of targetLangs) {
+          const badIndices = normalizedTranslations
+            .map((item, index) =>
+              translationNeedsQualityRetry(texts[index] || '', item[lang] || '', lang)
+                ? index
+                : -1
+            )
+            .filter(index => index >= 0);
+
+          if (badIndices.length === 0) continue;
+
+          console.warn(
+            `[Translation QA] ${lang} 有 ${badIndices.length} 段不完整，進行第 ${qualityRetryCount + 1} 次重翻：`,
+            badIndices
+          );
+
+          const retried = await translateBatch(
+            badIndices.map(index => texts[index]),
+            [lang],
+            industry,
+            0,
+            qualityRetryCount + 1
+          );
+
+          badIndices.forEach((originalIndex, retryIndex) => {
+            const retryValue = retried[retryIndex]?.[lang];
+            if (retryValue) normalizedTranslations[originalIndex][lang] = retryValue;
+          });
+        }
+      }
+
+      const remainingProblems: string[] = [];
+      normalizedTranslations.forEach((item, index) => {
+        targetLangs.forEach(lang => {
+          if (translationNeedsQualityRetry(texts[index] || '', item[lang] || '', lang)) {
+            remainingProblems.push(`第 ${index + 1} 段 / ${lang}`);
+          }
+        });
+      });
+
+      if (remainingProblems.length > 0) {
+        throw new Error(
+          `翻譯品質檢查未通過：${remainingProblems.slice(0, 10).join('、')}${
+            remainingProblems.length > 10 ? ` 等共 ${remainingProblems.length} 段` : ''
+          }`
+        );
+      }
+
       return normalizedTranslations;
     } catch (err: any) {
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
       const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
-      const isJsonError = err?.message?.includes('無法解析 API 回傳的 JSON 格式') || err?.message?.includes('API 回傳格式不正確') || err?.message?.includes('Invalid JSON from server');
+      const isJsonError = err?.message?.includes('無法解析 API 回傳的 JSON 格式') || err?.message?.includes('API 回傳格式不正確') || err?.message?.includes('API 回傳筆數不一致') || err?.message?.includes('翻譯回傳筆數不一致') || err?.message?.includes('Invalid JSON from server');
+      const isQualityError = err?.message?.includes('翻譯品質檢查未通過');
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
 
       if ((isRateLimit || isNetworkError || isJsonError) && retryCount < 10) {
@@ -269,7 +365,12 @@ export const useTranslation = (
 
         console.warn(`DeepSeek ${isRateLimit ? 'Rate limit' : isJsonError ? 'JSON Parse Error' : 'Network error'} hit. Waiting ${Math.round(waitTime / 1000)}s... (Attempt ${retryCount + 1})`);
         await sleep(waitTime);
-        return translateBatch(texts, targetLangs, industry, retryCount + 1);
+        return translateBatch(texts, targetLangs, industry, retryCount + 1, qualityRetryCount);
+      }
+
+      if (isQualityError || isJsonError) {
+        // 結構或品質不完整時禁止生成看似成功、實際漏翻的文件。
+        throw err;
       }
 
       if (isAuthError) {
@@ -277,11 +378,7 @@ export const useTranslation = (
       }
 
       console.error(`DeepSeek Batch translation error:`, err);
-      return texts.map(() => {
-        const errorResult: Record<string, string> = {};
-        targetLangs.forEach(lang => errorResult[lang] = `(翻譯出錯: ${err?.message || 'API 錯誤'})`);
-        return errorResult;
-      });
+      throw err instanceof Error ? err : new Error(err?.message || '翻譯服務發生未知錯誤');
     }
   };
 
