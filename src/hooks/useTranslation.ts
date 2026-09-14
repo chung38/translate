@@ -32,8 +32,38 @@ const hasExactSameTags = (source: string, target: string) => {
 const stripAllTags = (text: string) => text.replace(/\[f\d+\]/g, '').replace(/\[\/f\d+\]/g, '');
 
 const HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/;
+const HAN_RE_G = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]/g;
+const LATIN_RE = /[A-Za-z]/;
+const THAI_RE = /[\u0e00-\u0e7f]/;
 
 const containsHan = (text: string) => HAN_RE.test(stripAllTags(text || ''));
+
+const countHan = (text: string) => (text.match(HAN_RE_G) || []).length;
+const countVisible = (text: string) => text.replace(/\s/g, '').length;
+const hanRatio = (text: string) => countHan(text) / (countVisible(text) || 1);
+
+// 譯文裡允許殘留多少比例的漢字。人名、品牌、料號、分機號碼本來就不該翻，
+// 例如「Wakil Manajer 阮敬喬 5116」漢字只佔 15%，屬於正常結果。
+const MAX_TARGET_HAN_RATIO = 0.4;
+
+// 譯文若保留了原文八成以上的漢字，代表這段其實沒翻（或只翻了一半）
+const MAX_RETAINED_HAN_RATIO = 0.8;
+
+// 譯文裡連續漢字最多允許幾個。人名、品牌通常 2～5 字，
+// 連續 6 字以上多半是整句沒翻到。
+const MAX_HAN_RUN = 5;
+
+const longestHanRun = (text: string) => {
+  const runs: string[] = text.match(/[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/g) ?? [];
+  return runs.reduce((max: number, run: string) => Math.max(max, run.length), 0);
+};
+
+// 譯文裡有沒有出現目標語言該有的字母（拉丁字母／泰文字）
+const hasTargetScript = (text: string, base: string) => {
+  if (base === 'th') return THAI_RE.test(text);
+  if (['id', 'en', 'vi'].includes(base)) return LATIN_RE.test(text);
+  return true;
+};
 
 const translationNeedsQualityRetry = (
   source: string,
@@ -44,19 +74,45 @@ const translationNeedsQualityRetry = (
   const cleanTarget = stripAllTags(translated || '').trim();
   if (!cleanTarget) return true;
 
-  const base = langBase(targetLang);
-  if (
-    containsHan(cleanSource) &&
-    ['id', 'en', 'vi', 'th'].includes(base) &&
-    containsHan(cleanTarget)
-  ) {
-    return true;
-  }
+  // 原文本來就沒有中文（已經是外文、或純數字符號）→ 沒有漏翻的問題
+  if (!containsHan(cleanSource)) return false;
 
   const normalizedSource = cleanSource.replace(/\s+/g, ' ').toLowerCase();
   const normalizedTarget = cleanTarget.replace(/\s+/g, ' ').toLowerCase();
-  return containsHan(cleanSource) && normalizedSource === normalizedTarget;
+
+  // 原封不動退回原文：只有在原文「以中文為主」時才算漏翻。
+  // 像「• 林逸軒　5102」這種只有姓名和分機的行，照抄回來才是正確結果。
+  if (normalizedSource === normalizedTarget) {
+    return hanRatio(cleanSource) > MAX_TARGET_HAN_RATIO;
+  }
+
+  const base = langBase(targetLang);
+  if (!['id', 'en', 'vi', 'th'].includes(base)) return false;
+
+  const sourceHanCount = countHan(cleanSource);
+  const targetHanCount = countHan(cleanTarget);
+  if (targetHanCount === 0) return false;
+
+  // 原文的漢字幾乎原封不動留在譯文裡 → 這段根本沒翻（或只翻了一半）
+  if (sourceHanCount > 0 && targetHanCount / sourceHanCount >= MAX_RETAINED_HAN_RATIO) {
+    return true;
+  }
+
+  // 譯文裡有一整串沒斷過的中文 → 多半是整句沒翻到
+  if (longestHanRun(cleanTarget) > MAX_HAN_RUN) return true;
+
+  // 譯文已經寫成目標語言，只是夾了少量漢字（人名／品牌／料號）→ 視為正常
+  if (hasTargetScript(cleanTarget, base) && hanRatio(cleanTarget) <= MAX_TARGET_HAN_RATIO) {
+    return false;
+  }
+
+  return true;
 };
+
+export interface QualityIssue {
+  lang: string;
+  source: string;
+}
 
 const rebuildWithSourceTags = (source: string, translated: string) => {
   const srcMatches = [...source.matchAll(/\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g)];
@@ -113,7 +169,29 @@ export const useTranslation = (
   const [progress, setProgress] = useState(0);
   const [fileProgress, setFileProgress] = useState<Record<string, number>>({});
   const [error, setError] = useState<string | null>(null);
+  // 品質檢查沒過的段落：不再中斷整份翻譯，改成收集起來讓畫面提示人工確認
+  const [qualityIssues, setQualityIssues] = useState<QualityIssue[]>([]);
+  const qualityIssuesRef = useRef<QualityIssue[]>([]);
   const isCancelledRef = useRef(false);
+
+  const clearQualityIssues = () => {
+    qualityIssuesRef.current = [];
+    setQualityIssues([]);
+  };
+
+  const reportQualityIssues = (issues: QualityIssue[]) => {
+    if (issues.length === 0) return;
+    const seen = new Set(qualityIssuesRef.current.map(i => `${i.lang}||${i.source}`));
+    const added = issues.filter(i => {
+      const key = `${i.lang}||${i.source}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    if (added.length === 0) return;
+    qualityIssuesRef.current = [...qualityIssuesRef.current, ...added].slice(0, 200);
+    setQualityIssues(qualityIssuesRef.current);
+  };
 
   const saveToFirestore = async (fileName: string, translatedName: string, type: string, targetLanguages: string[], industry: string) => {
     if (!user) return;
@@ -333,21 +411,24 @@ export const useTranslation = (
         }
       }
 
-      const remainingProblems: string[] = [];
+      // 兩次重翻之後還是沒過的段落：保留現有內容（空白就退回原文），
+      // 並記錄下來讓畫面提示，不再整份中斷。
+      const unresolved: QualityIssue[] = [];
       normalizedTranslations.forEach((item, index) => {
+        const sourceText = texts[index] || '';
         targetLangs.forEach(lang => {
-          if (translationNeedsQualityRetry(texts[index] || '', item[lang] || '', lang)) {
-            remainingProblems.push(`第 ${index + 1} 段 / ${lang}`);
+          if (translationNeedsQualityRetry(sourceText, item[lang] || '', lang)) {
+            if (!stripAllTags(item[lang] || '').trim()) {
+              item[lang] = sourceText;
+            }
+            unresolved.push({ lang, source: stripAllTags(sourceText).trim().slice(0, 60) });
           }
         });
       });
 
-      if (remainingProblems.length > 0) {
-        throw new Error(
-          `翻譯品質檢查未通過：${remainingProblems.slice(0, 10).join('、')}${
-            remainingProblems.length > 10 ? ` 等共 ${remainingProblems.length} 段` : ''
-          }`
-        );
+      if (unresolved.length > 0) {
+        console.warn('[Translation QA] 以下段落品質檢查未通過，已保留現有內容：', unresolved);
+        reportQualityIssues(unresolved);
       }
 
       return normalizedTranslations;
@@ -355,7 +436,6 @@ export const useTranslation = (
       const isRateLimit = err?.message?.includes('429') || JSON.stringify(err).includes('429');
       const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
       const isJsonError = err?.message?.includes('無法解析 API 回傳的 JSON 格式') || err?.message?.includes('API 回傳格式不正確') || err?.message?.includes('API 回傳筆數不一致') || err?.message?.includes('翻譯回傳筆數不一致') || err?.message?.includes('Invalid JSON from server');
-      const isQualityError = err?.message?.includes('翻譯品質檢查未通過');
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
 
       if ((isRateLimit || isNetworkError || isJsonError) && retryCount < 10) {
@@ -368,8 +448,8 @@ export const useTranslation = (
         return translateBatch(texts, targetLangs, industry, retryCount + 1, qualityRetryCount);
       }
 
-      if (isQualityError || isJsonError) {
-        // 結構或品質不完整時禁止生成看似成功、實際漏翻的文件。
+      if (isJsonError) {
+        // 結構不完整（筆數對不上、JSON 壞掉）時禁止生成看似成功、實際漏翻的文件。
         throw err;
       }
 
@@ -408,6 +488,8 @@ export const useTranslation = (
     isCancelledRef,
     saveToFirestore,
     translateBatch,
-    cancelTranslation
+    cancelTranslation,
+    qualityIssues,
+    clearQualityIssues
   };
 };
