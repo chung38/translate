@@ -841,11 +841,15 @@ export const isWellFormedXml = (xml: string) => {
   }
 };
 
-export const sanitizeOutputText = (text: string, lang: string) => {
+export const sanitizeOutputText = (text: string, lang: string, preserveTagIds?: Set<number>) => {
   let cleaned = stripInvalidXmlChars(text).normalize('NFC').replace(/[·‧•]/g, ' ').replace(/\u00A0/g, ' ');
   const base = langBase(lang);
   if (base === 'vi' || base === 'th' || base === 'en' || base === 'id') {
-    cleaned = cleaned.replace(/\[f\d+\]\s*\[\/f\d+\]/g, '');
+    // 空標籤通常是模型留下的垃圾，但「排版空白」的標籤要留著，
+    // 否則表頭右邊的「年　月」會黏到句尾
+    cleaned = cleaned.replace(/\[f(\d+)\]\s*\[\/f\d+\]/g, (m, id) =>
+      preserveTagIds?.has(parseInt(id, 10)) ? m : ''
+    );
     
     if (base === 'vi') {
        const VOWELS = /[aAáÁàÀãÃảẢạẠăĂắẮằẰẵẴẳẲặẶâÂấẤầẦẫẪẩẨậẬeEéÉèÈẽẼẻẺẹẸêÊếẾềỀễỄểỂệỆiIíÍìÌĩĨỉỈịỊoOóÓòÒõÕỏỎọỌôÔốỐồỒỗỖổỔộỘơƠớỚờỜỡỠởỞợỢuUúÚùÙũŨủỦụỤưƯứỨừỪữỮửỬựỰyYýÝỳỲỹỸỷỶỵỴ]/;
@@ -949,7 +953,27 @@ function parseDocxParagraphRuns(pBlock: string, unescapeXml: (s: string) => stri
     }
   }
 
-  return runs;
+  return splitLayoutSpaceRuns(runs);
+}
+
+// 表單用來把右邊欄位推過去的大片空白，獨立成自己的 run（也就是自己的 [f] 標籤），
+// 這樣譯文才有辦法把它原樣還原 —— 混在文字裡的話模型一定會壓成一個空格，
+// 「年　月」就會黏到句尾去。
+const LAYOUT_GAP_SPLIT = /([ \u3000]{3,})/;
+
+function splitLayoutSpaceRuns(runs: DocxRun[]): DocxRun[] {
+  const out: DocxRun[] = [];
+  for (const run of runs) {
+    if (run.isBr || !LAYOUT_GAP_SPLIT.test(run.text)) {
+      out.push(run);
+      continue;
+    }
+    for (const part of run.text.split(LAYOUT_GAP_SPLIT)) {
+      if (part === '') continue;
+      out.push({ rPr: run.rPr, normRPr: run.normRPr, text: part });
+    }
+  }
+  return out;
 }
 
 // 將 runs 陣列轉成帶 [f0]...[/f0] tag 的字串
@@ -1171,6 +1195,31 @@ export const mergeVerticalLabelCells = (content: string): string =>
     return out;
   });
 
+
+// ── 表單排版用的大片空白 ────────────────────────────────────────────────
+// 「使用單位: 生產部    設備名稱: …            年    月」這種表頭是用一長串
+// 空白把右邊的欄位推過去的。模型幾乎一定會把它壓成一個空格，譯文的「年 月」
+// 就會黏在句尾。這裡改成照原文的空白貼回去，並依譯文變長的幅度等比縮短，
+// 讓右邊的欄位大致回到原位又不會撐破那一行。
+const displayWidth = (text: string) =>
+  [...(text || '')].reduce(
+    (w, ch) => w + (/[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uff60]/.test(ch) ? 2 : 1),
+    0
+  );
+
+const isLayoutSpaceRun = (text: string) => /^[ \u3000]{2,}$/.test(text || '');
+
+// 譯文比原文長多少，就從排版空白裡扣掉多少（最少留一個空白）
+const layoutSpaceShrinkRatio = (originalPlain: string, translatedPlain: string, runs: { isBr?: boolean; text: string }[]) => {
+  const spaceWidth = runs
+    .filter(r => !r.isBr && isLayoutSpaceRun(r.text))
+    .reduce((sum, r) => sum + r.text.length, 0);
+  if (spaceWidth === 0) return 1;
+  const extra = displayWidth(translatedPlain) - displayWidth(originalPlain);
+  if (extra <= 0) return 1;
+  return Math.max(0, (spaceWidth - extra) / spaceWidth);
+};
+
 export const processDocx = async (
   file: File, 
   targetLanguages: string[],
@@ -1335,7 +1384,12 @@ export const processDocx = async (
             // 本段或緊接的下一段已有該語言 → 不重複附加
             if (!stillNeedsLanguage(stripTags(currentItem.text), currentScopes, lang)) return;
             const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
-            const translatedText = sanitizeOutputText(rawTranslatedText, lang);
+            const layoutSpaceTagIds = new Set(
+              currentItem.runs
+                .map((run, index) => (!run.isBr && isLayoutSpaceRun(run.text) ? index : -1))
+                .filter(index => index >= 0)
+            );
+            const translatedText = sanitizeOutputText(rawTranslatedText, lang, layoutSpaceTagIds);
             if (isEchoTranslation(currentItem.text, translatedText)) return;
             
             // 換行分隔
@@ -1344,6 +1398,11 @@ export const processDocx = async (
             const isNarrowCell = /data-narrow="1"/.test(pBlock);
             const fitRPr = (r: string) => (isNarrowCell ? shrinkDocxRPrFontSize(r) : r);
             const defaultRPr = fitRPr(adjustXmlRPrForLanguage(longestRun.rPr, lang, 'docx'));
+            const spaceRatio = layoutSpaceShrinkRatio(
+              stripTags(currentItem.text),
+              stripTags(translatedText),
+              currentItem.runs
+            );
             const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
             let fMatch: RegExpExecArray | null;
             let lastIndex = 0;
@@ -1370,6 +1429,11 @@ export const processDocx = async (
                 if (text === '\n' || text.includes('\n')) {
                   appendedRuns += `<w:r><w:br/></w:r>`;
                 }
+              } else if (originalRun && isLayoutSpaceRun(originalRun.text)) {
+                // 排版用的空白：用原文的空白（依譯文長度縮短），不要用模型回傳的
+                const keep = Math.max(1, Math.round(originalRun.text.length * spaceRatio));
+                const rPr = fitRPr(adjustXmlRPrForLanguage(originalRun.rPr, lang, 'docx'));
+                appendedRuns += `<w:r>${rPr}<w:t xml:space="preserve">${' '.repeat(keep)}</w:t></w:r>`;
               } else if (text && text !== '\n') {
                 const rPr = fitRPr(adjustXmlRPrForLanguage(originalRun ? originalRun.rPr : longestRun.rPr, lang, 'docx'));
                 const finalText = stripTags(text);
