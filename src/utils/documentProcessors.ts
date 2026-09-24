@@ -144,6 +144,28 @@ export const isEchoTranslation = (source: string, translated: string) => {
   return !b || b === normalizeForCompare(source);
 };
 
+// 純數字、代碼、符號（表格裡的 1、2、3、○、╳）本來就沒有東西可以翻。
+// 這跟「已經是目標語言」是兩回事，不能混為一談。
+export const hasNoTranslatableText = (text: string) => {
+  const plain = stripTags(text || '').trim();
+  if (!plain) return true;
+  return countScripts(plain).total === 0;
+};
+
+// 這一段在「自己 + 相鄰段落」的範圍內還需不需要翻成 lang。
+// 相鄰段落只有在「真的是目標語言的譯文」時才算數；隔壁是純數字（表格的
+// 1、2、3）不能讓這一段被跳過。
+export const stillNeedsLanguage = (ownText: string, scopes: string[], lang: string) => {
+  if (alreadyHasLanguage(ownText, lang)) return false;
+  const ownKey = normalizeForCompare(ownText);
+  return !scopes.some(
+    scope =>
+      normalizeForCompare(scope) !== ownKey &&
+      !hasNoTranslatableText(scope) &&
+      alreadyHasLanguage(scope, lang)
+  );
+};
+
 // 這一項還缺哪些語言
 export const neededLanguages = (text: string, targetLanguages: string[]) =>
   targetLanguages.filter(lang => !alreadyHasLanguage(text, lang));
@@ -172,12 +194,9 @@ export const translateItemsByLanguage = async (
     out.set(item.id, {});
     // scopeTexts 會讓相鄰段落分開辨識，避免中文與英文技術詞串接後
     // 被誤認成印尼文；其他檔案格式仍可沿用單一 scopeText。
-    const scopes = item.scopeTexts?.length
-      ? item.scopeTexts
-      : [item.scopeText ?? item.text];
-    const needed = targetLanguages.filter(
-      lang => !scopes.some(scope => alreadyHasLanguage(scope, lang))
-    );
+    const ownText = item.scopeText ?? item.text;
+    const scopes = item.scopeTexts?.length ? item.scopeTexts : [ownText];
+    const needed = targetLanguages.filter(lang => stillNeedsLanguage(ownText, scopes, lang));
     if (needed.length === 0) continue;   // 這個範圍已經有目標語言 → 完全不送 API
     const key = needed.join('\u0001');
     if (!groups.has(key)) groups.set(key, []);
@@ -949,6 +968,209 @@ function runsToTaggedText(runs: DocxRun[]): string {
   return tagged;
 }
 
+
+// ─── DOCX 表格：太窄的欄位自動加寬 ──────────────────────────────────────
+// 點檢表左側那種「一個字寬」的直欄，附上譯文後會被切成一個音節一行
+// （Trư / ớc / khi / là / m / việ）。這裡把有譯文的窄欄加寬，寬度從同一個
+// 表格其他較寬的欄位按比例借，表格總寬維持不變。
+export const DOCX_LAYOUT = {
+  widenNarrowColumns: false,
+  narrowColumnMax: 900,      // 欄寬(twips) <= 這個值又有譯文 → 視為太窄
+  narrowColumnTarget: 1300,  // 想加寬到多少
+  donorColumnMin: 420,       // 被借寬度的欄位不能低於這個寬度
+  // 窄欄裡的譯文自動縮小字級，這樣才會「一個字一行」而不是「一個音節切兩半」
+  narrowCellFontScale: 0.5,
+  narrowCellMinHalfPoints: 12,   // 6pt（half-points）
+  defaultHalfPoints: 24,         // 原檔沒寫 sz 時視為 12pt
+};
+
+// 把 docx 的 rPr 字級縮小；原本沒有 sz 就補上（插在符合 schema 順序的位置）
+const shrinkDocxRPrFontSize = (rPr: string): string => {
+  const scale = DOCX_LAYOUT.narrowCellFontScale;
+  const min = DOCX_LAYOUT.narrowCellMinHalfPoints;
+  const shrink = (v: number) => Math.max(min, Math.round(v * scale));
+
+  if (rPr && /<w:sz\b[^>]*w:val="\d+"/.test(rPr)) {
+    return rPr
+      .replace(/(<w:sz\b[^>]*w:val=")(\d+)(")/, (_m, a, v, b) => a + shrink(parseInt(v, 10)) + b)
+      .replace(/(<w:szCs\b[^>]*w:val=")(\d+)(")/, (_m, a, v, b) => a + shrink(parseInt(v, 10)) + b);
+  }
+
+  const size = shrink(DOCX_LAYOUT.defaultHalfPoints);
+  const szXml = `<w:sz w:val="${size}"/><w:szCs w:val="${size}"/>`;
+  if (!rPr) return `<w:rPr>${szXml}</w:rPr>`;
+  // sz 必須排在 highlight / u / lang 之前
+  for (const tag of ['<w:highlight', '<w:u ', '<w:u/', '<w:lang']) {
+    const at = rPr.indexOf(tag);
+    if (at !== -1) return rPr.slice(0, at) + szXml + rPr.slice(at);
+  }
+  return rPr.replace('</w:rPr>', szXml + '</w:rPr>');
+};
+
+const TWIPS_TC_W = /(<w:tcW\b[^>]*?w:w=")\d+(")/;
+
+const cellGridSpan = (cell: string) => {
+  const m = cell.match(/<w:gridSpan w:val="(\d+)"/);
+  return m ? Math.max(1, parseInt(m[1], 10)) : 1;
+};
+
+const widenOneTable = (tbl: string): string => {
+  // 巢狀表格的 <w:tr> 會互相干擾，遇到就原樣跳過
+  if (tbl.indexOf('<w:tbl>', 1) !== -1) return tbl;
+
+  const gridMatch = tbl.match(/<w:tblGrid>[\s\S]*?<\/w:tblGrid>/);
+  if (!gridMatch) return tbl;
+  const cols = [...gridMatch[0].matchAll(/<w:gridCol\b[^>]*w:w="(\d+)"[^>]*\/>/g)]
+    .map(m => parseInt(m[1], 10));
+  if (cols.length === 0) return tbl;
+
+  const rows = tbl.match(/<w:tr\b[^>]*>[\s\S]*?<\/w:tr>/g) || [];
+  const narrow = new Set<number>();
+  for (const row of rows) {
+    let ci = 0;
+    const cells = row.match(/<w:tc>[\s\S]*?<\/w:tc>/g) || [];
+    for (const cell of cells) {
+      const gs = cellGridSpan(cell);
+      const width = cols.slice(ci, ci + gs).reduce((a, b) => a + b, 0);
+      if (gs === 1 && width > 0 && width <= DOCX_LAYOUT.narrowColumnMax && /data-tr="1"/.test(cell)) {
+        narrow.add(ci);
+      }
+      ci += gs;
+    }
+  }
+  if (narrow.size === 0) return tbl;
+
+  const narrowCols = [...narrow];
+  const want = narrowCols.map(i => Math.max(0, DOCX_LAYOUT.narrowColumnTarget - cols[i]));
+  const extra = want.reduce((a, b) => a + b, 0);
+  if (extra <= 0) return tbl;
+
+  const donors = cols
+    .map((w, i) => ({ w, i }))
+    .filter(d => !narrow.has(d.i) && d.w > DOCX_LAYOUT.donorColumnMin);
+  const surplus = donors.reduce((s, d) => s + (d.w - DOCX_LAYOUT.donorColumnMin), 0);
+  if (surplus <= 0) return tbl;
+
+  const take = Math.min(extra, surplus);
+  const next = cols.slice();
+
+  let taken = 0;
+  donors.forEach((d, idx) => {
+    const share = idx === donors.length - 1
+      ? take - taken
+      : Math.round((take * (d.w - DOCX_LAYOUT.donorColumnMin)) / surplus);
+    next[d.i] = d.w - share;
+    taken += share;
+  });
+
+  let given = 0;
+  narrowCols.forEach((colIdx, idx) => {
+    const share = idx === narrowCols.length - 1
+      ? take - given
+      : Math.round((take * want[idx]) / extra);
+    next[colIdx] = cols[colIdx] + share;
+    given += share;
+  });
+
+  let out = tbl.replace(
+    gridMatch[0],
+    '<w:tblGrid>' + next.map(w => `<w:gridCol w:w="${w}"/>`).join('') + '</w:tblGrid>'
+  );
+
+  out = out.replace(/<w:tr\b[^>]*>[\s\S]*?<\/w:tr>/g, row => {
+    let ci = 0;
+    return row.replace(/<w:tc>[\s\S]*?<\/w:tc>/g, cell => {
+      const gs = cellGridSpan(cell);
+      const start = ci;
+      ci += gs;
+      const width = next.slice(start, start + gs).reduce((a, b) => a + b, 0);
+      if (!width || !TWIPS_TC_W.test(cell)) return cell;
+      return cell.replace(TWIPS_TC_W, `$1${width}$2`);
+    });
+  });
+
+  return out;
+};
+
+export const widenNarrowTranslatedColumns = (content: string): string => {
+  if (!DOCX_LAYOUT.widenNarrowColumns) return content;
+  const OPEN = '<w:tbl>';
+  const CLOSE = '</w:tbl>';
+  let out = '';
+  let pos = 0;
+  for (;;) {
+    const start = content.indexOf(OPEN, pos);
+    if (start === -1) { out += content.slice(pos); break; }
+    // 找出配對的 </w:tbl>（表格可以巢狀）
+    let depth = 0;
+    let i = start;
+    let end = -1;
+    for (;;) {
+      const nextOpen = content.indexOf(OPEN, i + 1);
+      const nextClose = content.indexOf(CLOSE, i + 1);
+      if (nextClose === -1) break;
+      if (nextOpen !== -1 && nextOpen < nextClose) { depth++; i = nextOpen; }
+      else if (depth > 0) { depth--; i = nextClose; }
+      else { end = nextClose + CLOSE.length; break; }
+    }
+    if (end === -1) { out += content.slice(pos); break; }
+    out += content.slice(pos, start) + widenOneTable(content.slice(start, end));
+    pos = end;
+  }
+  return out;
+};
+
+
+// ── 直書標題欄：把「每個字一個段落」的窄欄合併成一段 ──────────────────
+// 點檢表左邊的「作業前」其實是三個段落（作 / 業 / 前）排出來的直書效果。
+// 不合併的話會被當成三段各自翻譯，輸出變成「作 / VI:作 / 業 / VI:業…」。
+// 這裡把它們併成同一段（字與字之間用 <w:br/>，外觀完全不變），
+// 並標上 data-vcell，之後整格只會翻一次、譯文只附一次。
+const VERTICAL_CELL_MAX_CHARS = 2;
+
+const plainTextOfPBlock = (pBlock: string) =>
+  (pBlock.match(/<w:t(?: [^>]*)?>[\s\S]*?<\/w:t>/g) || [])
+    .map(t => t.replace(/<[^>]+>/g, ''))
+    .join('')
+    .trim();
+
+export const mergeVerticalLabelCells = (content: string): string =>
+  content.replace(/<w:tc>[\s\S]*?<\/w:tc>/g, cell => {
+    if (cell.indexOf('<w:tbl>') !== -1) return cell;
+    const wMatch = cell.match(/<w:tcW\b[^>]*?w:w="(\d+)"/);
+    if (!wMatch || parseInt(wMatch[1], 10) > DOCX_LAYOUT.narrowColumnMax) return cell;
+
+    // 這一格很窄 → 裡面的段落都標記起來，附譯文時字級要縮小
+    cell = cell.replace(/<w:p\b/g, '<w:p data-narrow="1"');
+
+    const pBlocks = cell.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || [];
+    const texted = pBlocks.filter(pb => plainTextOfPBlock(pb).length > 0);
+    if (texted.length < 2) return cell;
+    if (!texted.every(pb => plainTextOfPBlock(pb).length <= VERTICAL_CELL_MAX_CHARS)) return cell;
+
+    const first = texted[0];
+    const openTag = (first.match(/^<w:p\b[^>]*>/) || ['<w:p>'])[0];
+    const pPr = (first.match(/<w:pPr>[\s\S]*?<\/w:pPr>/) || [''])[0];
+    const body = texted
+      .map(pb =>
+        pb
+          .replace(/^<w:p\b[^>]*>/, '')
+          .replace(/<\/w:p>$/, '')
+          .replace(/<w:pPr>[\s\S]*?<\/w:pPr>/, '')
+      )
+      .join('<w:r><w:br/></w:r>');
+    const merged = openTag.replace(/^<w:p\b/, '<w:p data-vcell="1"') + pPr + body + '</w:p>';
+
+    let used = false;
+    let out = cell;
+    for (const pb of texted) {
+      const replacement = used ? '' : merged;
+      used = true;
+      out = out.replace(pb, () => replacement);
+    }
+    return out;
+  });
+
 export const processDocx = async (
   file: File, 
   targetLanguages: string[],
@@ -1003,6 +1225,9 @@ export const processDocx = async (
         content = content.replace(/<w:eastAsianLayout\b[^>]*\/>/g, '');
       }
 
+      // 直書標題欄先合併成一段，否則每個字都會被當成獨立段落各翻一次
+      content = mergeVerticalLabelCells(content);
+
       // ── 第一步：掃描每個 <w:p>，若含可翻譯文字則加 data-mid ──
       content = content.replace(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g, (pBlock) => {
         const runs = parseDocxParagraphRuns(pBlock, unescapeXml);
@@ -1024,9 +1249,15 @@ export const processDocx = async (
 
           const runs = parseDocxParagraphRuns(pBlock, unescapeXml);
           const taggedText = runsToTaggedText(runs);
+          const isVerticalCell = /data-vcell="1"/.test(pBlock);
+          // 直書欄：送出「作業前」這種完整詞，不要帶標籤，
+          // 否則譯文會照標籤被拆回一行一個音節
+          const itemText = isVerticalCell
+            ? stripTags(taggedText).replace(/\s+/g, '')
+            : taggedText;
 
-          if (taggedText.replace(/\[f\d+\][\s\n]*\[\/f\d+\]/g, '').trim().length > 0) {
-            textsToTranslate.push({ file: docFile, markerId, text: taggedText, pBlock, runs });
+          if (itemText.replace(/\[f\d+\][\s\n]*\[\/f\d+\]/g, '').trim().length > 0) {
+            textsToTranslate.push({ file: docFile, markerId, text: itemText, pBlock, runs });
           }
         }
       }
@@ -1102,7 +1333,7 @@ export const processDocx = async (
           const currentScopes = docxScopeTexts(textsToTranslate.indexOf(currentItem));
           langs.forEach(lang => {
             // 本段或緊接的下一段已有該語言 → 不重複附加
-            if (currentScopes.some(scope => alreadyHasLanguage(scope, lang))) return;
+            if (!stillNeedsLanguage(stripTags(currentItem.text), currentScopes, lang)) return;
             const rawTranslatedText = itemTranslations[lang] || '(翻譯失敗)';
             const translatedText = sanitizeOutputText(rawTranslatedText, lang);
             if (isEchoTranslation(currentItem.text, translatedText)) return;
@@ -1110,7 +1341,9 @@ export const processDocx = async (
             // 換行分隔
             appendedRuns += `<w:r><w:br/></w:r>`;
             
-            const defaultRPr = adjustXmlRPrForLanguage(longestRun.rPr, lang, 'docx');
+            const isNarrowCell = /data-narrow="1"/.test(pBlock);
+            const fitRPr = (r: string) => (isNarrowCell ? shrinkDocxRPrFontSize(r) : r);
+            const defaultRPr = fitRPr(adjustXmlRPrForLanguage(longestRun.rPr, lang, 'docx'));
             const fRegex = /\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g;
             let fMatch: RegExpExecArray | null;
             let lastIndex = 0;
@@ -1138,7 +1371,7 @@ export const processDocx = async (
                   appendedRuns += `<w:r><w:br/></w:r>`;
                 }
               } else if (text && text !== '\n') {
-                const rPr = adjustXmlRPrForLanguage(originalRun ? originalRun.rPr : longestRun.rPr, lang, 'docx');
+                const rPr = fitRPr(adjustXmlRPrForLanguage(originalRun ? originalRun.rPr : longestRun.rPr, lang, 'docx'));
                 const finalText = stripTags(text);
                 appendedRuns += `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(finalText)}</w:t></w:r>`;
               }
@@ -1162,6 +1395,10 @@ export const processDocx = async (
           // 移除 data-mid 屬性，並強制段落左對齊（避免兩端對齊造成翻譯文字字間距過大）
           let cleanedPBlock = pBlock.replace(/ data-mid="[^"]+"/, '');
           cleanedPBlock = forceLeftAlignInPPr(cleanedPBlock);
+          // 標記這一段真的有附上譯文，後面才知道哪些窄欄需要加寬
+          if (appendedRuns) {
+            cleanedPBlock = cleanedPBlock.replace(/^(<w:p\b)/, '$1 data-tr="1"');
+          }
           
           const closeTag = '</w:p>';
           const insertPos = cleanedPBlock.lastIndexOf(closeTag);
@@ -1176,6 +1413,12 @@ export const processDocx = async (
       });
 
       content = content.replace(/ data-mid="[^"]+"/g, '');
+
+      // 有譯文的窄欄先加寬（寬度從同表格其他欄位借），再把標記清掉
+      content = widenNarrowTranslatedColumns(content);
+      content = content.replace(/ data-tr="1"/g, '');
+      content = content.replace(/ data-vcell="1"/g, '');
+      content = content.replace(/ data-narrow="1"/g, '');
 
       // 強制表格 fixed layout，防止翻譯後欄寬撐開
       content = content.replace(/(<w:tbl\b[^>]*>)(\s*<w:tblPr\b[^>]*>[\s\S]*?<\/w:tblPr>)/g, (match, tblOpen, tblPr) => {
