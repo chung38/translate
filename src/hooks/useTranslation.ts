@@ -114,48 +114,58 @@ export interface QualityIssue {
   source: string;
 }
 
-const rebuildWithSourceTags = (source: string, translated: string) => {
+export const rebuildWithSourceTags = (source: string, translated: string) => {
   const srcMatches = [...source.matchAll(/\[f(\d+)\]([\s\S]*?)\[\/f\1\]/g)];
   if (srcMatches.length === 0) return translated;
 
+  const emptyTags = () => srcMatches.map(m => `[f${m[1]}][/f${m[1]}]`).join('');
+
   const cleanTranslated = stripAllTags(translated).trim();
-  if (!cleanTranslated) return source;
+  // 譯文是空的就回傳空標籤。絕對不能退回原文 —— 那會讓中文直接混進泰文／越南文裡。
+  if (!cleanTranslated) return emptyTags();
+
+  // 只有「真的有文字」的標籤要分譯文。純空白的標籤是排版用的，
+  // 分字給它只會被輸出端丟掉（輸出端會照原文重建空白）。
+  const contentIdx = srcMatches
+    .map((m, i) => ((m[2] || '').trim().length > 0 ? i : -1))
+    .filter(i => i >= 0);
+
+  const assigned: string[] = new Array(srcMatches.length).fill('');
+
+  if (contentIdx.length <= 1) {
+    assigned[contentIdx.length === 1 ? contentIdx[0] : 0] = cleanTranslated;
+    return srcMatches.map((m, i) => `[f${m[1]}]${assigned[i]}[/f${m[1]}]`).join('');
+  }
 
   const parts = cleanTranslated.split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return source;
 
-  if (srcMatches.length === 1) {
-    const id = srcMatches[0][1];
-    return `[f${id}]${cleanTranslated}[/f${id}]`;
+  if (parts.length < contentIdx.length) {
+    // 泰文、日文、中文不用空白分詞，整句切出來往往只有一兩個「詞」。
+    // 硬分配會讓後面的標籤分不到字（舊版會因此退回原文，泰文裡才會冒出中文）。
+    // 這種情況整句放進第一個有文字的標籤，其餘留空。
+    assigned[contentIdx[0]] = cleanTranslated;
+  } else {
+    const totalSourceChars =
+      contentIdx.reduce((sum, i) => sum + (srcMatches[i][2]?.length || 0), 0) || contentIdx.length;
+    let cursor = 0;
+    contentIdx.forEach((srcIndex, k) => {
+      const srcLen = srcMatches[srcIndex][2]?.length || 1;
+      let takeCount = Math.round(parts.length * (srcLen / totalSourceChars));
+      if (k === contentIdx.length - 1) {
+        takeCount = parts.length - cursor;
+      } else {
+        const remainingSlots = contentIdx.length - k - 1;
+        takeCount = Math.max(1, Math.min(takeCount, parts.length - cursor - remainingSlots));
+      }
+      assigned[srcIndex] = parts.slice(cursor, cursor + takeCount).join(' ');
+      cursor += takeCount;
+    });
   }
 
-  const totalSourceChars = srcMatches.reduce((sum, match) => sum + (match[2]?.length || 0), 0) || srcMatches.length;
-  let cursor = 0;
-  const assigned: string[] = [];
-
-  for (let i = 0; i < srcMatches.length; i++) {
-    const srcLen = srcMatches[i][2]?.length || 1;
-    const ratio = srcLen / totalSourceChars;
-    let takeCount = Math.round(parts.length * ratio);
-
-    if (i === srcMatches.length - 1) {
-      takeCount = parts.length - cursor;
-    } else {
-      const remainingSlots = srcMatches.length - i - 1;
-      const remainingWords = parts.length - cursor;
-      takeCount = Math.max(1, Math.min(takeCount, remainingWords - remainingSlots));
-    }
-
-    assigned.push(parts.slice(cursor, cursor + takeCount).join(' '));
-    cursor += takeCount;
-  }
-
-  return srcMatches
-    .map((match, index) => `[f${match[1]}]${assigned[index] || match[2] || ''}[/f${match[1]}]`)
-    .join('');
+  return srcMatches.map((m, i) => `[f${m[1]}]${assigned[i]}[/f${m[1]}]`).join('');
 };
 
-const repairTranslationTags = (sourceText: string, translatedText: string) => {
+export const repairTranslationTags = (sourceText: string, translatedText: string) => {
   if (!hasTagMarkup(sourceText)) return translatedText || '';
   if (hasExactSameTags(sourceText, translatedText || '')) return translatedText || '';
   return rebuildWithSourceTags(sourceText, translatedText || '');
