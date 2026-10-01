@@ -5,6 +5,10 @@ import {
   neededLanguages,
   isEchoTranslation,
   stripInvalidXmlChars,
+  stillNeedsLanguage,
+  hasNoTranslatableText,
+  mergeVerticalLabelCells,
+  sanitizeOutputText,
 } from '../documentProcessors';
 
 // 這幾組測試專門守著前面實際出過問題的地方。
@@ -136,5 +140,53 @@ describe('stripInvalidXmlChars — 譯文裡的非法字元會讓整份檔案打
 
   it('一般文字不受影響', () => {
     expect(stripInvalidXmlChars('Chính sách chất lượng 品質政策')).toBe('Chính sách chất lượng 品質政策');
+  });
+});
+
+
+// ── 點檢表（表格型 DOCX）實際踩過的坑 ──────────────────────────────────
+describe('stillNeedsLanguage', () => {
+  it('隔壁是純數字時不能讓這一段被跳過（「序」「日期」就是這樣沒被翻到的）', () => {
+    expect(stillNeedsLanguage('序', ['序', '1'], '越南文')).toBe(true);
+    expect(stillNeedsLanguage('日期', ['日期', '1'], '越南文')).toBe(true);
+  });
+
+  it('隔壁真的是目標語言的譯文才跳過', () => {
+    expect(stillNeedsLanguage('安全第一', ['安全第一', 'An toàn là trên hết'], '越南文')).toBe(false);
+  });
+
+  it('自己就是純數字或符號 → 不用翻', () => {
+    expect(hasNoTranslatableText('1')).toBe(true);
+    expect(hasNoTranslatableText('○ ╳ ╱')).toBe(true);
+    expect(hasNoTranslatableText('作業前')).toBe(false);
+  });
+});
+
+describe('mergeVerticalLabelCells', () => {
+  const verticalCell =
+    '<w:tc><w:tcPr><w:tcW w:w="568" w:type="dxa"/></w:tcPr>' +
+    '<w:p><w:r><w:t>作</w:t></w:r></w:p>' +
+    '<w:p><w:r><w:t>業</w:t></w:r></w:p>' +
+    '<w:p><w:r><w:t>前</w:t></w:r></w:p></w:tc>';
+
+  it('窄欄裡「每字一段」會被併成一段，整格只翻一次', () => {
+    const out = mergeVerticalLabelCells(verticalCell);
+    expect((out.match(/<w:p\b/g) || []).length).toBe(1);
+    expect(out).toContain('data-vcell="1"');
+    expect(out).toContain('<w:br/>');
+  });
+
+  it('寬欄不會被動到', () => {
+    const wide = verticalCell.replace('w:w="568"', 'w:w="2000"');
+    expect(mergeVerticalLabelCells(wide)).toBe(wide);
+  });
+});
+
+describe('sanitizeOutputText', () => {
+  it('排版用的空白標籤要保留，其他空標籤照刪', () => {
+    const text = '[f0]Đơn vị[/f0][f1] [/f1][f2]Năm[/f2][f3] [/f3]';
+    const kept = sanitizeOutputText(text, '越南文', new Set([1]));
+    expect(kept).toContain('[f1]');
+    expect(kept).not.toContain('[f3]');
   });
 });
