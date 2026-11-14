@@ -329,3 +329,17 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
   .tcard--3 .tcard__opts { border-top: 0; margin: 0 0 0.8rem; padding: 0.8rem 0.9rem; background: var(--t-card); border: 2px solid var(--t-ink); border-radius: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { .drop__icon, .tlang, .neo-pill, .tgo .btn { transition: none; } }
+
+/* 手機：標題和帳號列擠在同一行會重疊——帳號列只留頭像與登出、按鈕縮小，標題可縮可換行 */
+.tri__top > div:first-child { flex: 1 1 auto; min-width: 0; }
+.tri__top > *:last-child { flex: none; }
+@media (max-width: 639px) {
+  .tri__title { white-space: normal; font-size: 1.1rem; }
+  .tri__top .iconbtn { width: 32px; height: 32px; }
+  .tri__top .iconbtn svg { width: 17px; height: 17px; }
+  .neo-pill__name, .neo-pill__tags { display: none !important; }
+  .neo-pill--user { padding: 0.2rem 0.5rem 0.2rem 0.25rem; gap: 0.3rem; box-shadow: 2px 2px 0 var(--t-ink); }
+  .neo-pill--user > button { margin-left: 0.15rem; }
+  .tri__top > *:last-child, .tri__top > *:last-child > div { gap: 0.35rem !important; }
+}
+@media (max-width: 360px) { .tri__title { font-size: 0.95rem; } }

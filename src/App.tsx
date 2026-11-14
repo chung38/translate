@@ -824,11 +824,11 @@ export default function App() {
                       ) : (
                         <UserIcon className="w-4 h-4 text-[var(--muted)]" />
                       )}
-                      <span className="text-sm font-medium text-[var(--ink)] inline-block max-w-[120px] truncate sm:max-w-[200px]">
+                      <span className="neo-pill__name text-sm font-medium text-[var(--ink)] inline-block max-w-[120px] truncate sm:max-w-[200px]">
                         {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
                       </span>
                       {userProfile && (
-                        <div className="flex items-center gap-1.5 ml-1">
+                        <div className="neo-pill__tags flex items-center gap-1.5 ml-1">
                           {userProfile.role === 'admin' ? (
                             <span className="tag tag--signal">Admin</span>
                           ) : userProfile.isPaid ? (
