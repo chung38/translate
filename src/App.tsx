@@ -96,6 +96,33 @@ type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 
 // 嵌在「移次搞定」首頁（iframe）裡時，外層已經有品牌標頭，這裡就不再重複顯示
 const EMBEDDED = (() => { try { return window.self !== window.top; } catch { return true; } })();
 
+// 精簡的選項列：標題與兩個切換鈕同一行，下面只顯示目前選項的說明（省高度，避免畫面要捲動）
+function OptionRow({ n, label, hint, value, onChange, options, compact }: {
+  n: string; label: string; hint?: string; compact?: boolean; value: string; onChange: (v: string) => void;
+  options: { value: string; title: string; desc?: string }[];
+}) {
+  const cur = options.find(o => o.value === value);
+  return (
+    <div>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="step" style={{ marginBottom: 0 }}>
+          <span className="step__n">{n}</span>
+          <span className="step__label">{label}{hint && <span className="step__hint">　{hint}</span>}</span>
+        </div>
+        <div className="seg" role="radiogroup" aria-label={label}>
+          {options.map(o => (
+            <button key={o.value} type="button" role="radio" aria-checked={o.value === value} title={o.desc}
+              className={o.value === value ? 'seg__btn seg__btn--on' : 'seg__btn'} onClick={() => onChange(o.value)}>
+              {o.title}
+            </button>
+          ))}
+        </div>
+      </div>
+      {cur?.desc && <p className={`mt-1.5 text-xs text-[var(--muted)] leading-relaxed ${compact ? 'lg:hidden' : ''}`}>{cur.desc}</p>}
+    </div>
+  );
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -757,10 +784,10 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-3xl mx-auto p-3 sm:p-5 md:p-6 ${EMBEDDED ? '' : 'md:pt-10'}`}>
+        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:px-4 sm:py-3 ${EMBEDDED ? '' : 'md:pt-8'}`}>
           {/* Header */}
-          <header className="mb-4">
-            <div className="flex items-center justify-between gap-4 pb-3 border-b border-[var(--rule)]">
+          <header className="mb-2">
+            <div className="flex items-center justify-between gap-4">
               <div className={`flex items-center gap-2.5 min-w-0 ${EMBEDDED ? 'invisible' : ''}`}>
                 <span className="w-7 h-7 rounded-[7px] bg-[var(--ink)] text-white flex items-center justify-center text-[13px] font-bold leading-none shrink-0">文</span>
                 <span className="text-[13px] font-semibold text-[var(--ink)] truncate">文件翻譯工作台</span>
@@ -863,7 +890,7 @@ export default function App() {
           transition={{ delay: 0.15 }}
           className="panel"
         >
-          <div className="p-4 sm:p-6 md:p-7">
+          <div className="p-4 sm:p-5">
             {/* Error Message — 顯示在頂部 */}
             <AnimatePresence>
             {error && (
@@ -915,6 +942,9 @@ export default function App() {
               </div>
             )}
 
+            {/* 電腦版左右兩欄：左邊放檔案與進度，右邊放設定與開始按鈕，一個畫面看完不用捲 */}
+            <div className="lg:grid lg:grid-cols-2 lg:gap-8 lg:items-start">
+            <div>
             {/* Upload Section */}
             <div className="step">
               <span className="step__n">01</span>
@@ -950,16 +980,13 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="mt-6 space-y-2"
+                  className="mt-3 space-y-2 lg:max-h-[34vh] lg:overflow-auto"
                 >
                   {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
-                    <div className="note note--brass mb-4">
-                      <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                      <div>
-                        <p className="font-bold mb-1">PDF 翻譯注意事項</p>
-                        <p>PDF 無法像 Word 一樣直接改寫內文，系統是擷取文字翻譯後另外產生版面。選「一頁原檔一頁翻譯」時，原稿頁會原樣保留（轉成圖片），後面插入一頁依原位置排版的譯文頁；選「對照條列」則是整份重排成原文／譯文清單。若為掃描檔或圖片 PDF，系統會自動啟用 OCR（光學字元辨識），辨識需要較長時間，且位置可能不精準。表格密集或特殊字體的檔案，仍建議先轉成 Word 或 Excel 再翻譯。</p>
-                      </div>
-                    </div>
+                    <details className="note note--brass mb-3 !block">
+                      <summary className="font-bold cursor-pointer">PDF 翻譯注意事項（點開看）</summary>
+                        <p className="mt-1">PDF 無法像 Word 一樣直接改寫內文，系統是擷取文字翻譯後另外產生版面。選「一頁原檔一頁翻譯」時，原稿頁會原樣保留（轉成圖片），後面插入一頁依原位置排版的譯文頁；選「對照條列」則是整份重排成原文／譯文清單。若為掃描檔或圖片 PDF，系統會自動啟用 OCR（光學字元辨識），辨識需要較長時間，且位置可能不精準。表格密集或特殊字體的檔案，仍建議先轉成 Word 或 Excel 再翻譯。</p>
+                    </details>
                   )}
                   <div className="flex justify-between items-center px-1 mb-2">
                     <span className="text-[13px] font-semibold text-[var(--ink)]">待處理檔案 ({files.length})</span>
@@ -1058,19 +1085,29 @@ export default function App() {
               )}
             </AnimatePresence>
 
+            {/* Progress & Status */}
+            <TranslationProgress 
+              status={status} 
+              statusMessage={statusMessage} 
+              progress={progress} 
+              files={processingFiles}
+              fileProgress={fileProgress}
+            />
+            </div>
+
             {/* Settings */}
-            <div className="mt-8 space-y-7">
-              <div>
-                <div className="step">
+            <div className="mt-6 lg:mt-0 space-y-5 lg:space-y-4">
+              <div className="lg:flex lg:items-center lg:gap-4">
+                <div className="step lg:!mb-0 lg:shrink-0">
                   <span className="step__n">02</span>
-                  <span className="step__label">產業別<span className="step__hint">　選填，用來校準專有名詞</span></span>
+                  <span className="step__label">產業別<span className="step__hint lg:hidden">　選填，用來校準專有名詞</span></span>
                 </div>
-                <div className="relative">
+                <div className="relative lg:flex-1">
                   <input
                     type="text"
                     value={industry}
                     onChange={(e) => setIndustry(e.target.value)}
-                    placeholder="例如：電子、紡織、汽車..."
+                    placeholder="選填，例如：電子、紡織、汽車..."
                     className="input"
                   />
                 </div>
@@ -1081,19 +1118,19 @@ export default function App() {
                   <span className="step__n">03</span>
                   <span className="step__label">翻成哪些語言<span className="step__hint">　可複選</span></span>
                 </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                   {AVAILABLE_LANGUAGES.map((lang) => (
                     <button
                       key={lang.id}
                       onClick={() => toggleLanguage(lang.name)}
                       className={selectedLanguages.includes(lang.name) ? 'chip chip--on' : 'chip'}
                     >
-                      <span className="flex items-center gap-2.5">
+                      <span className="flex items-center gap-2 lg:gap-1.5 whitespace-nowrap">
                         <span className="text-base">{lang.flag}</span>
                         <span>{lang.name}</span>
                       </span>
                       {selectedLanguages.includes(lang.name) && (
-                        <CheckCircle2 className="w-4 h-4 text-[var(--signal)]" />
+                        <CheckCircle2 className="w-4 h-4 text-[var(--signal)] lg:hidden" />
                       )}
                     </button>
                   ))}
@@ -1101,127 +1138,27 @@ export default function App() {
               </div>
 
               {selectedLanguages.length > 1 && (
-                <div>
-                  <div className="step">
-                    <span className="step__n">04</span>
-                    <span className="step__label">輸出成幾個檔案</span>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={outputMode === 'combined' ? 'optcard optcard--on' : 'optcard'}>
-                      <input 
-                        type="radio" 
-                        name="outputMode" 
-                        value="combined" 
-                        checked={outputMode === 'combined'} 
-                        onChange={() => setOutputMode('combined')}
-                        className="w-4 h-4"
-                      />
-                      <span className="optcard__title">合併為單一檔案</span>
-                    </label>
-                    <label className={outputMode === 'separate' ? 'optcard optcard--on' : 'optcard'}>
-                      <input 
-                        type="radio" 
-                        name="outputMode" 
-                        value="separate" 
-                        checked={outputMode === 'separate'} 
-                        onChange={() => setOutputMode('separate')}
-                        className="w-4 h-4"
-                      />
-                      <span className="optcard__title">分開為多個檔案</span>
-                    </label>
-                  </div>
-                </div>
+                <OptionRow n="04" label="輸出成幾個檔案" value={outputMode} onChange={v => setOutputMode(v as any)}
+                  options={[{ value: 'combined', title: '合併為單一檔案' }, { value: 'separate', title: '分開為多個檔案' }]} />
               )}
 
               {files.some(f => f.name.toLowerCase().endsWith('.pptx')) && (
-                <div>
-                  <div className="step">
-                    <span className="step__n">05</span>
-                    <span className="step__label">簡報版面<span className="step__hint">　只影響 PowerPoint</span></span>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={pptxLayoutMode === 'append' ? 'optcard optcard--on' : 'optcard'}>
-                      <input
-                        type="radio"
-                        name="pptxLayoutMode"
-                        value="append"
-                        checked={pptxLayoutMode === 'append'}
-                        onChange={() => setPptxLayoutMode('append')}
-                        className="w-4 h-4"
-                      />
-                      <span className="optcard__title">
-                        同頁對照
-                        <span className="optcard__desc">
-                          譯文接在原文下方，頁數不變。文字較多的頁面會自動縮小字級。
-                        </span>
-                      </span>
-                    </label>
-                    <label className={pptxLayoutMode === 'duplicate-slide' ? 'optcard optcard--on' : 'optcard'}>
-                      <input
-                        type="radio"
-                        name="pptxLayoutMode"
-                        value="duplicate-slide"
-                        checked={pptxLayoutMode === 'duplicate-slide'}
-                        onChange={() => setPptxLayoutMode('duplicate-slide')}
-                        className="w-4 h-4"
-                      />
-                      <span className="optcard__title">
-                        另加譯文頁
-                        <span className="optcard__desc">
-                          原稿頁保持不動，後面插入一頁純譯文。版面不變形，頁數會變兩倍。
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
+                <OptionRow compact={files.some(f => f.name.toLowerCase().endsWith('.pdf'))} n="05" label="簡報版面" hint="只影響 PowerPoint" value={pptxLayoutMode} onChange={v => setPptxLayoutMode(v as any)}
+                  options={[
+                    { value: 'append', title: '同頁對照', desc: '譯文接在原文下方，頁數不變。文字較多的頁面會自動縮小字級。' },
+                    { value: 'duplicate-slide', title: '另加譯文頁', desc: '原稿頁保持不動，後面插入一頁純譯文。版面不變形，頁數會變兩倍。' },
+                  ]} />
               )}
 
               {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
-                <div>
-                  <div className="step">
-                    <span className="step__n">
-                      {files.some(f => f.name.toLowerCase().endsWith('.pptx')) ? '06' : '05'}
-                    </span>
-                    <span className="step__label">PDF 版面<span className="step__hint">　只影響 PDF</span></span>
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-3">
-                    <label className={pdfLayoutMode === 'duplicate-page' ? 'optcard optcard--on' : 'optcard'}>
-                      <input
-                        type="radio"
-                        name="pdfLayoutMode"
-                        value="duplicate-page"
-                        checked={pdfLayoutMode === 'duplicate-page'}
-                        onChange={() => setPdfLayoutMode('duplicate-page')}
-                        className="w-4 h-4"
-                      />
-                      <span className="optcard__title">
-                        一頁原檔一頁翻譯
-                        <span className="optcard__desc">
-                          原稿頁原樣保留，後面插入一頁譯文，譯文放在原文的相同位置。頁數會變兩倍。
-                        </span>
-                      </span>
-                    </label>
-                    <label className={pdfLayoutMode === 'compare' ? 'optcard optcard--on' : 'optcard'}>
-                      <input
-                        type="radio"
-                        name="pdfLayoutMode"
-                        value="compare"
-                        checked={pdfLayoutMode === 'compare'}
-                        onChange={() => setPdfLayoutMode('compare')}
-                        className="w-4 h-4"
-                      />
-                      <span className="optcard__title">
-                        原文譯文對照條列
-                        <span className="optcard__desc">
-                          整份重排成「一行原文、一行譯文」的清單，不保留原始版面。適合只要看文字內容。
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
+                <OptionRow n={files.some(f => f.name.toLowerCase().endsWith('.pptx')) ? '06' : '05'} compact={files.some(f => f.name.toLowerCase().endsWith('.pptx'))} label="PDF 版面" hint="只影響 PDF" value={pdfLayoutMode} onChange={v => setPdfLayoutMode(v as any)}
+                  options={[
+                    { value: 'duplicate-page', title: '一頁原檔一頁翻譯', desc: '原稿頁原樣保留，後面插入一頁譯文，譯文放在原文的相同位置。頁數會變兩倍。' },
+                    { value: 'compare', title: '對照條列', desc: '整份重排成「一行原文、一行譯文」的清單，不保留原始版面。適合只要看文字內容。' },
+                  ]} />
               )}
 
-              <div className="flex flex-col gap-3 pt-6">
+              <div className="flex flex-col gap-2 pt-1">
                 {!user ? (
                   <button
                     onClick={handleLogin}
@@ -1295,14 +1232,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* Progress & Status */}
-            <TranslationProgress 
-              status={status} 
-              statusMessage={statusMessage} 
-              progress={progress} 
-              files={processingFiles}
-              fileProgress={fileProgress}
-            />
+            </div>
 
           </div>
         </motion.div>

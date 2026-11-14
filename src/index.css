@@ -60,7 +60,7 @@ html, body, #root { height: 100%; }
 .panel { background: var(--card); border: 1px solid var(--rule); border-radius: var(--r-lg); }
 
 /* ── 步驟：這裡的順序是真的流程，編號才有意義 ────────────────────────── */
-.step { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.85rem; }
+.step { display: flex; align-items: baseline; gap: 0.6rem; margin-bottom: 0.6rem; }
 .step__n {
   font-family: var(--font-mono); font-size: 0.6875rem; font-weight: 500;
   color: var(--signal); border: 1px solid var(--rule); border-radius: 999px;
@@ -99,7 +99,7 @@ html, body, #root { height: 100%; }
 
 .chip {
   display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
-  width: 100%; padding: 0.6rem 0.75rem; font-size: 0.875rem; color: var(--ink-soft);
+  width: 100%; padding: 0.55rem 0.6rem; font-size: 0.875rem; color: var(--ink-soft);
   background: var(--card); border: 1px solid var(--rule); border-radius: var(--r-md);
   transition: border-color .18s, background .18s, color .18s;
 }
@@ -117,9 +117,15 @@ html, body, #root { height: 100%; }
 .optcard__desc { display: block; margin-top: 0.15rem; font-size: 0.75rem; font-weight: 400; color: var(--muted); line-height: 1.5; }
 .optcard input[type="radio"] { accent-color: var(--signal); margin-top: 0.15rem; flex-shrink: 0; }
 
+.seg { display: inline-flex; padding: 3px; gap: 3px; border: 1px solid var(--rule); border-radius: var(--r-md); background: #fbfbf9; }
+.seg__btn { padding: 0.4rem 0.75rem; font-size: 0.8125rem; color: var(--ink-soft); border-radius: calc(var(--r-md) - 3px); white-space: nowrap; transition: background .18s, color .18s; }
+.seg__btn:hover { color: var(--ink); }
+.seg__btn--on { background: var(--signal); color: #fff; font-weight: 600; }
+.seg__btn--on:hover { color: #fff; }
+
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 0.6rem;
-  width: 100%; height: 52px; font-size: 0.9375rem; font-weight: 600;
+  width: 100%; height: 48px; font-size: 0.9375rem; font-weight: 600;
   border-radius: var(--r-md); transition: background .18s, color .18s, border-color .18s;
 }
 .btn--primary { background: var(--signal); color: #fff; }
