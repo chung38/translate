@@ -650,10 +650,11 @@ function sizeTranslator(){
   if (box.hidden) return;
   // 剛好填滿標頭以下、分頁列以上，外層不用再捲動（翻譯頁在框內自己捲）
   const tab = document.querySelector('nav.tabbar').offsetHeight;
-  box.style.height = Math.max(360, window.innerHeight - box.offsetTop - tab) + 'px';
   window.scrollTo(0, 0);
+  box.style.height = Math.max(360, window.innerHeight - box.getBoundingClientRect().top - tab) + 'px';
 }
 window.addEventListener('resize', sizeTranslator);
+new ResizeObserver(sizeTranslator).observe(document.querySelector('.bar'));   // 上方高度變動（字型載入、篩選列收合）時重新量
 
 // ---------- 文宣 ----------
 function postersView(){
@@ -1058,8 +1059,9 @@ function render(){
   const out = document.getElementById('out');
   if (!GROUPS.length && state.tab === 'posters') { out.innerHTML = '<div class="empty">載入中…</div>'; return; }
   PANEL_TAG = state.tab === 'search';
-  showTranslator(state.tab === 'home');
-  out.innerHTML = (VIEWS[state.tab] || homeView)();
+  out.innerHTML = (VIEWS[state.tab] || VIEWS.home)();
+  out.hidden = state.tab === 'home';
+  showTranslator(state.tab === 'home');   // 要在清空其他分頁內容之後才量高度，否則翻譯區下方會留白
   document.querySelectorAll('.tab').forEach(t => t.setAttribute('aria-current', t.dataset.tab === state.tab ? 'page' : 'false'));
   document.getElementById('foot').hidden = state.tab !== 'posters';
   enhanceRows();
