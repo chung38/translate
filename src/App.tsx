@@ -94,6 +94,9 @@ const AVAILABLE_LANGUAGES = [
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
+// 嵌在「移次搞定」首頁（iframe）裡時，外層已經有品牌標頭，這裡就不再重複顯示
+const EMBEDDED = (() => { try { return window.self !== window.top; } catch { return true; } })();
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -755,11 +758,11 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className="w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:p-5 md:p-6 md:pt-10">
+        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:p-5 md:p-6 ${EMBEDDED ? '' : 'md:pt-10'}`}>
           {/* Header */}
           <header className="mb-7 md:mb-9">
             <div className="flex items-center justify-between gap-4 pb-3 mb-6 border-b border-[var(--rule)]">
-              <div className="flex items-center gap-2.5 min-w-0">
+              <div className={`flex items-center gap-2.5 min-w-0 ${EMBEDDED ? 'invisible' : ''}`}>
                 <span className="w-7 h-7 rounded-[7px] bg-[var(--ink)] text-white flex items-center justify-center text-[13px] font-bold leading-none shrink-0">文</span>
                 <span className="text-[13px] font-semibold text-[var(--ink)] truncate">文件翻譯工作台</span>
               </div>

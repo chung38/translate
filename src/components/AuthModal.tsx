@@ -176,6 +176,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
       // 少數瀏覽器會擋 popup，這時才退回 redirect
       if (err.code === 'auth/popup-blocked' || err.code === 'auth/operation-not-supported-in-this-environment') {
         try {
+          // 嵌在首頁 iframe 裡不能做整頁跳轉登入（Google 不允許被嵌入），改到獨立的翻譯頁登入
+          if (window.self !== window.top) { window.open(window.location.pathname, '_top'); return; }
           await signInWithRedirect(auth, googleProvider);
           return;
         } catch {

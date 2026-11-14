@@ -17,6 +17,11 @@ export default defineConfig(({mode}) => {
     },
     build: {
       rollupOptions: {
+        // 兩個頁面：/ 是「移次搞定」外殼（index.html），/translate/ 是文件翻譯（React）
+        input: {
+          main: path.resolve(__dirname, 'index.html'),
+          translate: path.resolve(__dirname, 'translate/index.html'),
+        },
         output: {
           manualChunks: {
             'pdf-lib': ['pdfjs-dist', 'jspdf'],
