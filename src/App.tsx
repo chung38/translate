@@ -39,7 +39,6 @@ import { UserProfile } from './types';
 import { useTranslation } from './hooks/useTranslation';
 import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
 import type { PptxLayoutMode, PdfLayoutMode } from './utils/documentProcessors';
-import { OutputPreview } from './components/OutputPreview';
 import { 
   auth, 
   db, 
@@ -758,10 +757,10 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:p-5 md:p-6 ${EMBEDDED ? '' : 'md:pt-10'}`}>
+        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-3xl mx-auto p-3 sm:p-5 md:p-6 ${EMBEDDED ? '' : 'md:pt-10'}`}>
           {/* Header */}
-          <header className="mb-7 md:mb-9">
-            <div className="flex items-center justify-between gap-4 pb-3 mb-6 border-b border-[var(--rule)]">
+          <header className="mb-4">
+            <div className="flex items-center justify-between gap-4 pb-3 border-b border-[var(--rule)]">
               <div className={`flex items-center gap-2.5 min-w-0 ${EMBEDDED ? 'invisible' : ''}`}>
                 <span className="w-7 h-7 rounded-[7px] bg-[var(--ink)] text-white flex items-center justify-center text-[13px] font-bold leading-none shrink-0">文</span>
                 <span className="text-[13px] font-semibold text-[var(--ink)] truncate">文件翻譯工作台</span>
@@ -854,35 +853,10 @@ export default function App() {
             )}
             </div>
 
-            {/* Title — 標題本身就用這個工具的輸出格式排：原文在上，譯文在下 */}
-            <div>
-              <motion.h1
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4 }}
-                className="bititle__src"
-              >
-                文件翻譯工作台
-              </motion.h1>
-              <div className="bititle__rule" />
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.12, duration: 0.4 }}
-                className="bititle__tgt"
-              >
-                {(selectedLanguages.length ? selectedLanguages : ['越南文']).map(l => (
-                  <span key={l}>{HERO_SUBTITLE[l] ?? l}</span>
-                ))}
-              </motion.div>
-              <p className="mt-3.5 text-sm text-[var(--muted)] max-w-lg leading-relaxed">
-                譯文直接排進原檔，版面與表格保留。原檔已有的語言不會再翻一次。
-              </p>
-            </div>
           </header>
 
         {/* 工作台：左邊設定、右邊即時預覽 */}
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_360px] gap-5 items-start">
+        <div>
         <motion.div 
           initial={{ opacity: 0, y: 16 }}
           animate={{ opacity: 1, y: 0 }}
@@ -1333,22 +1307,6 @@ export default function App() {
           </div>
         </motion.div>
 
-        {/* 預覽欄：捲動時固定，讓選項一改就看得到結果 */}
-        <motion.aside
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.22 }}
-          className="lg:sticky lg:top-6 space-y-3"
-        >
-          <OutputPreview
-            languages={selectedLanguages}
-            layoutMode={pptxLayoutMode}
-            hasPptx={files.some(f => f.name.toLowerCase().endsWith('.pptx'))}
-          />
-          <p className="text-xs text-[var(--muted)] leading-relaxed px-1">
-            示意圖，實際字級會依原檔的版面自動調整。表格內的譯文會縮小，避免撐開欄高。
-          </p>
-        </motion.aside>
         </div>
       </div>
     </div>
