@@ -84,7 +84,7 @@ const HERO_SUBTITLE: Record<string, string> = {
 };
 
 const AVAILABLE_LANGUAGES = [
-  { id: 'zh-TW', name: '繁體中文', native: '繁體中文', label: 'Traditional Chinese', flag: '🇹🇼' },
+  { id: 'zh-TW', name: '繁體中文', native: 'Chinese', label: 'Traditional Chinese', flag: '🇹🇼' },
   { id: 'th', name: '泰文', native: 'ภาษาไทย', label: 'Thai', flag: '🇹🇭' },
   { id: 'id', name: '印尼文', native: 'Indonesia', label: 'Indonesian', flag: '🇮🇩' },
   { id: 'vi', name: '越南文', native: 'Tiếng Việt', label: 'Vietnamese', flag: '🇻🇳' },
@@ -785,18 +785,12 @@ export default function App() {
 
         <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:p-4 lg:h-full lg:flex lg:flex-col ${EMBEDDED ? '' : 'md:pt-8'}`}>
 
-        {/* 工作台：左邊設定、右邊即時預覽 */}
-        <div className="bench-wrap">
-        <motion.div 
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-          className="panel bench"
-        >
-          <header className="bench__head">
+        {/* 三步驟：放檔案 → 選語言 → 開始翻譯。電腦版三張卡片並排，一個畫面看完；手機版上下排 */}
+        <div className="tri">
+          <header className="tri__top">
             <div className="min-w-0">
-              <h1 className="bench__title">文件翻譯</h1>
-              <p className="bench__sub">譯文直接排進原檔，版面與表格都保留</p>
+              <h1 className="tri__title">三步驟，<em>文件翻好</em></h1>
+              <p className="tri__sub">譯文直接排進原檔，版面和表格都留著</p>
             </div>
             {/* Auth Bar — 標題上方，非左對齊中間內容區塊 */}
             {isAuthReady && (
@@ -824,7 +818,7 @@ export default function App() {
                         <Shield className="w-5 h-5" />
                       </button>
                     )}
-                    <div className="flex items-center gap-2 bg-[var(--card)] border border-[var(--rule)] px-3 py-1.5 rounded-[8px]">
+                    <div className="neo-pill neo-pill--user">
                       {user.photoURL ? (
                         <img src={user.photoURL} alt={user.displayName || userProfile?.displayName || ""} className="w-6 h-6 rounded-full" referrerPolicy="no-referrer" />
                       ) : (
@@ -875,7 +869,7 @@ export default function App() {
                 ) : (
                   <button 
                     onClick={handleLogin}
-                    className="flex items-center gap-2 bg-[var(--card)] border border-[var(--rule)] px-4 py-2 rounded-[8px] text-[var(--ink)] font-medium hover:border-[var(--signal)] transition-colors"
+                    className="neo-pill"
                   >
                     <LogIn className="w-4 h-4 text-[var(--signal)]" />
                     <span>登入</span>
@@ -884,8 +878,8 @@ export default function App() {
               </motion.div>
             )}
           </header>
-          <div className="bench__body">
-            <div className="bench__notes">
+
+          <div className="tri__notes">
             {/* Error Message — 顯示在頂部 */}
             <AnimatePresence>
             {error && (
@@ -937,11 +931,12 @@ export default function App() {
               </div>
             )}
 
-            </div>
-            {/* 電腦版左右兩欄：左邊放檔案與進度，右邊放設定與開始按鈕，一個畫面看完不用捲 */}
-            <div className="bench__cols">
-            <div className="bench__files">
-            {/* Upload Section */}
+          </div>
+
+          <div className="tri__cols">
+            <section className="tcard tcard--1">
+              <span className="tcard__n">STEP 1</span>
+              <h2 className="tcard__h">放檔案</h2>
             <div 
               onClick={() => fileInputRef.current?.click()}
               className={files.length > 0 ? 'drop drop--filled' : 'drop'}
@@ -955,14 +950,14 @@ export default function App() {
                 className="hidden"
               />
               
-              <div className="drop__icon"><Upload className="w-6 h-6" /></div>
+              <div className="drop__icon" aria-hidden="true">📂</div>
               <div className="drop__text">
-                <p className="drop__title">{files.length > 0 ? '再加檔案' : '把檔案拖進來，或點這裡選擇'}</p>
-                <p className="drop__hint">{files.length > 0 ? '可以一次翻譯多份' : '可以一次選多份，每份都會保留原本的版面'}</p>
+                <p className="drop__title">{files.length > 0 ? '再加檔案' : '把檔案拖進來'}</p>
+                <p className="drop__hint">{files.length > 0 ? '可以一次翻譯多份' : '或點這裡選擇，可以一次選多份'}</p>
               </div>
               {files.length === 0 && (
                 <div className="drop__types">
-                  <span>Word</span><span>Excel</span><span>PowerPoint</span><span>PDF</span>
+                  <span style={{ background: '#2b579a' }}>Word</span><span style={{ background: '#217346' }}>Excel</span><span style={{ background: '#d24726' }}>PPT</span><span style={{ background: '#b30b00' }}>PDF</span>
                 </div>
               )}
             </div>
@@ -973,7 +968,7 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="bench__list space-y-2"
+                  className="tlist space-y-2"
                 >
                   {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
                     <details className="note note--brass mb-3 !block">
@@ -1078,6 +1073,74 @@ export default function App() {
               )}
             </AnimatePresence>
 
+            </section>
+
+            <section className="tcard tcard--2">
+              <span className="tcard__n">STEP 2</span>
+              <h2 className="tcard__h">選語言<span className="tcard__hint">可複選</span></h2>
+              <div className="tlangs">
+                {AVAILABLE_LANGUAGES.map((lang) => (
+                  <button
+                    key={lang.id}
+                    type="button"
+                    aria-pressed={selectedLanguages.includes(lang.name)}
+                    onClick={() => toggleLanguage(lang.name)}
+                    className={selectedLanguages.includes(lang.name) ? 'tlang tlang--on' : 'tlang'}
+                  >
+                    <i className={`fl fl--${lang.id}`} aria-hidden="true" />
+                    <span className="min-w-0">{lang.name}<small>{lang.native}</small></span>
+                  </button>
+                ))}
+              </div>
+
+              <div className="tfield">
+                <label className="tfield__label" htmlFor="industry">產業別<span className="tcard__hint">選填，用來校準專有名詞</span></label>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={industry}
+                    onChange={(e) => setIndustry(e.target.value)}
+                    id="industry"
+                    placeholder="例如：電子、紡織、汽車..."
+                    className="input"
+                  />
+                </div>
+              </div>
+
+              {selectedLanguages.length > 1 && (
+                <OptionRow n="04" label="輸出成"  value={outputMode} onChange={v => setOutputMode(v as any)}
+                  options={[{ value: 'combined', title: '一個檔案' }, { value: 'separate', title: '每種語言各一個' }]} />
+              )}
+
+            </section>
+
+            <section className="tcard tcard--3">
+              <span className="tcard__n">STEP 3</span>
+              <h2 className="tcard__h">開始翻譯</h2>
+              <div className="tsum">
+                <div><b>{files.length}</b><span>份文件</span></div>
+                <div><b>{selectedLanguages.length}</b><span>種語言</span></div>
+              </div>
+              {(files.some(f => f.name.toLowerCase().endsWith('.pptx')) || files.some(f => f.name.toLowerCase().endsWith('.pdf'))) && (
+                <div className="tcard__opts">
+              {files.some(f => f.name.toLowerCase().endsWith('.pptx')) && (
+                <OptionRow compact n="05" label="簡報版面" hint="只影響 PowerPoint" value={pptxLayoutMode} onChange={v => setPptxLayoutMode(v as any)}
+                  options={[
+                    { value: 'append', title: '同頁對照', desc: '譯文接在原文下方，頁數不變。文字較多的頁面會自動縮小字級。' },
+                    { value: 'duplicate-slide', title: '另加譯文頁', desc: '原稿頁保持不動，後面插入一頁純譯文。版面不變形，頁數會變兩倍。' },
+                  ]} />
+              )}
+
+              {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
+                <OptionRow n={files.some(f => f.name.toLowerCase().endsWith('.pptx')) ? '06' : '05'} compact label="PDF 版面" hint="只影響 PDF" value={pdfLayoutMode} onChange={v => setPdfLayoutMode(v as any)}
+                  options={[
+                    { value: 'duplicate-page', title: '一頁原檔一頁翻譯', desc: '原稿頁原樣保留，後面插入一頁譯文，譯文放在原文的相同位置。頁數會變兩倍。' },
+                    { value: 'compare', title: '對照條列', desc: '整份重排成「一行原文、一行譯文」的清單，不保留原始版面。適合只要看文字內容。' },
+                  ]} />
+              )}
+
+                </div>
+              )}
             {/* Progress & Status */}
             <TranslationProgress 
               status={status} 
@@ -1086,67 +1149,7 @@ export default function App() {
               files={processingFiles}
               fileProgress={fileProgress}
             />
-            </div>
-
-            {/* Settings */}
-            <div className="bench__settings">
-              <div>
-                <div className="step">
-                  <span className="step__label">翻成哪些語言<span className="step__hint">　可複選</span></span>
-                </div>
-                <div className="grid grid-cols-3 xl:grid-cols-5 gap-2">
-                  {AVAILABLE_LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.id}
-                      type="button"
-                      aria-pressed={selectedLanguages.includes(lang.name)}
-                      onClick={() => toggleLanguage(lang.name)}
-                      className={selectedLanguages.includes(lang.name) ? 'lang lang--on' : 'lang'}
-                    >
-                      <span className="lang__native">{lang.native}</span>
-                      <span className="lang__zh">{lang.name === '繁體中文' ? '中文' : lang.name}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="lg:flex lg:items-center lg:gap-4">
-                <div className="step lg:!mb-0 lg:shrink-0">
-                  <span className="step__label">產業別<span className="step__hint lg:hidden">　選填，用來校準專有名詞</span></span>
-                </div>
-                <div className="relative lg:flex-1">
-                  <input
-                    type="text"
-                    value={industry}
-                    onChange={(e) => setIndustry(e.target.value)}
-                    placeholder="選填，例如：電子、紡織、汽車..."
-                    className="input"
-                  />
-                </div>
-              </div>
-
-              {selectedLanguages.length > 1 && (
-                <OptionRow n="04" label="輸出成幾個檔案" value={outputMode} onChange={v => setOutputMode(v as any)}
-                  options={[{ value: 'combined', title: '合併為單一檔案' }, { value: 'separate', title: '分開為多個檔案' }]} />
-              )}
-
-              {files.some(f => f.name.toLowerCase().endsWith('.pptx')) && (
-                <OptionRow compact={files.some(f => f.name.toLowerCase().endsWith('.pdf'))} n="05" label="簡報版面" hint="只影響 PowerPoint" value={pptxLayoutMode} onChange={v => setPptxLayoutMode(v as any)}
-                  options={[
-                    { value: 'append', title: '同頁對照', desc: '譯文接在原文下方，頁數不變。文字較多的頁面會自動縮小字級。' },
-                    { value: 'duplicate-slide', title: '另加譯文頁', desc: '原稿頁保持不動，後面插入一頁純譯文。版面不變形，頁數會變兩倍。' },
-                  ]} />
-              )}
-
-              {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
-                <OptionRow n={files.some(f => f.name.toLowerCase().endsWith('.pptx')) ? '06' : '05'} compact={files.some(f => f.name.toLowerCase().endsWith('.pptx'))} label="PDF 版面" hint="只影響 PDF" value={pdfLayoutMode} onChange={v => setPdfLayoutMode(v as any)}
-                  options={[
-                    { value: 'duplicate-page', title: '一頁原檔一頁翻譯', desc: '原稿頁原樣保留，後面插入一頁譯文，譯文放在原文的相同位置。頁數會變兩倍。' },
-                    { value: 'compare', title: '對照條列', desc: '整份重排成「一行原文、一行譯文」的清單，不保留原始版面。適合只要看文字內容。' },
-                  ]} />
-              )}
-
-              <div className="bench__go">
+              <div className="tgo">
                 {!user ? (
                   <button
                     onClick={handleLogin}
@@ -1183,7 +1186,7 @@ export default function App() {
                     {status === 'idle' && (
                       <>
                         <span className="truncate">
-                          {isUploading ? '檔案上傳中...' : files.length === 0 ? '先選擇要翻譯的檔案' : selectedLanguages.length === 0 ? '請至少選一種語言' : `開始翻譯（${files.length} 份文件，${selectedLanguages.length} 種語言）`}
+                          {isUploading ? '檔案上傳中...' : files.length === 0 ? '先放檔案' : selectedLanguages.length === 0 ? '先選語言' : '🚀 開始翻譯'}
                         </span>
                       </>
                     )}
@@ -1217,13 +1220,9 @@ export default function App() {
                   </button>
                 )}
               </div>
-            </div>
-
-            </div>
-
+              <p className="tcard__tip">翻好會自動下載</p>
+            </section>
           </div>
-        </motion.div>
-
         </div>
       </div>
     </div>
