@@ -84,11 +84,11 @@ const HERO_SUBTITLE: Record<string, string> = {
 };
 
 const AVAILABLE_LANGUAGES = [
-  { id: 'zh-TW', name: '繁體中文', label: 'Traditional Chinese', flag: '🇹🇼' },
-  { id: 'th', name: '泰文', label: 'Thai', flag: '🇹🇭' },
-  { id: 'id', name: '印尼文', label: 'Indonesian', flag: '🇮🇩' },
-  { id: 'vi', name: '越南文', label: 'Vietnamese', flag: '🇻🇳' },
-  { id: 'en', name: '英文', label: 'English', flag: '🇺🇸' },
+  { id: 'zh-TW', name: '繁體中文', native: '繁體中文', label: 'Traditional Chinese', flag: '🇹🇼' },
+  { id: 'th', name: '泰文', native: 'ภาษาไทย', label: 'Thai', flag: '🇹🇭' },
+  { id: 'id', name: '印尼文', native: 'Indonesia', label: 'Indonesian', flag: '🇮🇩' },
+  { id: 'vi', name: '越南文', native: 'Tiếng Việt', label: 'Vietnamese', flag: '🇻🇳' },
+  { id: 'en', name: '英文', native: 'English', label: 'English', flag: '🇺🇸' },
 ];
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
@@ -106,7 +106,6 @@ function OptionRow({ n, label, hint, value, onChange, options, compact }: {
     <div>
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
         <div className="step" style={{ marginBottom: 0 }}>
-          <span className="step__n">{n}</span>
           <span className="step__label">{label}{hint && <span className="step__hint">　{hint}</span>}</span>
         </div>
         <div className="seg" role="radiogroup" aria-label={label}>
@@ -784,15 +783,21 @@ export default function App() {
           userProfile={userProfile}
         />
 
-        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:px-4 sm:py-3 ${EMBEDDED ? '' : 'md:pt-8'}`}>
-          {/* Header */}
-          <header className="mb-2">
-            <div className="flex items-center justify-between gap-4">
-              <div className={`flex items-center gap-2.5 min-w-0 ${EMBEDDED ? 'invisible' : ''}`}>
-                <span className="w-7 h-7 rounded-[7px] bg-[var(--ink)] text-white flex items-center justify-center text-[13px] font-bold leading-none shrink-0">文</span>
-                <span className="text-[13px] font-semibold text-[var(--ink)] truncate">文件翻譯工作台</span>
-              </div>
+        <div className={`w-full max-w-[95vw] sm:max-w-2xl lg:max-w-6xl mx-auto p-3 sm:p-4 lg:h-full lg:flex lg:flex-col ${EMBEDDED ? '' : 'md:pt-8'}`}>
 
+        {/* 工作台：左邊設定、右邊即時預覽 */}
+        <div className="bench-wrap">
+        <motion.div 
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.3 }}
+          className="panel bench"
+        >
+          <header className="bench__head">
+            <div className="min-w-0">
+              <h1 className="bench__title">文件翻譯</h1>
+              <p className="bench__sub">譯文直接排進原檔，版面與表格都保留</p>
+            </div>
             {/* Auth Bar — 標題上方，非左對齊中間內容區塊 */}
             {isAuthReady && (
               <motion.div
@@ -878,19 +883,9 @@ export default function App() {
                 )}
               </motion.div>
             )}
-            </div>
-
           </header>
-
-        {/* 工作台：左邊設定、右邊即時預覽 */}
-        <div>
-        <motion.div 
-          initial={{ opacity: 0, y: 16 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15 }}
-          className="panel"
-        >
-          <div className="p-4 sm:p-5">
+          <div className="bench__body">
+            <div className="bench__notes">
             {/* Error Message — 顯示在頂部 */}
             <AnimatePresence>
             {error && (
@@ -942,17 +937,14 @@ export default function App() {
               </div>
             )}
 
-            {/* 電腦版左右兩欄：左邊放檔案與進度，右邊放設定與開始按鈕，一個畫面看完不用捲 */}
-            <div className="lg:grid lg:grid-cols-2 lg:gap-8 lg:items-start">
-            <div>
-            {/* Upload Section */}
-            <div className="step">
-              <span className="step__n">01</span>
-              <span className="step__label">要翻譯的檔案</span>
             </div>
+            {/* 電腦版左右兩欄：左邊放檔案與進度，右邊放設定與開始按鈕，一個畫面看完不用捲 */}
+            <div className="bench__cols">
+            <div className="bench__files">
+            {/* Upload Section */}
             <div 
               onClick={() => fileInputRef.current?.click()}
-              className={`group ${files.length > 0 ? 'dropzone dropzone--filled' : 'dropzone'}`}
+              className={files.length > 0 ? 'drop drop--filled' : 'drop'}
             >
               <input 
                 type="file" 
@@ -963,15 +955,16 @@ export default function App() {
                 className="hidden"
               />
               
-              <div className="flex items-center gap-4">
-                <div className="filerow__icon">
-                  <Upload className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-[var(--ink)]">選擇檔案，或拖進來</p>
-                  <p className="text-xs text-[var(--muted)] mt-0.5">Word、Excel、PowerPoint、PDF，可一次選多份</p>
-                </div>
+              <div className="drop__icon"><Upload className="w-6 h-6" /></div>
+              <div className="drop__text">
+                <p className="drop__title">{files.length > 0 ? '再加檔案' : '把檔案拖進來，或點這裡選擇'}</p>
+                <p className="drop__hint">{files.length > 0 ? '可以一次翻譯多份' : '可以一次選多份，每份都會保留原本的版面'}</p>
               </div>
+              {files.length === 0 && (
+                <div className="drop__types">
+                  <span>Word</span><span>Excel</span><span>PowerPoint</span><span>PDF</span>
+                </div>
+              )}
             </div>
 
             {/* File List */}
@@ -980,7 +973,7 @@ export default function App() {
                 <motion.div 
                   initial={{ opacity: 0, y: 10 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="mt-3 space-y-2 lg:max-h-[34vh] lg:overflow-auto"
+                  className="bench__list space-y-2"
                 >
                   {files.some(f => f.name.toLowerCase().endsWith('.pdf')) && (
                     <details className="note note--brass mb-3 !block">
@@ -1096,10 +1089,29 @@ export default function App() {
             </div>
 
             {/* Settings */}
-            <div className="mt-6 lg:mt-0 space-y-5 lg:space-y-4">
+            <div className="bench__settings">
+              <div>
+                <div className="step">
+                  <span className="step__label">翻成哪些語言<span className="step__hint">　可複選</span></span>
+                </div>
+                <div className="grid grid-cols-3 xl:grid-cols-5 gap-2">
+                  {AVAILABLE_LANGUAGES.map((lang) => (
+                    <button
+                      key={lang.id}
+                      type="button"
+                      aria-pressed={selectedLanguages.includes(lang.name)}
+                      onClick={() => toggleLanguage(lang.name)}
+                      className={selectedLanguages.includes(lang.name) ? 'lang lang--on' : 'lang'}
+                    >
+                      <span className="lang__native">{lang.native}</span>
+                      <span className="lang__zh">{lang.name === '繁體中文' ? '中文' : lang.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="lg:flex lg:items-center lg:gap-4">
                 <div className="step lg:!mb-0 lg:shrink-0">
-                  <span className="step__n">02</span>
                   <span className="step__label">產業別<span className="step__hint lg:hidden">　選填，用來校準專有名詞</span></span>
                 </div>
                 <div className="relative lg:flex-1">
@@ -1110,30 +1122,6 @@ export default function App() {
                     placeholder="選填，例如：電子、紡織、汽車..."
                     className="input"
                   />
-                </div>
-              </div>
-
-              <div>
-                <div className="step">
-                  <span className="step__n">03</span>
-                  <span className="step__label">翻成哪些語言<span className="step__hint">　可複選</span></span>
-                </div>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-                  {AVAILABLE_LANGUAGES.map((lang) => (
-                    <button
-                      key={lang.id}
-                      onClick={() => toggleLanguage(lang.name)}
-                      className={selectedLanguages.includes(lang.name) ? 'chip chip--on' : 'chip'}
-                    >
-                      <span className="flex items-center gap-2 lg:gap-1.5 whitespace-nowrap">
-                        <span className="text-base">{lang.flag}</span>
-                        <span>{lang.name}</span>
-                      </span>
-                      {selectedLanguages.includes(lang.name) && (
-                        <CheckCircle2 className="w-4 h-4 text-[var(--signal)] lg:hidden" />
-                      )}
-                    </button>
-                  ))}
                 </div>
               </div>
 
@@ -1158,7 +1146,7 @@ export default function App() {
                   ]} />
               )}
 
-              <div className="flex flex-col gap-2 pt-1">
+              <div className="bench__go">
                 {!user ? (
                   <button
                     onClick={handleLogin}
@@ -1195,9 +1183,8 @@ export default function App() {
                     {status === 'idle' && (
                       <>
                         <span className="truncate">
-                          {isUploading ? '檔案上傳中...' : `開始翻譯 ${files.length > 0 ? `${files.length} 份` : ''} ${selectedLanguages.length > 0 ? `(${selectedLanguages.length} 種語言)` : ''}`}
+                          {isUploading ? '檔案上傳中...' : files.length === 0 ? '先選擇要翻譯的檔案' : selectedLanguages.length === 0 ? '請至少選一種語言' : `開始翻譯（${files.length} 份文件，${selectedLanguages.length} 種語言）`}
                         </span>
-                        {!isUploading && <ArrowRight className="w-4 h-4 shrink-0" />}
                       </>
                     )}
                     {(status === 'processing' || status === 'translating' || status === 'generating') && (

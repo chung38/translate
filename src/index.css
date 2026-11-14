@@ -192,3 +192,81 @@ html, body, #root { height: 100%; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+/* ── 工作台：一張卡片填滿可用高度。上緣是標題與帳號，左半放檔案，右半放設定與開始鍵 ── */
+.bench-wrap { min-height: 0; }
+.bench { display: flex; flex-direction: column; overflow: hidden;
+  box-shadow: 0 1px 0 rgba(23,33,28,.03), 0 22px 44px -30px rgba(23,33,28,.35); }
+.bench__head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 0.5rem 1rem;
+  padding: 0.7rem 1rem; border-bottom: 1px solid var(--rule-soft); }
+.bench__title { font-size: 1.0625rem; font-weight: 700; letter-spacing: 0.04em; color: var(--ink); line-height: 1.3; }
+.bench__sub { font-size: 0.78rem; color: var(--muted); line-height: 1.4; }
+.bench__body { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.bench__notes:not(:empty) { padding: 1rem 1rem 0; }
+.bench__notes .note:last-child { margin-bottom: 0; }
+.bench__cols { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.bench__files { display: flex; flex-direction: column; gap: 0.75rem; padding: 1rem; background: #f7f8f4; min-height: 0; }
+.bench__list { min-height: 0; }
+.bench__settings { display: flex; flex-direction: column; gap: 1.1rem; padding: 1.1rem 1rem 1rem; min-height: 0; }
+.bench__go { display: flex; flex-direction: column; gap: 0.5rem; margin-top: auto; padding-top: 0.25rem; }
+.step__n { display: none; }
+
+@media (min-width: 1024px) {
+  .bench-wrap { flex: 1; display: flex; flex-direction: column; }
+  .bench { flex: 1; min-height: 0; max-height: 640px; }
+  .bench__head { padding: 0.75rem 1.5rem; }
+  .bench__notes:not(:empty) { padding: 1rem 1.5rem 0; }
+  .bench__cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); }
+  .bench__files { padding: 1.25rem; border-right: 1px solid var(--rule-soft); overflow: auto; }
+  .bench__list { flex: 1; overflow: auto; }
+  .bench__settings { padding: 1.25rem 1.5rem; overflow: auto; }
+}
+
+/* 放檔案的區域：空的時候佔滿左半，是整個畫面最顯眼的地方；有檔案後縮成一列 */
+.drop { flex: 1; min-height: 150px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.9rem;
+  text-align: center; padding: 1.5rem 1rem; cursor: pointer; border-radius: var(--r-md);
+  border: 1.5px dashed #b7cdc5; background: #fff;
+  transition: border-color .18s, background .18s; }
+.drop:hover { border-color: var(--signal); background: var(--signal-dim); }
+.drop__icon { width: 56px; height: 56px; border-radius: 50%; background: var(--signal); color: #fff;
+  display: flex; align-items: center; justify-content: center; transition: transform .18s; }
+.drop:hover .drop__icon { transform: translateY(-3px); }
+.drop__title { font-size: 1rem; font-weight: 600; color: var(--ink); }
+.drop__hint { font-size: 0.8125rem; color: var(--muted); margin-top: 0.2rem; }
+.drop__types { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.4rem; }
+.drop__types span { font-size: 0.75rem; color: var(--signal-ink); background: var(--signal-dim); border-radius: 999px; padding: 0.15rem 0.7rem; }
+.drop--filled { flex: none; min-height: 0; flex-direction: row; justify-content: flex-start; text-align: left; gap: 0.8rem; padding: 0.7rem 0.9rem; }
+.drop--filled .drop__icon { width: 36px; height: 36px; flex-shrink: 0; }
+.drop--filled .drop__icon svg { width: 18px; height: 18px; }
+.drop--filled .drop__title { font-size: 0.875rem; }
+.drop--filled .drop__hint { font-size: 0.75rem; margin-top: 0; }
+
+/* 語言按鈕：用各語言自己的寫法當主角，選中整顆變綠 */
+.lang { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; text-align: left;
+  padding: 0.55rem 0.75rem; border: 1px solid var(--rule); border-radius: var(--r-md); background: var(--card);
+  transition: border-color .18s, background .18s; }
+.lang:hover { border-color: var(--signal); }
+.lang__native { font-size: 0.9375rem; font-weight: 600; color: var(--ink); line-height: 1.35; white-space: nowrap; }
+.lang__zh { font-size: 0.75rem; color: var(--muted); line-height: 1.3; }
+.lang--on { background: var(--signal); border-color: var(--signal); }
+.lang--on .lang__native { color: #fff; }
+.lang--on .lang__zh { color: #cbe2da; }
+
+.btn--primary:disabled { background: #eef0ec; color: #8f978f; border: 1px dashed #cfd5cd; }
+
+@media (prefers-reduced-motion: reduce) { .drop__icon, .drop, .lang { transition: none; } }
+
+/* 手機：標題列單行、放檔案區縮成一列，沒選檔案時一個畫面放得下 */
+@media (max-width: 639px) {
+  .bench__head { flex-wrap: nowrap; padding: 0.55rem 0.8rem; }
+  .bench__sub { display: none; }
+  .bench__files { padding: 0.8rem; }
+  .bench__settings { padding: 0.9rem 0.8rem 0.8rem; gap: 0.9rem; }
+  .drop { flex: none; min-height: 0; flex-direction: row; justify-content: flex-start; text-align: left; gap: 0.8rem; padding: 0.8rem 0.9rem; }
+  .drop__icon { width: 42px; height: 42px; flex-shrink: 0; }
+  .drop__title { font-size: 0.9375rem; }
+  .drop__hint { font-size: 0.75rem; margin-top: 0.1rem; }
+  .drop__types { display: none; }
+  .lang { padding: 0.5rem 0.55rem; }
+  .lang__native { font-size: 0.875rem; }
+}
