@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite build && npx --yes wrangler@4 pages dev dist --port 8788 --compatibility-date=2025-01-01",
+    "preview": "vite build && npx --yes wrangler@4 pages dev dist --port 8788 --compatibility-date=2025-01-01 --d1 DB=local-db",
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

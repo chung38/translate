@@ -57,6 +57,8 @@
 | `DEEPSEEK_API_KEY` | Cloudflare → Workers & Pages → translate → Settings → Variables and Secrets（舊介面叫 Environment variables） | 翻譯用的金鑰，請設成加密（Secret） |
 | `FIREBASE_PROJECT_ID` | 同上 | `ai-studio-applet-webapp-5cf4b`，後端用它驗證登入 |
 | `ALLOWED_ORIGIN` | 同上，選填 | 只允許這個網址呼叫 API。只設在 Production，不要設在 Preview |
+| `DAILY_LIMIT` | 同上，選填 | 每人每天最多呼叫翻譯 API 幾次，預設 2000 |
+| D1 資料庫 `DB` | Cloudflare → translate → Settings → Bindings → Add → D1 database，變數名稱填 `DB`（舊介面在 Settings → Functions） | 記錄每人每天的次數。沒接的話不限制次數，其他功能照常 |
 | Firebase 前端設定（apiKey 等） | `firebase-applet-config.json` | 這是公開設定，放在程式裡沒關係。資料安全靠 `firestore.rules` |
 | 誰是管理員 | Firebase Console → Firestore → `users/{uid}` 的 `role` 欄位設成 `admin` | 前端不能自己改成管理員，規則會擋 |
 | 爬蟲推資料的權限 | 資料 repo → Settings → Actions → General → Workflow permissions 選 Read and write | 用 GitHub 內建的權杖，不用另外建 token |
@@ -70,7 +72,7 @@
 
 ```bash
 npm install
-npm test           # 翻譯邏輯的自動測試（36 項）
+npm test           # 自動測試（45 項：翻譯邏輯＋API 的額度與次數上限）
 npm run lint       # 型別檢查
 cp .dev.vars.example .dev.vars   # 填入 DEEPSEEK_API_KEY
 npm run preview    # 跟正式站一樣（含翻譯 API）：http://localhost:8788
@@ -85,11 +87,23 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
 - 爬蟲每次跑完，`crawler/check-data.js` 會檢查資料格式。不合格就保留上一版，網站不會出現空白；該次 Action 會標成失敗，GitHub 會寄信通知。
 - 在 GitHub 網頁上修改 `docs/guides.json`、`docs/info.json`、`sources.json` 或 `categories.json`，存檔後 `check.yml` 會自動檢查。少了逗號、引號這類錯誤會變紅色並寄信。
 
+## 翻譯 API 的保護
+
+每次呼叫 `/api/translate` 依序檢查：
+
+1. **有登入、Email 已驗證**，否則拒絕。
+2. **帳號沒被停用、檔案額度還沒用完**。後端用使用者自己的登入 token 讀他在 Firestore 的資料（`role`、`quota`、`isPendingDeletion`、翻譯紀錄筆數），規則跟網頁上一樣，管理員不受額度限制。所以就算繞過網頁直接呼叫 API，也一樣會被擋。讀不到資料時放行，不影響正常使用。
+3. **每人每天的次數上限**（預設 2000 次，台灣時間 0 點重新計算，管理員不限）。一份文件會分成很多批送出，每批算 1 次：一般 Word 或 PPT 約 10～50 次，56 頁的掃描 PDF 約 100～150 次。這是防止有人寫程式一直呼叫、讓 DeepSeek 帳單暴增的最後一道防線。次數記在 D1 資料庫的 `api_usage` 資料表，90 天前的紀錄會自動清掉。
+
+想看每個人的用量：Cloudflare 左側選單的 D1 → 點你的資料庫 → Console，輸入
+`SELECT * FROM api_usage ORDER BY day DESC, n DESC LIMIT 50;`
+
+> 第 2 項的額度能不能被繞過，取決於 Firebase 上實際生效的 Firestore 規則：規則必須禁止使用者自己改 `quota`、`role`（repo 裡的 `firestore.rules` 有寫，但要在 Firebase Console 發布才算數）。第 3 項存在 Cloudflare，使用者碰不到。
+
 ## 目前已知的缺口
 
-- **刪除使用者 = 停用。** 管理員按「刪除」只會把帳號標記為待刪除，對方之後一登入就會被擋下。Firebase 的登入帳號本身沒有刪掉；要徹底刪除，請到 Firebase Console → Authentication 手動刪。要做成真正刪除，需要在 Cloudflare 另外放一把 Firebase 服務帳戶金鑰。
+- **刪除使用者是「標記後下次登入時刪除」。** 管理員按「刪除」會先把帳號標記為待刪除，翻譯 API 立刻拒絕他；對方下次登入時，網頁會自動刪掉他的登入帳號與資料。如果對方再也不登入，Firebase 的登入帳號會一直留著，要清掉請到 Firebase Console → Authentication 手動刪。
 - **付費升級沒有後端。** LINE Pay 和藍新金流只有前端程式（`UpgradeModal.tsx`、`App.tsx`），`/api/linepay/*`、`/api/newebpay/*` 都不存在，畫面上也沒有按鈕會打開它。要收費時再補。
-- **沒有流量限制。** 舊的本機伺服器有「每人 15 分鐘最多 100 次」的限制，Cloudflare 版目前沒有，只要求必須登入並完成 Email 驗證。
 
 ## 檔案地圖
 

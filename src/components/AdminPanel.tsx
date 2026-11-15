@@ -110,9 +110,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
     try {
       if (!user) return;
 
-      // 標記為待刪除：之後這個帳號一登入就會被擋下（App.tsx 會跳 DeletedModal）。
-      // Firebase 登入帳號本身不會刪掉，要徹底刪除請到 Firebase Console → Authentication。
-      // （舊版 server.ts 有真正刪除的 API，但它從沒部署到 Cloudflare，正式站一直是走這條。）
+      // 標記為待刪除：對方下次登入時，App.tsx 會自動刪掉他的登入帳號與資料並跳 DeletedModal；
+      // 在那之前，翻譯 API（functions/api/translate.ts）也會直接拒絕這個帳號。
       const userRef = doc(db, 'users', userId);
       await setDoc(userRef, { isPendingDeletion: true }, { merge: true });
 
