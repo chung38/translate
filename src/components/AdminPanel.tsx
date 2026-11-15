@@ -109,33 +109,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
   const deleteUser = async (userId: string) => {
     try {
       if (!user) return;
-      const idToken = await user.getIdToken();
-      
-      let backendSuccess = false;
-      try {
-        const response = await fetch(`/api/admin/users/${userId}`, {
-          method: 'DELETE',
-          headers: {
-            'Authorization': `Bearer ${idToken}`
-          }
-        });
-        
-        if (response.ok) {
-          const data = await response.json();
-          if (data.firestoreDeleted) {
-            backendSuccess = true;
-          }
-        }
-      } catch (e) {
-        console.warn("Backend delete failed, falling back to client SDK", e);
-      }
 
-      if (!backendSuccess) {
-        // Fallback: Soft delete from Firestore using client SDK
-        const userRef = doc(db, 'users', userId);
-        await setDoc(userRef, { isPendingDeletion: true }, { merge: true });
-      }
-      
+      // 標記為待刪除：之後這個帳號一登入就會被擋下（App.tsx 會跳 DeletedModal）。
+      // Firebase 登入帳號本身不會刪掉，要徹底刪除請到 Firebase Console → Authentication。
+      // （舊版 server.ts 有真正刪除的 API，但它從沒部署到 Cloudflare，正式站一直是走這條。）
+      const userRef = doc(db, 'users', userId);
+      await setDoc(userRef, { isPendingDeletion: true }, { merge: true });
+
       setAllUsers(prev => prev.filter(u => u.uid !== userId));
       setDeletingUserId(null);
       setAddUserMessage({ type: 'success', text: '用戶已成功刪除！' });

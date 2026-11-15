@@ -5,9 +5,10 @@ coverage/
 .DS_Store
 *.log
 .env*
-!.env.example
+.dev.vars
+.wrangler/
 
-# 測試用檔案（原本 19 個 test_*.docx/pptx 進了版控，其中幾個還是壞的）
+# 手動測試用的檔案別進版控（舊的 19 個 test_*.docx/pptx 全是壞檔，已刪除）
 test_*.docx
 test_*.pptx
 test_*.xlsx
