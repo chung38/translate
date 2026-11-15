@@ -17,12 +17,12 @@
 │  /translate/     移件翻（React，程式在 src/）                         │
 │  /view.html      文宣檢視頁（public/view.html）                       │
 │  /api/translate  唯一的後端（functions/api/translate.ts）             │
-│                  先驗證 Firebase 登入，再轉給 DeepSeek 翻譯            │
+│                  先驗證 Firebase 登入，再轉給 OpenAI 翻譯              │
 └───────┬───────────────────────────┬──────────────────────┬───────────┘
         │ 讀 JSON 與縮圖              │ 登入、翻譯紀錄          │ 翻譯
         ▼                           ▼                      ▼
- chung38.github.io/            Firebase                 DeepSeek API
- migrant-poster-hub/           Auth + Firestore
+ chung38.github.io/            Firebase                 OpenAI API
+ migrant-poster-hub/           Auth + Firestore         （gpt-6-luna）
  （GitHub Actions 每天爬）
 ```
 
@@ -45,7 +45,7 @@
 | 翻譯頁畫面（三步驟） | `src/App.tsx`、`src/index.css` |
 | Word／Excel／PPT／PDF 怎麼拆字、怎麼把譯文放回去 | `src/utils/documentProcessors.ts` |
 | 給 AI 的翻譯指令、一次送幾句、譯文標籤修復 | `src/hooks/useTranslation.ts` |
-| 後端：登入驗證、呼叫 DeepSeek | `functions/api/translate.ts` |
+| 後端：登入驗證、額度、呼叫翻譯模型 | `functions/api/translate.ts` |
 | 登入、管理員、歷史紀錄等視窗 | `src/components/` |
 | Firebase 連線設定 | `firebase-applet-config.json`、`src/firebase.ts` |
 | Firestore 權限規則 | `firestore.rules`：改完要到 Firebase Console → Firestore → 規則，貼上後按「發布」，不會自動生效 |
@@ -54,7 +54,9 @@
 
 | 項目 | 放在哪 | 說明 |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | Cloudflare → Workers & Pages → translate → Settings → Variables and Secrets（舊介面叫 Environment variables） | 翻譯用的金鑰，請設成加密（Secret） |
+| `OPENAI_API_KEY` | Cloudflare → Workers & Pages → translate → Settings → Variables and Secrets（舊介面叫 Environment variables） | 翻譯用的金鑰，請設成加密（Secret）。有設就用 OpenAI |
+| `OPENAI_MODEL` | 同上，選填 | 換別的 OpenAI 模型，預設 `gpt-6-luna` |
+| `DEEPSEEK_API_KEY` | 同上，備用 | 沒設 `OPENAI_API_KEY` 時才會改用 DeepSeek（`deepseek-chat`） |
 | `FIREBASE_PROJECT_ID` | 同上 | `ai-studio-applet-webapp-5cf4b`，後端用它驗證登入 |
 | `ALLOWED_ORIGIN` | 同上，選填 | 只允許這個網址呼叫 API。只設在 Production，不要設在 Preview |
 | `DAILY_LIMIT` | 同上，選填 | 每人每天最多呼叫翻譯 API 幾次，預設 2000 |
@@ -74,7 +76,7 @@
 npm install
 npm test           # 自動測試（45 項：翻譯邏輯＋API 的額度與次數上限）
 npm run lint       # 型別檢查
-cp .dev.vars.example .dev.vars   # 填入 DEEPSEEK_API_KEY
+cp .dev.vars.example .dev.vars   # 填入 OPENAI_API_KEY
 npm run preview    # 跟正式站一樣（含翻譯 API）：http://localhost:8788
 npm run dev        # 只改畫面、要即時更新時用：http://localhost:5173
                    # /api 會轉給 8788，所以要同時開著 npm run preview
@@ -87,13 +89,24 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
 - 爬蟲每次跑完，`crawler/check-data.js` 會檢查資料格式。不合格就保留上一版，網站不會出現空白；該次 Action 會標成失敗，GitHub 會寄信通知。
 - 在 GitHub 網頁上修改 `docs/guides.json`、`docs/info.json`、`sources.json` 或 `categories.json`，存檔後 `check.yml` 會自動檢查。少了逗號、引號這類錯誤會變紅色並寄信。
 
+## 翻譯模型
+
+目前用 OpenAI 的 **gpt-6-luna**，設定在 `functions/api/translate.ts` 的 `pickProvider`：
+
+- **推理關掉**（`reasoning_effort: none`）：翻譯不需要模型「思考」，開著會變慢，推理用的 token 也照輸出計費。
+- **溫度 0.3**：讓同一句話每次翻得比較一致。
+- **只回 JSON**、單次最多輸出 8192 tokens。
+- 如果 OpenAI 回報不接受某個參數（例如換了不支援溫度的模型），後端會自動拿掉那個參數重送，並記住，之後不再重試。
+- 想看實際用的是哪個模型：瀏覽器開發者工具 → Network → `translate` → Response Headers 的 `X-Translate-Model`。
+- 費用：每次呼叫約台幣 0.02 元，56 頁的掃描 PDF 約 3 元。用量在 OpenAI 後台（platform.openai.com → Usage）查，建議在 Limits 設每月上限。
+
 ## 翻譯 API 的保護
 
 每次呼叫 `/api/translate` 依序檢查：
 
 1. **有登入、Email 已驗證**，否則拒絕。
 2. **帳號沒被停用、檔案額度還沒用完**。後端用使用者自己的登入 token 讀他在 Firestore 的資料（`role`、`quota`、`isPendingDeletion`、翻譯紀錄筆數），規則跟網頁上一樣，管理員不受額度限制。所以就算繞過網頁直接呼叫 API，也一樣會被擋。讀不到資料時放行，不影響正常使用。
-3. **每人每天的次數上限**（預設 2000 次，台灣時間 0 點重新計算，管理員不限）。一份文件會分成很多批送出，每批算 1 次：一般 Word 或 PPT 約 10～50 次，56 頁的掃描 PDF 約 100～150 次。這是防止有人寫程式一直呼叫、讓 DeepSeek 帳單暴增的最後一道防線。次數記在 D1 資料庫的 `api_usage` 資料表，90 天前的紀錄會自動清掉。
+3. **每人每天的次數上限**（預設 2000 次，台灣時間 0 點重新計算，管理員不限）。一份文件會分成很多批送出，每批算 1 次：一般 Word 或 PPT 約 10～50 次，56 頁的掃描 PDF 約 100～150 次。這是防止有人寫程式一直呼叫、讓翻譯費用暴增的最後一道防線。次數記在 D1 資料庫的 `api_usage` 資料表，90 天前的紀錄會自動清掉。
 
 想看每個人的用量：Cloudflare 左側選單的 D1 → 點你的資料庫 → Console，輸入
 `SELECT * FROM api_usage ORDER BY day DESC, n DESC LIMIT 50;`

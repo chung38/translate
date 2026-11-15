@@ -7,7 +7,7 @@ import { langBase } from '../utils/documentProcessors';
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
-const DEEPSEEK_PROXY_URL = '/api/translate';
+const TRANSLATE_API_URL = '/api/translate';   // 後端：functions/api/translate.ts
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -299,7 +299,7 @@ export const useTranslation = (
         throw new Error('登入狀態已失效，請重新登入後再試。');
       }
 
-      const response = await fetch(DEEPSEEK_PROXY_URL, {
+      const response = await fetch(TRANSLATE_API_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -330,7 +330,7 @@ export const useTranslation = (
       } catch (e) {
         throw new Error(`Invalid JSON from server: ${responseText.substring(0, 200)}`);
       }
-      const resultText = data.choices[0].message.content.trim();
+      const resultText = String(data?.choices?.[0]?.message?.content ?? '').trim();
 
       // Extremely robust JSON extraction: find the first { and the last }
       // This bypasses any markdown blocks (```json) or conversational chatter entirely.
@@ -354,7 +354,7 @@ export const useTranslation = (
           const jsonMatch = resultText.match(/\{[\s\S]*\}/);
           if (jsonMatch) {
             try {
-              const repairedMatch = jsonrepair(jsonMatch);
+              const repairedMatch = jsonrepair(jsonMatch[0]);
               parsed = JSON.parse(repairedMatch);
             } catch (matchRepairError) {
               throw new Error('無法解析 API 回傳的 JSON 格式');
@@ -476,7 +476,7 @@ export const useTranslation = (
           ? (Math.pow(2, retryCount) * 5000 + Math.random() * 2000)
           : (3000 + Math.random() * 2000);
 
-        console.warn(`DeepSeek ${isRateLimit ? 'Rate limit' : isJsonError ? 'JSON Parse Error' : 'Network error'} hit. Waiting ${Math.round(waitTime / 1000)}s... (Attempt ${retryCount + 1})`);
+        console.warn(`Translate API ${isRateLimit ? 'Rate limit' : isJsonError ? 'JSON Parse Error' : 'Network error'} hit. Waiting ${Math.round(waitTime / 1000)}s... (Attempt ${retryCount + 1})`);
         await sleep(waitTime);
         return translateBatch(texts, targetLangs, industry, retryCount + 1, qualityRetryCount);
       }
@@ -499,10 +499,10 @@ export const useTranslation = (
       }
 
       if (isAuthError) {
-        throw new Error(err.message || 'DeepSeek API Key 驗證失敗，請檢查設定是否正確。');
+        throw new Error(err.message || '翻譯服務金鑰驗證失敗，請檢查設定是否正確。');
       }
 
-      console.error(`DeepSeek Batch translation error:`, err);
+      console.error(`Batch translation error:`, err);
       throw err instanceof Error ? err : new Error(err?.message || '翻譯服務發生未知錯誤');
     }
   };

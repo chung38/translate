@@ -1,5 +1,6 @@
 # 本機測試用（npm run preview）：複製成 .dev.vars 再填值，.dev.vars 不會進版控。
 # 正式站的值在 Cloudflare → Workers & Pages → translate → Settings → Variables and Secrets。
-DEEPSEEK_API_KEY=
+OPENAI_API_KEY=
+# DEEPSEEK_API_KEY=   # 備用，沒設 OPENAI_API_KEY 時才會用
 FIREBASE_PROJECT_ID=ai-studio-applet-webapp-5cf4b
 # ALLOWED_ORIGIN=http://localhost:8788

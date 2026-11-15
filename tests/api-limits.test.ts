@@ -1,7 +1,7 @@
-// 翻譯 API 的帳號額度與每日次數上限（functions/api/translate.ts）
+// 翻譯 API：帳號額度、每日次數上限、翻譯模型（functions/api/translate.ts）
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
-import { getAccount, pruneUsage, taipeiDay, takeDailySlot } from '../functions/api/translate';
+import { adjustForError, callModel, getAccount, pickProvider, pruneUsage, taipeiDay, takeDailySlot } from '../functions/api/translate';
 
 // 用 Node 內建的 SQLite 模擬 Cloudflare D1（D1 本身就是 SQLite）
 function fakeD1() {
@@ -104,5 +104,59 @@ describe('getAccount', () => {
     expect(await getAccount('acc4', 't', 'p')).toEqual({ isAdmin: false, pendingDeletion: false, quota: 2, used: 1 });
     await getAccount('acc4', 't', 'p');
     expect(f).toHaveBeenCalledTimes(2); // 第二次用快取，沒再打 Firestore
+  });
+});
+
+describe('翻譯模型', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('有 OPENAI_API_KEY 就用 gpt-6-luna、關掉推理；沒有才用 DeepSeek', () => {
+    const o = pickProvider({ OPENAI_API_KEY: 'sk-o', DEEPSEEK_API_KEY: 'sk-d' })!;
+    expect(o.name).toBe('openai');
+    expect(o.model).toBe('gpt-6-luna');
+    expect(o.options).toMatchObject({ reasoning_effort: 'none', max_completion_tokens: 8192 });
+    expect(o.options).not.toHaveProperty('max_tokens');
+    expect(pickProvider({ OPENAI_API_KEY: 'k', OPENAI_MODEL: 'gpt-6-sol' })!.model).toBe('gpt-6-sol');
+    expect(pickProvider({ DEEPSEEK_API_KEY: 'sk-d' })!.name).toBe('deepseek');
+    expect(pickProvider({})).toBeNull();
+  });
+
+  it('模型不接受某個參數時自動調整', () => {
+    const base = { reasoning_effort: 'none', temperature: 0.3, response_format: { type: 'json_object' } };
+    expect(adjustForError(base, 400, { error: { param: 'temperature', message: "Unsupported parameter: 'temperature'" } }))
+      .toEqual({ reasoning_effort: 'none', response_format: { type: 'json_object' } });
+    expect(adjustForError(base, 400, { error: { message: "Unsupported value: 'reasoning_effort' does not support 'none'" } }))
+      .toMatchObject({ reasoning_effort: 'low' });
+    expect(adjustForError(base, 400, { error: { message: 'something else' } })).toBeNull();
+    expect(adjustForError(base, 429, { error: { param: 'temperature' } })).toBeNull();
+  });
+
+  it('送出正確的請求；被拒的參數拿掉重送後，之後都記得', async () => {
+    const bodies: any[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      const b = JSON.parse(String(init!.body));
+      bodies.push(b);
+      if ('temperature' in b) return Response.json({ error: { param: 'temperature', message: "Unsupported parameter: 'temperature'" } }, { status: 400 });
+      return Response.json({ choices: [{ message: { content: '{"ok":true}' } }] });
+    }));
+    const p = pickProvider({ OPENAI_API_KEY: 'sk-test', OPENAI_MODEL: 'luna-test' })!;
+    const res = await callModel(p, '翻譯這句');
+    expect(res.ok).toBe(true);
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0]).toMatchObject({ model: 'luna-test', reasoning_effort: 'none', temperature: 0.3 });
+    expect(bodies[0].messages[1]).toEqual({ role: 'user', content: '翻譯這句' });
+    expect(bodies[1]).not.toHaveProperty('temperature');
+
+    await callModel(p, '第二句');
+    expect(bodies).toHaveLength(3);   // 直接用調整後的設定，不會再被拒一次
+    expect(bodies[2]).not.toHaveProperty('temperature');
+  });
+
+  it('金鑰錯誤直接回傳，不重試', async () => {
+    const f = vi.fn(async () => Response.json({ error: { message: 'Incorrect API key provided' } }, { status: 401 }));
+    vi.stubGlobal('fetch', f);
+    const res = await callModel(pickProvider({ OPENAI_API_KEY: 'bad' })!, 'x');
+    expect(res.status).toBe(401);
+    expect(f).toHaveBeenCalledTimes(1);
   });
 });

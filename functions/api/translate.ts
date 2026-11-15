@@ -6,7 +6,9 @@ import firebaseConfig from '../../firebase-applet-config.json';
 const FIRESTORE_DB = (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId || '(default)';
 
 interface Env {
-  DEEPSEEK_API_KEY: string;
+  OPENAI_API_KEY?: string;       // 有設就用 OpenAI 翻譯（預設模型 gpt-6-luna）
+  OPENAI_MODEL?: string;         // 選填：換別的 OpenAI 模型
+  DEEPSEEK_API_KEY?: string;     // 備用：沒設 OPENAI_API_KEY 時改用 DeepSeek
   FIREBASE_PROJECT_ID: string;   // Cloudflare → Settings → Variables and Secrets
   ALLOWED_ORIGIN?: string;       // 選填：例如 https://translate-1up.pages.dev，未設定則不限制
   DB?: D1Database;               // 選填：D1 資料庫（Settings → Bindings，名稱 DB），用來算每日次數
@@ -112,6 +114,122 @@ export async function pruneUsage(db: D1Database | undefined, now = Date.now()) {
   } catch { /* 下次再清 */ }
 }
 
+// ─── 翻譯模型 ─────────────────────────────────────────────────────────────
+// 有設 OPENAI_API_KEY 就用 OpenAI（預設 gpt-6-luna），沒有才用 DeepSeek。
+// 兩家都是同一種 Chat Completions 格式，回傳內容前端不用改。
+export const DEFAULT_OPENAI_MODEL = 'gpt-6-luna';
+const SYSTEM_PROMPT = 'You are a helpful assistant that translates text into multiple languages and outputs only structured JSON.';
+
+export interface Provider {
+  name: 'openai' | 'deepseek';
+  url: string;
+  key: string;
+  model: string;
+  options: Record<string, unknown>;   // 除了 model、messages 以外的參數
+}
+
+export function pickProvider(env: Pick<Env, 'OPENAI_API_KEY' | 'OPENAI_MODEL' | 'DEEPSEEK_API_KEY'>): Provider | null {
+  if (env.OPENAI_API_KEY) {
+    return {
+      name: 'openai',
+      url: 'https://api.openai.com/v1/chat/completions',
+      key: env.OPENAI_API_KEY,
+      model: env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL,
+      options: {
+        reasoning_effort: 'none',   // 翻譯不需要「思考」；開著會變慢，推理用的 token 也照輸出計費
+        temperature: 0.3,           // 只有 reasoning_effort 為 none 時才能設
+        response_format: { type: 'json_object' },
+        max_completion_tokens: 8192,
+      },
+    };
+  }
+  if (env.DEEPSEEK_API_KEY) {
+    return {
+      name: 'deepseek',
+      url: 'https://api.deepseek.com/v1/chat/completions',
+      key: env.DEEPSEEK_API_KEY,
+      model: 'deepseek-chat',
+      options: { response_format: { type: 'json_object' }, temperature: 0.3, max_tokens: 8192 },
+    };
+  }
+  return null;
+}
+
+// 模型不接受某個選填參數（回 400）時，自動調整後重送，並記住，之後的請求直接用調整後的設定。
+const ADJUSTABLE = ['temperature', 'reasoning_effort', 'response_format'] as const;
+const learned = new Map<string, Record<string, unknown>>();   // 模型名稱 → 調整後的參數
+
+export function adjustForError(options: Record<string, unknown>, status: number, errorBody: any): Record<string, unknown> | null {
+  if (status !== 400) return null;
+  const param = String(errorBody?.error?.param ?? '');
+  const message = String(errorBody?.error?.message ?? '');
+  const bad = ADJUSTABLE.find(k => k in options && (param === k || message.includes(k)));
+  if (!bad) return null;
+  const next = { ...options };
+  if (bad === 'reasoning_effort' && next.reasoning_effort === 'none') {
+    next.reasoning_effort = 'low';   // 不支援 none 的模型，用最低的 low
+  } else {
+    delete next[bad];
+    if (bad === 'reasoning_effort') delete next.temperature;   // 有在推理就不能設溫度
+  }
+  return next;
+}
+
+export async function callModel(provider: Provider, prompt: string): Promise<Response> {
+  let options = learned.get(provider.model) ?? provider.options;
+  let adjustments = 0;
+  let retries = 3;
+  let delay = 1000;
+
+  while (true) {
+    let response: Response;
+    try {
+      response = await fetch(provider.url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.key}` },
+        body: JSON.stringify({
+          model: provider.model,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+          ...options,
+        }),
+      });
+    } catch (err) {
+      if (--retries > 0) {
+        await new Promise(r => setTimeout(r, delay));
+        delay *= 2;
+        continue;
+      }
+      throw err;
+    }
+
+    if (response.ok) return response;
+
+    const text = await response.text();
+    let body: any = null;
+    try { body = JSON.parse(text); } catch { /* 不是 JSON */ }
+
+    const fixed = adjustments < ADJUSTABLE.length ? adjustForError(options, response.status, body) : null;
+    if (fixed) {
+      console.warn(`${provider.model} 不接受目前的參數，已自動調整：`, body?.error?.message);
+      options = fixed;
+      learned.set(provider.model, fixed);
+      adjustments++;
+      continue;
+    }
+
+    if ((response.status === 429 || response.status >= 500) && --retries > 0) {
+      await new Promise(r => setTimeout(r, delay));
+      delay *= 2;
+      continue;
+    }
+
+    return new Response(text, { status: response.status, headers: { 'Content-Type': 'application/json' } });
+  }
+}
+
 // ─── Firebase ID Token 驗證 ────────────────────────────────────────────────
 // Workers 環境跑不了 firebase-admin，所以用 WebCrypto 自己驗 RS256。
 const JWKS_URL = 'https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com';
@@ -209,18 +327,9 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     return json({ error: { message: `額度已用完（${account.quota} 份檔案），請聯絡管理員增加額度。` } }, 403);
   }
 
-  // ── 每人每日次數上限（管理員不限）────────────────────────────────────────
-  if (!account?.isAdmin) {
-    const slot = await takeDailySlot(env, user.uid);
-    if (slot && !slot.ok) {
-      return json({ error: { message: `今天的翻譯次數已達上限（每人每天 ${slot.limit} 次），明天 0 點會重新計算。` } }, 429);
-    }
-    if (slot && Math.random() < 0.01) context.waitUntil(pruneUsage(env.DB));
-  }
-
-  const apiKey = env.DEEPSEEK_API_KEY;
-  if (!apiKey) {
-    return json({ error: { message: '未設定 DEEPSEEK_API_KEY，請至 Cloudflare Pages → Settings → Environment variables 新增。' } }, 500);
+  const provider = pickProvider(env);
+  if (!provider) {
+    return json({ error: { message: '尚未設定翻譯服務金鑰，請到 Cloudflare → Settings → Variables and Secrets 新增 OPENAI_API_KEY。' } }, 500);
   }
 
   let prompt: string;
@@ -238,65 +347,34 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     return json({ error: { message: '文本內容過長，超過系統單次處理限制。' } }, 400);
   }
 
-  // 呼叫 DeepSeek，最多重試 3 次
-  let retries = 3;
-  let delay = 1000;
-
-  while (retries > 0) {
-    try {
-      const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'deepseek-chat',
-          messages: [
-            { role: 'system', content: 'You are a helpful assistant that translates text into multiple languages and outputs only structured JSON.' },
-            { role: 'user', content: prompt },
-          ],
-          response_format: { type: 'json_object' },
-          temperature: 0.3,
-          max_tokens: 8192,
-        }),
-      });
-
-      const responseText = await response.text();
-
-      if (!response.ok) {
-        if ((response.status === 429 || response.status >= 500) && retries > 1) {
-          await new Promise(r => setTimeout(r, delay));
-          retries--;
-          delay *= 2;
-          continue;
-        }
-        let errorData;
-        try { errorData = JSON.parse(responseText); }
-        catch { errorData = { error: { message: `DeepSeek API Error (${response.status})` } }; }
-        return new Response(JSON.stringify(errorData), {
-          status: response.status,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
-      }
-
-      return new Response(responseText, {
-        status: 200,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
-
-    } catch (err: any) {
-      if (retries > 1) {
-        await new Promise(r => setTimeout(r, delay));
-        retries--;
-        delay *= 2;
-        continue;
-      }
-      return json({ error: { message: err.message || 'Internal Server Error' } }, 500);
+  // ── 每人每日次數上限（管理員不限）────────────────────────────────────────
+  if (!account?.isAdmin) {
+    const slot = await takeDailySlot(env, user.uid);
+    if (slot && !slot.ok) {
+      return json({ error: { message: `今天的翻譯次數已達上限（每人每天 ${slot.limit} 次），明天 0 點會重新計算。` } }, 429);
     }
+    if (slot && Math.random() < 0.01) context.waitUntil(pruneUsage(env.DB));
   }
 
-  return json({ error: { message: '翻譯請求失敗，請稍後重試。' } }, 500);
+  const headers = { ...corsHeaders, 'Content-Type': 'application/json', 'X-Translate-Model': provider.model };
+  try {
+    const upstream = await callModel(provider, prompt);
+    const text = await upstream.text();
+    if (upstream.ok) return new Response(text, { status: 200, headers });
+
+    // 金鑰錯誤或沒有權限，跟「使用者沒登入」(401) 分開，免得前端誤會
+    if (upstream.status === 401 || upstream.status === 403) {
+      console.error(`${provider.name} 金鑰被拒絕：`, text.slice(0, 300));
+      const keyName = provider.name === 'openai' ? 'OPENAI_API_KEY' : 'DEEPSEEK_API_KEY';
+      return json({ error: { message: `翻譯服務拒絕了金鑰，請檢查 Cloudflare 上的 ${keyName} 是否正確、帳戶是否還有餘額。` } }, 502);
+    }
+    let errorData: unknown;
+    try { errorData = JSON.parse(text); }
+    catch { errorData = { error: { message: `翻譯服務錯誤（${upstream.status}）` } }; }
+    return new Response(JSON.stringify(errorData), { status: upstream.status, headers });
+  } catch (err: any) {
+    return json({ error: { message: err?.message || '翻譯請求失敗，請稍後重試。' } }, 500);
+  }
 };
 
 // 同時處理 OPTIONS preflight
