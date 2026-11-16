@@ -6,7 +6,7 @@
 - **chung38/migrant-poster-hub** 負責爬蟲與資料，放在 GitHub Actions 加 GitHub Pages。
 
 ```
-                   使用者打開 https://translate-1up.pages.dev
+                        使用者打開 https://yicipass.com
                                    │
 ┌──────────────────────────────────┴───────────────────────────────────┐
 │ Cloudflare Pages（chung38/translate）                                 │
@@ -25,6 +25,13 @@
  migrant-poster-hub/           Auth + Firestore         （gpt-6-luna）
  （GitHub Actions 每天爬）
 ```
+
+## 網址
+
+- **正式網址 `yicipass.com`**：網域買在 Cloudflare，在 translate → Custom domains 接到這個網站。
+- **自動轉址**：`www.yicipass.com` 和舊網址 `translate-1up.pages.dev` 會自動轉到 `yicipass.com`（`index.html`、`public/view.html` 開頭的轉址程式）。舊網址會先確認新網址連得上才轉。
+- **Google 登入**：網址要列在 Firebase Console → Authentication → Settings → Authorized domains，換網址或加網址時記得一起加，不然新網址登入會失敗。
+- **之後如果再換網址**：要改的地方有 `index.html`、`public/view.html` 的轉址程式，以及資料 repo 的 `docs/index.html`、`docs/view.html`。
 
 ## 為什麼分成兩個 repo
 
@@ -59,7 +66,7 @@
 | `OPENAI_MODEL` | 同上，選填 | 換別的 OpenAI 模型，預設 `gpt-6-luna` |
 | `DEEPSEEK_API_KEY` | 同上，備用 | 沒設 `OPENAI_API_KEY` 時才會改用 DeepSeek（`deepseek-chat`） |
 | `FIREBASE_PROJECT_ID` | 同上 | `ai-studio-applet-webapp-5cf4b`，後端用它驗證登入 |
-| `ALLOWED_ORIGIN` | 同上，選填 | 只允許這個網址呼叫 API。只設在 Production，不要設在 Preview |
+| `ALLOWED_ORIGIN` | 同上，選填 | 允許哪些「其他網站」呼叫 API，多個用逗號分隔。自己網站（yicipass.com、舊網址）一律允許，所以一般不用設 |
 | `DAILY_LIMIT` | 同上，選填 | 每人每天最多呼叫翻譯 API 幾次，預設 2000 |
 | D1 資料庫 `DB` | Cloudflare → translate → Settings → Bindings → Add → D1 database，變數名稱填 `DB`（舊介面在 Settings → Functions） | 記錄每人每天的翻譯次數和網站瀏覽人數。沒接的話不限制次數、不顯示人數，其他功能照常 |
 | `VISIT_SALT` | Variables and Secrets，選填 | 計算瀏覽人數時打亂訪客資料用的隨機字串，隨便打一串英數字即可 |

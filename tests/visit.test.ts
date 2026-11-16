@@ -9,7 +9,7 @@ const PC = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140.0 Safari/537.36
 function post(env: any, ua: string, ip = '1.2.3.4', origin?: string) {
   const headers: Record<string, string> = { 'user-agent': ua, 'cf-connecting-ip': ip };
   if (origin) headers.origin = origin;
-  const request = new Request('https://translate-1up.pages.dev/api/visit', { method: 'POST', headers });
+  const request = new Request('https://yicipass.com/api/visit', { method: 'POST', headers });
   return (onRequestPost as any)({ request, env, waitUntil() {} }).then((r: Response) => r.json());
 }
 
@@ -37,7 +37,7 @@ describe('瀏覽人數', () => {
     await post(env, 'facebookexternalhit/1.1');
     await post(env, '');
     await post(env, PHONE, '1.1.1.1', 'https://evil.example.com');
-    expect(await post(env, PHONE, '1.1.1.1', 'https://translate-1up.pages.dev')).toMatchObject({ today: 1, viewsTotal: 1 });
+    expect(await post(env, PHONE, '1.1.1.1', 'https://yicipass.com')).toMatchObject({ today: 1, viewsTotal: 1 });
   });
 
   it('隔天今日人數歸零，累計繼續加；舊的訪客名單會清掉', async () => {

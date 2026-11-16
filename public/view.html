@@ -3,6 +3,21 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="canonical" href="https://yicipass.com/view.html">
+<script>
+// 正式網址是 yicipass.com：舊網址（translate-1up.pages.dev）和 www 開頭的都轉過去。
+// 先確認新網址連得上才轉；連不上就留在原地，網站照常可用。分支預覽網址（xxx.translate-1up.pages.dev）不受影響。
+(function () {
+  var MAIN = 'yicipass.com';
+  var h = location.hostname;
+  if (h !== 'translate-1up.pages.dev' && h !== 'www.' + MAIN) return;
+  var go = function () { location.replace('https://' + MAIN + location.pathname + location.search + location.hash); };
+  if (h === 'www.' + MAIN) return go();
+  var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+  if (ctl) setTimeout(function () { ctl.abort(); }, 3000);
+  fetch('https://' + MAIN + '/api/visit', { mode: 'no-cors', cache: 'no-store', signal: ctl && ctl.signal }).then(go, function () {});
+})();
+</script>
 <title>檢視文宣｜移次搞定</title>
 <style>
   :root{--bg:#f6f3ec;--paper:#fffdf8;--ink:#1f2a2e;--muted:#6b7378;--line:#e4ddd0;--accent:#0f766e;--chip:#efe9dd}

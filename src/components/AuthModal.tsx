@@ -162,7 +162,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     try {
       // 手機不要再用 signInWithRedirect。
       // Firebase 的 redirect 流程靠一個連到 <專案>.firebaseapp.com 的跨來源 iframe
-      // 把登入結果傳回來，但本站在 pages.dev、authDomain 在 firebaseapp.com，不同源。
+      // 把登入結果傳回來，但本站在 yicipass.com、authDomain 在 firebaseapp.com，不同源。
       // Safari 16.1+、Chrome 115+、Firefox 109+ 會擋掉這種第三方儲存存取，
       // 症狀就是：Google 那邊帳號選完、跳回網站卻仍然是未登入狀態。
       // popup 走 window.postMessage，不受這個限制，現在的手機瀏覽器都支援。

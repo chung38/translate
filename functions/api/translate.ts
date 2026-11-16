@@ -10,7 +10,7 @@ interface Env {
   OPENAI_MODEL?: string;         // 選填：換別的 OpenAI 模型
   DEEPSEEK_API_KEY?: string;     // 備用：沒設 OPENAI_API_KEY 時改用 DeepSeek
   FIREBASE_PROJECT_ID: string;   // Cloudflare → Settings → Variables and Secrets
-  ALLOWED_ORIGIN?: string;       // 選填：例如 https://translate-1up.pages.dev，未設定則不限制
+  ALLOWED_ORIGIN?: string;       // 選填：允許從哪些網址呼叫（逗號分隔），例如 https://yicipass.com；自己網站一律允許
   DB?: D1Database;               // 選填：D1 資料庫（Settings → Bindings，名稱 DB），用來算每日次數
   DAILY_LIMIT?: string;          // 選填：每人每天最多呼叫幾次，預設 2000
 }
@@ -287,9 +287,11 @@ async function verifyFirebaseIdToken(token: string, projectId: string) {
 
 const buildCors = (env: Env, request: Request) => {
   const origin = request.headers.get('Origin') || '';
-  const allowed = env.ALLOWED_ORIGIN;
+  const list = (env.ALLOWED_ORIGIN || '').split(',').map(s => s.trim()).filter(Boolean);
+  let sameSite = false;
+  try { sameSite = !!origin && new URL(origin).host === new URL(request.url).host; } catch { /* Origin 格式不對 */ }
   return {
-    'Access-Control-Allow-Origin': allowed ? (origin === allowed ? origin : allowed) : '*',
+    'Access-Control-Allow-Origin': !list.length ? '*' : (sameSite || list.includes(origin)) ? origin : list[0],
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     'Vary': 'Origin',
