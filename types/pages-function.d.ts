@@ -10,11 +10,15 @@ type PagesFunction<Env = unknown> = (context: {
 }) => Response | Promise<Response>;
 
 // D1（Cloudflare 的 SQLite 資料庫）用到的部分
+interface D1Result {
+  meta?: { changes?: number };
+}
 interface D1PreparedStatement {
   bind(...values: unknown[]): D1PreparedStatement;
   first<T = Record<string, unknown>>(): Promise<T | null>;
-  run(): Promise<unknown>;
+  run(): Promise<D1Result>;
 }
 interface D1Database {
   prepare(query: string): D1PreparedStatement;
+  batch(statements: D1PreparedStatement[]): Promise<D1Result[]>;
 }

@@ -16,7 +16,7 @@
 │                  └─ 首頁中間用 iframe 嵌入 /translate/                │
 │  /translate/     移件翻（React，程式在 src/）                         │
 │  /view.html      文宣檢視頁（public/view.html）                       │
-│  /api/translate  唯一的後端（functions/api/translate.ts）             │
+│  /api/translate  翻譯 API（functions/api/translate.ts）               │
 │                  先驗證 Firebase 登入，再轉給 OpenAI 翻譯              │
 └───────┬───────────────────────────┬──────────────────────┬───────────┘
         │ 讀 JSON 與縮圖              │ 登入、翻譯紀錄          │ 翻譯
@@ -46,6 +46,7 @@
 | Word／Excel／PPT／PDF 怎麼拆字、怎麼把譯文放回去 | `src/utils/documentProcessors.ts` |
 | 給 AI 的翻譯指令、一次送幾句、譯文標籤修復 | `src/hooks/useTranslation.ts` |
 | 後端：登入驗證、額度、呼叫翻譯模型 | `functions/api/translate.ts` |
+| 網站瀏覽人數 | `functions/api/visit.ts`（後端）、`index.html` 的「瀏覽人數」段落（顯示） |
 | 登入、管理員、歷史紀錄等視窗 | `src/components/` |
 | Firebase 連線設定 | `firebase-applet-config.json`、`src/firebase.ts` |
 | Firestore 權限規則 | `firestore.rules`：改完要到 Firebase Console → Firestore → 規則，貼上後按「發布」，不會自動生效 |
@@ -60,7 +61,8 @@
 | `FIREBASE_PROJECT_ID` | 同上 | `ai-studio-applet-webapp-5cf4b`，後端用它驗證登入 |
 | `ALLOWED_ORIGIN` | 同上，選填 | 只允許這個網址呼叫 API。只設在 Production，不要設在 Preview |
 | `DAILY_LIMIT` | 同上，選填 | 每人每天最多呼叫翻譯 API 幾次，預設 2000 |
-| D1 資料庫 `DB` | Cloudflare → translate → Settings → Bindings → Add → D1 database，變數名稱填 `DB`（舊介面在 Settings → Functions） | 記錄每人每天的次數。沒接的話不限制次數，其他功能照常 |
+| D1 資料庫 `DB` | Cloudflare → translate → Settings → Bindings → Add → D1 database，變數名稱填 `DB`（舊介面在 Settings → Functions） | 記錄每人每天的翻譯次數和網站瀏覽人數。沒接的話不限制次數、不顯示人數，其他功能照常 |
+| `VISIT_SALT` | Variables and Secrets，選填 | 計算瀏覽人數時打亂訪客資料用的隨機字串，隨便打一串英數字即可 |
 | Firebase 前端設定（apiKey 等） | `firebase-applet-config.json` | 這是公開設定，放在程式裡沒關係。資料安全靠 `firestore.rules` |
 | 誰是管理員 | Firebase Console → Firestore → `users/{uid}` 的 `role` 欄位設成 `admin` | 前端不能自己改成管理員，規則會擋 |
 | 爬蟲推資料的權限 | 資料 repo → Settings → Actions → General → Workflow permissions 選 Read and write | 用 GitHub 內建的權杖，不用另外建 token |
@@ -74,7 +76,7 @@
 
 ```bash
 npm install
-npm test           # 自動測試（45 項：翻譯邏輯＋API 的額度與次數上限）
+npm test           # 自動測試（53 項：翻譯邏輯、API 額度與次數上限、瀏覽人數）
 npm run lint       # 型別檢查
 cp .dev.vars.example .dev.vars   # 填入 OPENAI_API_KEY
 npm run preview    # 跟正式站一樣（含翻譯 API）：http://localhost:8788
@@ -113,6 +115,26 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
 
 > 第 2 項的額度能不能被繞過，取決於 Firebase 上實際生效的 Firestore 規則：規則必須禁止使用者自己改 `quota`、`role`（repo 裡的 `firestore.rules` 有寫，但要在 Firebase Console 發布才算數）。第 3 項存在 Cloudflare，使用者碰不到。
 
+## 網站瀏覽人數
+
+標頭右上角顯示「👀 今日 N 人・累計 M 人次」，由 `functions/api/visit.ts` 計算，存在 D1 資料庫：
+
+- **今日人數**：同一天、同一個網路（IP）＋同一個瀏覽器只算 1 人，台灣時間 0 點歸零。重新整理、切換分頁都不會重複算。
+- **累計人次**：每人每天算一次，一直往上加。
+- 首頁和文宣檢視頁（`view.html`）共用同一個計數；首頁中間的翻譯頁不另外算。
+- 搜尋引擎、社群連結預覽等機器人不算；從別的網站直接呼叫 API 也不算。
+- 不存 IP、不用 cookie：只存「日期＋IP＋瀏覽器」打亂後的代碼，用來判斷今天是否來過，隔天就刪。
+- 同一個辦公室或宿舍共用網路、又用同款手機的人，可能被算成同一人，所以數字會略低於實際。
+
+想看每天的明細：D1 → 你的資料庫 → Console，輸入
+
+```sql
+SELECT substr(k, 10) AS 日期, n AS 人數 FROM site_stats WHERE k LIKE 'visitors:2%' ORDER BY k DESC LIMIT 30;
+SELECT substr(k, 7) AS 日期, n AS 開啟次數 FROM site_stats WHERE k LIKE 'views:2%' ORDER BY k DESC LIMIT 30;
+```
+
+不想公開顯示、只要自己看：把 `index.html` 裡「瀏覽人數」那段的 `el.hidden = false;` 刪掉即可，後台照樣記錄。
+
 ## 目前已知的缺口
 
 - **刪除使用者是「標記後下次登入時刪除」。** 管理員按「刪除」會先把帳號標記為待刪除，翻譯 API 立刻拒絕他；對方下次登入時，網頁會自動刪掉他的登入帳號與資料。如果對方再也不登入，Firebase 的登入帳號會一直留著，要清掉請到 Firebase Console → Authentication 手動刪。
@@ -131,7 +153,8 @@ src/utils/documentProcessors.ts  各種檔案格式的處理
 src/utils/__tests__/             自動測試
 src/components/                  登入、管理員、歷史紀錄等視窗
 src/firebase.ts                  Firebase 初始化
-functions/api/translate.ts       後端（唯一一份）
+functions/api/translate.ts       翻譯 API
+functions/api/visit.ts           網站瀏覽人數 API
 firestore.rules                  Firestore 權限規則
 firebase-blueprint.json          Firestore 資料欄位說明
 tools/opc_check.py               檢查輸出的 Office 檔會不會被說「需要修復」

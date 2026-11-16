@@ -1,24 +1,7 @@
 // 翻譯 API：帳號額度、每日次數上限、翻譯模型（functions/api/translate.ts）
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DatabaseSync } from 'node:sqlite';
+import { fakeD1 } from './fake-d1';
 import { adjustForError, callModel, getAccount, pickProvider, pruneUsage, taipeiDay, takeDailySlot } from '../functions/api/translate';
-
-// 用 Node 內建的 SQLite 模擬 Cloudflare D1（D1 本身就是 SQLite）
-function fakeD1() {
-  const sqlite = new DatabaseSync(':memory:');
-  const db = {
-    prepare(sql: string) {
-      let values: unknown[] = [];
-      const stmt = {
-        bind(...v: unknown[]) { values = v; return stmt; },
-        async first<T>() { return (sqlite.prepare(sql).get(...(values as any[])) ?? null) as T | null; },
-        async run() { return sqlite.prepare(sql).run(...(values as any[])); },
-      };
-      return stmt;
-    },
-  };
-  return { db, sqlite };
-}
 
 describe('taipeiDay', () => {
   it('用台灣時間換日', () => {
@@ -34,7 +17,7 @@ describe('takeDailySlot', () => {
 
   it('到上限就擋，被擋的那次不加次數', async () => {
     const { db, sqlite } = fakeD1();
-    const env = { DB: db as any, DAILY_LIMIT: '3' };
+    const env = { DB: db, DAILY_LIMIT: '3' };
     const now = Date.parse('2026-11-15T02:00:00Z');
     const got = [];
     for (let i = 0; i < 5; i++) got.push(await takeDailySlot(env, 'u1', now));

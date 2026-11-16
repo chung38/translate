@@ -101,6 +101,9 @@ const esc = s => String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;'
     main.innerHTML = `${it.thumb ? `<img src="${esc(DATA + it.thumb)}" alt="">` : ''}<div class="msg">這個檔案類型（${esc((it.ext||'').toUpperCase())}）無法在網頁上預覽，請按「下載原檔」。</div>`;
   }
 })();
+
+// 瀏覽人數：跟首頁共用同一個計數（functions/api/visit.ts），這頁不顯示
+fetch('/api/visit', { method: 'POST' }).catch(() => {});
 </script>
 </body>
 </html>
