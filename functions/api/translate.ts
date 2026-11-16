@@ -83,9 +83,8 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
 
     // 金鑰錯誤或沒有權限，跟「使用者沒登入」(401) 分開，免得前端誤會
     if (upstream.status === 401 || upstream.status === 403) {
-      console.error(`${provider.name} 金鑰被拒絕：`, text.slice(0, 300));
-      const keyName = provider.name === 'openai' ? 'OPENAI_API_KEY' : 'DEEPSEEK_API_KEY';
-      return json(errorBody(`翻譯服務拒絕了金鑰，請檢查 Cloudflare 上的 ${keyName} 是否正確、帳戶是否還有餘額。`), 502);
+      console.error('OpenAI 金鑰被拒絕：', text.slice(0, 300));
+      return json(errorBody('翻譯服務拒絕了金鑰，請檢查 Cloudflare 上的 OPENAI_API_KEY 是否正確、OpenAI 帳戶是否還有餘額。'), 502);
     }
     let errorData: unknown;
     try { errorData = JSON.parse(text); }

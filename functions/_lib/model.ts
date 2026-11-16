@@ -1,18 +1,18 @@
 // ─── 翻譯模型 ─────────────────────────────────────────────────────────────
-// 有設 OPENAI_API_KEY 就用 OpenAI（預設 gpt-6-luna），沒有才用 DeepSeek。
-// 兩家都是同一種 Chat Completions 格式，回傳內容前端不用改。
+// 只用 OpenAI（預設 gpt-6-luna，可用 OPENAI_MODEL 換）。隱私權政策寫的也是 OpenAI，
+// 要換或加翻譯服務商時，記得一起更新 public/privacy.html。
 export const DEFAULT_OPENAI_MODEL = 'gpt-6-luna';
 const SYSTEM_PROMPT = 'You are a helpful assistant that translates text into multiple languages and outputs only structured JSON.';
 
 export interface Provider {
-  name: 'openai' | 'deepseek';
+  name: 'openai';
   url: string;
   key: string;
   model: string;
   options: Record<string, unknown>;   // 除了 model、messages 以外的參數
 }
 
-export function pickProvider(env: { OPENAI_API_KEY?: string; OPENAI_MODEL?: string; DEEPSEEK_API_KEY?: string }): Provider | null {
+export function pickProvider(env: { OPENAI_API_KEY?: string; OPENAI_MODEL?: string }): Provider | null {
   if (env.OPENAI_API_KEY) {
     return {
       name: 'openai',
@@ -25,15 +25,6 @@ export function pickProvider(env: { OPENAI_API_KEY?: string; OPENAI_MODEL?: stri
         response_format: { type: 'json_object' },
         max_completion_tokens: 8192,
       },
-    };
-  }
-  if (env.DEEPSEEK_API_KEY) {
-    return {
-      name: 'deepseek',
-      url: 'https://api.deepseek.com/v1/chat/completions',
-      key: env.DEEPSEEK_API_KEY,
-      model: 'deepseek-chat',
-      options: { response_format: { type: 'json_object' }, temperature: 0.3, max_tokens: 8192 },
     };
   }
   return null;

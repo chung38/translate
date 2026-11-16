@@ -95,14 +95,14 @@ describe('getProfile（Firestore 舊資料）', () => {
 describe('翻譯模型', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('有 OPENAI_API_KEY 就用 gpt-6-luna、關掉推理；沒有才用 DeepSeek', () => {
-    const o = pickProvider({ OPENAI_API_KEY: 'sk-o', DEEPSEEK_API_KEY: 'sk-d' })!;
+  it('用 OpenAI gpt-6-luna、關掉推理；沒設金鑰回 null', () => {
+    const o = pickProvider({ OPENAI_API_KEY: 'sk-o' })!;
     expect(o.name).toBe('openai');
     expect(o.model).toBe('gpt-6-luna');
     expect(o.options).toMatchObject({ reasoning_effort: 'none', max_completion_tokens: 8192 });
     expect(o.options).not.toHaveProperty('max_tokens');
     expect(pickProvider({ OPENAI_API_KEY: 'k', OPENAI_MODEL: 'gpt-6-sol' })!.model).toBe('gpt-6-sol');
-    expect(pickProvider({ DEEPSEEK_API_KEY: 'sk-d' })!.name).toBe('deepseek');
+    expect(pickProvider({ DEEPSEEK_API_KEY: 'sk-d' } as any)).toBeNull();   // DeepSeek 已移除
     expect(pickProvider({})).toBeNull();
   });
 

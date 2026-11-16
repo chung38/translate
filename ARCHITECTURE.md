@@ -65,9 +65,8 @@
 
 | 項目 | 放在哪 | 說明 |
 |---|---|---|
-| `OPENAI_API_KEY` | Cloudflare → Workers & Pages → translate → Settings → Variables and Secrets（舊介面叫 Environment variables） | 翻譯用的金鑰，請設成加密（Secret）。有設就用 OpenAI |
+| `OPENAI_API_KEY` | Cloudflare → Workers & Pages → translate → Settings → Variables and Secrets（舊介面叫 Environment variables） | 翻譯用的金鑰（OpenAI），請設成加密（Secret）。換翻譯服務商時要一起改隱私權政策 |
 | `OPENAI_MODEL` | 同上，選填 | 換別的 OpenAI 模型，預設 `gpt-6-luna` |
-| `DEEPSEEK_API_KEY` | 同上，備用 | 沒設 `OPENAI_API_KEY` 時才會改用 DeepSeek（`deepseek-chat`） |
 | `FIREBASE_PROJECT_ID` | 同上 | `ai-studio-applet-webapp-5cf4b`，後端用它驗證登入 |
 | `ALLOWED_ORIGIN` | 同上，選填 | 允許哪些「其他網站」呼叫 API，多個用逗號分隔。自己網站（yicipass.com、舊網址）一律允許，所以一般不用設 |
 | `DAILY_LIMIT` | 同上，選填 | 每人每天最多呼叫翻譯 API 幾次，預設 2000 |
