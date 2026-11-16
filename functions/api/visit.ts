@@ -23,7 +23,8 @@ export interface VisitStats {
 // 搜尋引擎、連結預覽、監控程式不算
 const BOT = /bot|crawl|spider|slurp|preview|facebookexternalhit|headless|lighthouse|monitor|curl|wget|python|axios|node-fetch|go-http/i;
 
-export const taipeiDay = (now = Date.now()) => new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
+import { taipeiDay } from '../_lib/limits';
+export { taipeiDay };
 
 const readyDbs = new WeakSet<object>();
 async function ensureTables(db: D1Database) {

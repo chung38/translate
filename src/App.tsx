@@ -36,7 +36,8 @@ import { AdminPanel } from './components/AdminPanel';
 import { UpgradeModal } from './components/UpgradeModal';
 import { DeletedModal } from './components/DeletedModal';
 import { UserProfile } from './types';
-import { useTranslation } from './hooks/useTranslation';
+import { useTranslation, setTranslationJob } from './hooks/useTranslation';
+import { api, errorMessage, type Credit } from './utils/api';
 import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
 import type { PptxLayoutMode, PdfLayoutMode } from './utils/documentProcessors';
 import { 
@@ -170,6 +171,17 @@ export default function App() {
   const [files, setFiles] = useState<File[]>([]);
   const [processingFiles, setProcessingFiles] = useState<File[]>([]);
   const [outputs, setOutputs] = useState<OutputFile[]>([]);   // 這次翻好的檔案，可以重複下載
+  // 伺服器上的額度（functions/api/me.ts）。enabled = false 時退回舊的 Firestore 算法
+  const [credit, setCredit] = useState<Credit | null>(null);
+  // 翻譯失敗後重試同一份檔案時沿用同一張工作單，不會重複扣額度
+  const jobIdsRef = useRef(new Map<string, string>());
+  const refreshCredit = async () => {
+    if (!auth.currentUser) { setCredit(null); return; }
+    try {
+      const r = await api<Credit>('/api/me');
+      setCredit(r.ok ? r.data : null);
+    } catch { setCredit(null); }
+  };
   // 手機上第一個檔案翻好時，把下載清單捲進畫面
   useEffect(() => {
     if (IS_TOUCH && outputs.length === 1) document.querySelector('.tdl')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -205,6 +217,9 @@ export default function App() {
   } = useTranslation(user);
 
   const [reloadCounter, setReloadCounter] = useState(0);
+
+  // 登入、完成 Email 驗證後讀一次伺服器上的額度
+  useEffect(() => { refreshCredit(); }, [user?.uid, reloadCounter]);
 
   // 手機 Google redirect 登入結果處理（必須在最頂層，獨立於 AuthModal）
   useEffect(() => {
@@ -667,10 +682,21 @@ export default function App() {
       return;
     }
 
-    const isAdmin = userProfile?.role === 'admin';
+    const serverQuota = credit?.enabled && !credit.admin;
+    const isAdmin = credit?.enabled ? credit.admin : userProfile?.role === 'admin';
     const quota = userProfile?.quota || 2;
 
-    if (!isAdmin) {
+    if (serverQuota) {
+      const left = credit!.remaining ?? 0;
+      if (left <= 0) {
+        setError(`額度已用完（共 ${credit!.quota} 份），請聯絡我們加購額度`);
+        return;
+      }
+      if (files.length > left) {
+        setError(`剩餘額度 ${left} 份，請減少上傳檔案數量`);
+        return;
+      }
+    } else if (!isAdmin) {
       if (dbHistory.length >= quota) {
         setError(`額度已達上限 (${quota}份檔案)，請升級以繼續使用`);
         return;
@@ -712,6 +738,22 @@ export default function App() {
         };
 
         try {
+          // 每份檔案先向後端開一張工作單（扣 1 份額度）；同一份檔案重試時沿用
+          const jobKey = `${currentFile.name}|${currentFile.size}|${currentFile.lastModified}|${selectedLanguages.join(',')}`;
+          let jobId = jobIdsRef.current.get(jobKey) || null;
+          if (!jobId) {
+            const r = await api<{ jobId: string | null } & Partial<Credit>>('/api/jobs', { method: 'POST', body: JSON.stringify({ file: currentFile.name }) });
+            if (!r.ok) {
+              const err = new Error(errorMessage(r.data, '無法開始翻譯，請稍後再試'));
+              if (r.status === 403) (err as Error & { stopAll?: boolean }).stopAll = true;   // 額度用完或帳號停用：後面的檔案也不用試了
+              throw err;
+            }
+            jobId = r.data.jobId;
+            if (jobId) jobIdsRef.current.set(jobKey, jobId);
+            if (r.data.enabled) setCredit(prev => ({ ...(prev as Credit), ...r.data } as Credit));
+          }
+          setTranslationJob(jobId);
+
           let results: { blob: Blob, name: string }[] = [];
           switch (extension) {
             case 'docx':
@@ -739,6 +781,7 @@ export default function App() {
           }
 
           succeededCount++;
+          jobIdsRef.current.delete(jobKey);
           setFiles(prev => prev.filter(f => f !== currentFile));
         } catch (fileErr) {
           console.error(`處理檔案 ${currentFile.name} 時發生錯誤:`, fileErr);
@@ -746,8 +789,11 @@ export default function App() {
             name: currentFile.name,
             reason: fileErr instanceof Error ? fileErr.message : '未知錯誤',
           });
+          if ((fileErr as { stopAll?: boolean })?.stopAll) break;
         }
       }
+      setTranslationJob(null);
+      refreshCredit();
 
       if (!isCancelledRef.current) {
         // 有檔案失敗時不能再顯示「全部完成」，否則畫面會同時出現錯誤和完成
@@ -866,7 +912,15 @@ export default function App() {
                       <span className="neo-pill__name text-sm font-medium text-[var(--ink)] inline-block max-w-[120px] truncate sm:max-w-[200px]">
                         {user.displayName || userProfile?.displayName || user.email?.split('@')[0]}
                       </span>
-                      {userProfile && (
+                      {credit?.enabled ? (
+                        <div className="neo-pill__tags flex items-center gap-1.5 ml-1">
+                          {credit.admin ? (
+                            <span className="tag tag--signal">Admin</span>
+                          ) : (
+                            <span className="num text-[11px] font-bold text-[var(--signal-ink)]" title={`共 ${credit.quota} 份，已用 ${credit.used} 份`}>剩 {credit.remaining} 份</span>
+                          )}
+                        </div>
+                      ) : userProfile && (
                         <div className="neo-pill__tags flex items-center gap-1.5 ml-1">
                           {userProfile.role === 'admin' ? (
                             <span className="tag tag--signal">Admin</span>
@@ -1283,6 +1337,9 @@ export default function App() {
                 )}
               </div>
               <p className="tcard__tip">{IS_TOUCH ? '翻好後點檔名儲存' : '翻好會自動下載'}</p>
+              <p className="tlegal">
+                開始翻譯即表示同意<a href="/terms" target="_blank" rel="noopener">服務條款</a>與<a href="/privacy" target="_blank" rel="noopener">隱私權政策</a>。AI 翻譯僅供參考，安全與法律文件請人工確認。
+              </p>
             </section>
           </div>
         </div>

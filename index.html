@@ -48,6 +48,8 @@
   .brand{display:inline-flex;align-items:center;gap:10px;white-space:nowrap;flex-shrink:0;font-weight:900;font-size:24px;letter-spacing:.04em;text-decoration:none;color:var(--ink)}
   .brand em{font-style:normal;background:linear-gradient(90deg,var(--accent),var(--sun));-webkit-background-clip:text;background-clip:text;color:transparent}
   .logo{width:34px;height:34px;border-radius:10px;background:var(--accent);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:20px;transform:rotate(-6deg);box-shadow:3px 3px 0 var(--sun)}
+  .legal{text-align:center;font-size:13px;color:var(--muted);margin:18px 0 8px}
+  .legal a{color:var(--muted)}
   .top .meta{margin-left:auto;min-width:0;display:grid;justify-items:end;gap:1px;font-size:12px;color:var(--muted);text-align:right;line-height:1.3}
   .top .meta small{font-size:inherit}
   .top .meta span{display:inline-block;white-space:nowrap}   /* 窄螢幕時整段換行，不會從字中間斷開 */
@@ -1014,7 +1016,8 @@ function toolsView(){
     + `<div id="nums">${panel('tool', '重要數字速查',
         (notices.length ? `<div class="notice"><b>📢 勞動部有新公告，下列數字可能已調整，待確認更新</b>${notices.slice(0,4).map(n => `<a href="${esc(n.link)}" target="_blank" rel="noopener">${esc(n.title)}<small>${esc(n.source)}・${esc((n.pubDate||'').slice(0,10))}</small></a>`).join('')}</div>` : '')
         + `<div class="list"><table class="nums">${nums}</table></div><p class="src-note">數字以勞動部最新公告為準：${INFO.numbersSources.map(s => `<a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.name)}</a>`).join('、')}</p>`,
-        `<span class="n">${esc(INFO.updated)} 更新</span>`)}</div>`;
+        `<span class="n">${esc(INFO.updated)} 更新</span>`)}</div>`
+    + `<p class="legal"><a href="/terms">服務條款</a>・<a href="/privacy">隱私權政策</a>・<a href="mailto:service@yicipass.com">聯絡我們</a></p>`;
 }
 
 // ---------- 全站搜尋：文宣、聘僱、新聞、專線、法規一起找 ----------

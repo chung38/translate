@@ -295,6 +295,8 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
 .tgo .btn--quiet { height: 42px; font-size: 0.875rem; font-weight: 700; box-shadow: none; background: #fff; color: var(--alert); border-color: var(--alert); }
 
 /* 電腦版：三張卡片並排，填滿畫面高度，不用捲 */
+.tlegal { font-size: 0.72rem; line-height: 1.5; color: var(--t-muted); text-align: center; margin-top: 0.5rem; }
+.tlegal a { color: inherit; text-decoration: underline; margin: 0 0.15em; }
 .tdl { display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 0.8rem; }
 .tdl__top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
 .tdl__h { font-size: 0.8125rem; font-weight: 800; color: var(--t-green); }

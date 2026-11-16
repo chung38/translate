@@ -8,6 +8,7 @@ export function fakeD1() {
     const s = {
       bind(...v: unknown[]) { values = v; return s; },
       async first<T>() { return (sqlite.prepare(sql).get(...(values as any[])) ?? null) as T | null; },
+      async all<T>() { return { results: sqlite.prepare(sql).all(...(values as any[])) as T[] }; },
       async run() {
         const r = sqlite.prepare(sql).run(...(values as any[]));
         return { meta: { changes: Number(r.changes) } };

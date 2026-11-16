@@ -9,6 +9,10 @@ type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 
 
 const TRANSLATE_API_URL = '/api/translate';   // 後端：functions/api/translate.ts
 
+// 目前這份檔案的工作單（開始翻譯每份檔案時由 /api/jobs 發出，後端靠它確認已扣過額度）
+let currentJobId: string | null = null;
+export const setTranslationJob = (jobId: string | null) => { currentJobId = jobId; };
+
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const extractTagIds = (text: string): number[] => {
@@ -303,7 +307,8 @@ export const useTranslation = (
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${idToken}`
+          'Authorization': `Bearer ${idToken}`,
+          ...(currentJobId ? { 'X-Job-Id': currentJobId } : {}),
         },
         body: JSON.stringify({ prompt }),
         signal: controller.signal

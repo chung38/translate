@@ -1,7 +1,9 @@
-// 翻譯 API：帳號額度、每日次數上限、翻譯模型（functions/api/translate.ts）
+// 翻譯 API 的共用程式：Firestore 資料、每日次數上限、翻譯模型（functions/_lib/）
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fakeD1 } from './fake-d1';
-import { adjustForError, callModel, getAccount, pickProvider, pruneUsage, taipeiDay, takeDailySlot } from '../functions/api/translate';
+import { getProfile as getAccount } from '../functions/_lib/profile';
+import { pruneUsage, taipeiDay, takeDailySlot } from '../functions/_lib/limits';
+import { adjustForError, callModel, pickProvider } from '../functions/_lib/model';
 
 describe('taipeiDay', () => {
   it('用台灣時間換日', () => {
@@ -51,7 +53,7 @@ describe('takeDailySlot', () => {
   });
 });
 
-describe('getAccount', () => {
+describe('getProfile（Firestore 舊資料）', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   const stub = (doc: unknown, count: number | null, ok = true) => {
@@ -75,16 +77,16 @@ describe('getAccount', () => {
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer tok');
   });
 
-  it('沒設額度時跟網頁一樣當成 2；認得管理員與停用帳號', async () => {
+  it('沒設額度時回 null（由後端決定免費份數）；認得管理員與停用帳號', async () => {
     stub({ fields: { role: { stringValue: 'admin' }, isPendingDeletion: { booleanValue: true } } }, 0);
-    expect(await getAccount('acc2', 't', 'p')).toEqual({ isAdmin: true, pendingDeletion: true, quota: 2, used: 0 });
+    expect(await getAccount('acc2', 't', 'p')).toEqual({ isAdmin: true, pendingDeletion: true, quota: null, used: 0 });
   });
 
   it('讀不到就回 null（放行），而且 1 分鐘內不重查', async () => {
     stub({}, null, false);
     expect(await getAccount('acc3', 't', 'p')).toBeNull();
     const f = stub({ fields: {} }, 1);
-    expect(await getAccount('acc4', 't', 'p')).toEqual({ isAdmin: false, pendingDeletion: false, quota: 2, used: 1 });
+    expect(await getAccount('acc4', 't', 'p')).toEqual({ isAdmin: false, pendingDeletion: false, quota: null, used: 1 });
     await getAccount('acc4', 't', 'p');
     expect(f).toHaveBeenCalledTimes(2); // 第二次用快取，沒再打 Firestore
   });

@@ -407,6 +407,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                       {authMode === 'login' ? '還沒有帳號？立即註冊' : '已有帳號？返回登入'}
                     </button>
                   </div>
+                  <p className="mt-4 text-center text-xs text-[var(--muted)]">
+                    登入或註冊即表示你同意
+                    <a href="/terms" target="_blank" rel="noopener" className="underline mx-0.5">服務條款</a>與
+                    <a href="/privacy" target="_blank" rel="noopener" className="underline mx-0.5">隱私權政策</a>
+                  </p>
                 </>
               )}
             </div>

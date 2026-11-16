@@ -19,6 +19,8 @@ import {
   limit
 } from '../firebase';
 import { UserProfile } from '../types';
+import { api } from '../utils/api';
+import { CreditControls, type ServerCredit } from './CreditControls';
 import { User } from 'firebase/auth';
 
 interface AdminPanelProps {
@@ -30,6 +32,24 @@ interface AdminPanelProps {
 
 export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userProfile, user }) => {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+  // 伺服器上的額度（functions/api/admin/credits.ts）；拿不到時退回舊的 Firestore 額度欄位
+  const [credits, setCredits] = useState<Record<string, ServerCredit> | null>(null);
+  const [creditInfo, setCreditInfo] = useState<{ freeQuota: number; adminEmailsSet: boolean; error?: string }>({ freeQuota: 2, adminEmailsSet: true });
+  const fetchCredits = async () => {
+    try {
+      const r = await api<{ accounts: ServerCredit[]; freeQuota: number; adminEmailsSet: boolean; error?: { message: string } }>('/api/admin/credits');
+      if (!r.ok) {
+        setCredits(null);
+        setCreditInfo(prev => ({ ...prev, error: r.data?.error?.message || '讀不到伺服器上的額度' }));
+        return;
+      }
+      setCredits(Object.fromEntries(r.data.accounts.map(a => [a.uid, a])));
+      setCreditInfo({ freeQuota: r.data.freeQuota, adminEmailsSet: r.data.adminEmailsSet });
+    } catch {
+      setCredits(null);
+      setCreditInfo(prev => ({ ...prev, error: '讀不到伺服器上的額度' }));
+    }
+  };
   const [allHistory, setAllHistory] = useState<any[]>([]);
   const [adminTab, setAdminTab] = useState<'users' | 'history'>('users');
   const [showAddUserForm, setShowAddUserForm] = useState(false);
@@ -242,6 +262,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
   useEffect(() => {
     if (isOpen) {
       fetchAllUsers();
+      fetchCredits();
     }
   }, [isOpen]);
 
@@ -382,6 +403,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
             <div className="flex-1 overflow-y-auto p-6">
               {adminTab === 'users' ? (
                 <div className="grid grid-cols-1 gap-4">
+                  {creditInfo.error && (
+                    <p className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                      額度目前用舊的方式記錄（{creditInfo.error}）。在 Cloudflare 接上 D1 資料庫（Settings → Bindings，名稱 DB）後，就會改由伺服器記錄。
+                    </p>
+                  )}
+                  {credits && !creditInfo.adminEmailsSet && (
+                    <p className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                      還沒在 Cloudflare 設定 ADMIN_EMAILS。設定前，後端暫時用「角色權限」判斷誰是管理員，有被冒用的風險，請盡快設定。
+                    </p>
+                  )}
                   {allUsers
                     .filter(u => {
                       const searchLower = adminSearch.toLowerCase();
@@ -443,8 +474,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                             </button>
                           </div>
 
+                          {credits ? (
+                            <CreditControls
+                              uid={u.uid}
+                              email={u.email}
+                              credit={credits[u.uid]}
+                              legacyQuota={u.quota}
+                              freeQuota={creditInfo.freeQuota}
+                              onChanged={c => setCredits(prev => ({ ...(prev || {}), [c.uid]: c }))}
+                            />
+                          ) : (
                           <div className="flex flex-col gap-1">
-                            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-bold">剩餘額度</span>
+                            <span className="text-[10px] uppercase tracking-wider text-[var(--muted)] font-bold">總額度（舊）</span>
                             <input 
                               type="number" 
                               value={u.quota}
@@ -452,6 +493,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({ isOpen, onClose, userPro
                               className="w-16 text-xs font-medium bg-white border border-[var(--rule)] rounded-lg px-2 py-1 text-[var(--ink)] focus:outline-none focus:ring-2 focus:ring-violet-500/50"
                             />
                           </div>
+                          )}
 
                           <button 
                             onClick={() => setDeletingUserId(u.uid)}

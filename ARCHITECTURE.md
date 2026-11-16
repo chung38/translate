@@ -16,7 +16,7 @@
 │                  └─ 首頁中間用 iframe 嵌入 /translate/                │
 │  /translate/     移件翻（React，程式在 src/）                         │
 │  /view.html      文宣檢視頁（public/view.html）                       │
-│  /api/translate  翻譯 API（functions/api/translate.ts）               │
+│  /api/*          後端（functions/api/，共用程式在 functions/_lib/）   │
 │                  先驗證 Firebase 登入，再轉給 OpenAI 翻譯              │
 └───────┬───────────────────────────┬──────────────────────┬───────────┘
         │ 讀 JSON 與縮圖              │ 登入、翻譯紀錄          │ 翻譯
@@ -52,7 +52,10 @@
 | 翻譯頁畫面（三步驟） | `src/App.tsx`、`src/index.css` |
 | Word／Excel／PPT／PDF 怎麼拆字、怎麼把譯文放回去 | `src/utils/documentProcessors.ts` |
 | 給 AI 的翻譯指令、一次送幾句、譯文標籤修復 | `src/hooks/useTranslation.ts` |
-| 後端：登入驗證、額度、呼叫翻譯模型 | `functions/api/translate.ts` |
+| 翻譯 API：登入驗證、檢查工作單、呼叫翻譯模型 | `functions/api/translate.ts` |
+| 額度：開始翻譯扣額度、查剩餘、管理員調整與記錄付款 | `functions/api/jobs.ts`、`me.ts`、`admin/credits.ts`，規則在 `functions/_lib/credits.ts` |
+| 翻譯模型與參數 | `functions/_lib/model.ts` |
+| 服務條款、隱私權政策 | `public/terms.html`、`public/privacy.html`（網址是 /terms、/privacy） |
 | 網站瀏覽人數 | `functions/api/visit.ts`（後端）、`index.html` 的「瀏覽人數」段落（顯示） |
 | 登入、管理員、歷史紀錄等視窗 | `src/components/` |
 | Firebase 連線設定 | `firebase-applet-config.json`、`src/firebase.ts` |
@@ -68,7 +71,9 @@
 | `FIREBASE_PROJECT_ID` | 同上 | `ai-studio-applet-webapp-5cf4b`，後端用它驗證登入 |
 | `ALLOWED_ORIGIN` | 同上，選填 | 允許哪些「其他網站」呼叫 API，多個用逗號分隔。自己網站（yicipass.com、舊網址）一律允許，所以一般不用設 |
 | `DAILY_LIMIT` | 同上，選填 | 每人每天最多呼叫翻譯 API 幾次，預設 2000 |
-| D1 資料庫 `DB` | Cloudflare → translate → Settings → Bindings → Add → D1 database，變數名稱填 `DB`（舊介面在 Settings → Functions） | 記錄每人每天的翻譯次數和網站瀏覽人數。沒接的話不限制次數、不顯示人數，其他功能照常 |
+| D1 資料庫 `DB` | Cloudflare → translate → Settings → Bindings → Add → D1 database，變數名稱填 `DB`（舊介面在 Settings → Functions） | 記錄額度、付款紀錄、每日翻譯次數、瀏覽人數。沒接的話額度退回舊方式（Firestore）、不限次數、不顯示人數 |
+| `ADMIN_EMAILS` | Variables and Secrets | 管理員的 Email，多個用逗號分隔。後端只認這裡；沒設時暫時沿用 Firestore 的角色（使用者有機會自己改，請務必設定） |
+| `FREE_QUOTA` | 同上，選填 | 新帳號免費幾份，預設 2。改了要一起改 `public/terms.html` 第六點 |
 | `VISIT_SALT` | Variables and Secrets，選填 | 計算瀏覽人數時打亂訪客資料用的隨機字串，隨便打一串英數字即可 |
 | Firebase 前端設定（apiKey 等） | `firebase-applet-config.json` | 這是公開設定，放在程式裡沒關係。資料安全靠 `firestore.rules` |
 | 誰是管理員 | Firebase Console → Firestore → `users/{uid}` 的 `role` 欄位設成 `admin` | 前端不能自己改成管理員，規則會擋 |
@@ -83,7 +88,7 @@
 
 ```bash
 npm install
-npm test           # 自動測試（53 項：翻譯邏輯、API 額度與次數上限、瀏覽人數）
+npm test           # 自動測試（61 項：翻譯邏輯、額度與工作單、次數上限、瀏覽人數）
 npm run lint       # 型別檢查
 cp .dev.vars.example .dev.vars   # 填入 OPENAI_API_KEY
 npm run preview    # 跟正式站一樣（含翻譯 API）：http://localhost:8788
@@ -100,7 +105,7 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
 
 ## 翻譯模型
 
-目前用 OpenAI 的 **gpt-6-luna**，設定在 `functions/api/translate.ts` 的 `pickProvider`：
+目前用 OpenAI 的 **gpt-6-luna**，設定在 `functions/_lib/model.ts` 的 `pickProvider`：
 
 - **推理關掉**（`reasoning_effort: none`）：翻譯不需要模型「思考」，開著會變慢，推理用的 token 也照輸出計費。
 - **溫度 0.3**：讓同一句話每次翻得比較一致。
@@ -109,18 +114,37 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
 - 想看實際用的是哪個模型：瀏覽器開發者工具 → Network → `translate` → Response Headers 的 `X-Translate-Model`。
 - 費用：每次呼叫約台幣 0.02 元，56 頁的掃描 PDF 約 3 元。用量在 OpenAI 後台（platform.openai.com → Usage）查，建議在 Limits 設每月上限。
 
+## 額度與付款紀錄
+
+額度記在 Cloudflare D1，使用者碰不到：
+
+- **計費單位**：上傳 1 份檔案算 1 份，不管選幾種語言、輸出成幾個檔案。新帳號免費 2 份（`FREE_QUOTA`）。
+- **扣額度的時機**：每份檔案按下「開始翻譯」時，網頁先呼叫 `/api/jobs`，後端扣 1 份並發一張「工作單」。這份檔案之後的每一批翻譯都要帶著工作單，後端才會翻；所以繞過網頁直接呼叫翻譯 API 沒有用。
+- **工作單限制**：只限本人、12 小時內、最多 800 次呼叫（56 頁掃描 PDF 約 100～150 次）。翻譯中途失敗時，重試同一份檔案沿用同一張工作單，不會重複扣。
+- **管理員**：`ADMIN_EMAILS` 裡的人翻譯不扣額度、不受每日上限。
+- **舊帳號搬家**：每個人第一次使用新版時，自動用他在 Firestore 的舊額度（`quota`）和翻譯紀錄筆數建立帳戶。上線後請到管理後台看一次大家的額度是否正確。
+- **管理後台**：每位用戶旁邊的「調整」可以「記錄付款」（份數＋金額＋備註）、「加額度」或「設定總額度」，下面會列出這個人所有的額度變動紀錄。付款功能串好之後，付款成功也會寫進同一份紀錄。
+- **資料表**：`accounts`（每人的總額度與已用份數）、`ledger`（每一筆變動）、`jobs`（工作單，7 天後自動清掉）。在 D1 的 Console 可以直接查，例如：
+  `SELECT a.email, a.quota, a.used FROM accounts a ORDER BY a.updated_at DESC;`
+
 ## 翻譯 API 的保護
 
 每次呼叫 `/api/translate` 依序檢查：
 
-1. **有登入、Email 已驗證**，否則拒絕。
-2. **帳號沒被停用、檔案額度還沒用完**。後端用使用者自己的登入 token 讀他在 Firestore 的資料（`role`、`quota`、`isPendingDeletion`、翻譯紀錄筆數），規則跟網頁上一樣，管理員不受額度限制。所以就算繞過網頁直接呼叫 API，也一樣會被擋。讀不到資料時放行，不影響正常使用。
-3. **每人每天的次數上限**（預設 2000 次，台灣時間 0 點重新計算，管理員不限）。一份文件會分成很多批送出，每批算 1 次：一般 Word 或 PPT 約 10～50 次，56 頁的掃描 PDF 約 100～150 次。這是防止有人寫程式一直呼叫、讓翻譯費用暴增的最後一道防線。次數記在 D1 資料庫的 `api_usage` 資料表，90 天前的紀錄會自動清掉。
+1. **有登入、Email 已驗證**。
+2. **帳號沒被停用**（管理員按「刪除」會先停用）。
+3. **帶著有效的工作單**（見上一段）。沒接 D1 時退回舊方式：比對 Firestore 的額度與翻譯紀錄筆數。
+4. **每人每天的次數上限**（預設 2000 次，台灣時間 0 點重新計算，管理員不限）。這是防止有人寫程式一直呼叫、讓翻譯費用暴增的最後一道防線。次數記在 D1 的 `api_usage` 資料表，90 天前的紀錄會自動清掉。
 
-想看每個人的用量：Cloudflare 左側選單的 D1 → 點你的資料庫 → Console，輸入
+想看每個人的每日用量：D1 → 你的資料庫 → Console，輸入
 `SELECT * FROM api_usage ORDER BY day DESC, n DESC LIMIT 50;`
 
-> 第 2 項的額度能不能被繞過，取決於 Firebase 上實際生效的 Firestore 規則：規則必須禁止使用者自己改 `quota`、`role`（repo 裡的 `firestore.rules` 有寫，但要在 Firebase Console 發布才算數）。第 3 項存在 Cloudflare，使用者碰不到。
+## 服務條款與隱私權政策
+
+- 網址：`/terms`、`/privacy`，檔案在 `public/terms.html`、`public/privacy.html`。
+- 連結出現在：翻譯頁「開始翻譯」下方、登入視窗、工具頁最下面。
+- 聯絡信箱寫的是 `service@yicipass.com`：請在 Cloudflare → yicipass.com → Email → Email Routing 把它轉寄到你的信箱。
+- 內容有改（例如免費份數、退費規則、換翻譯服務商）時，要記得一起更新這兩頁和上面的「最後更新」日期。
 
 ## 網站瀏覽人數
 
@@ -145,7 +169,7 @@ SELECT substr(k, 7) AS 日期, n AS 開啟次數 FROM site_stats WHERE k LIKE 'v
 ## 目前已知的缺口
 
 - **刪除使用者是「標記後下次登入時刪除」。** 管理員按「刪除」會先把帳號標記為待刪除，翻譯 API 立刻拒絕他；對方下次登入時，網頁會自動刪掉他的登入帳號與資料。如果對方再也不登入，Firebase 的登入帳號會一直留著，要清掉請到 Firebase Console → Authentication 手動刪。
-- **付費升級沒有後端。** LINE Pay 和藍新金流只有前端程式（`UpgradeModal.tsx`、`App.tsx`），`/api/linepay/*`、`/api/newebpay/*` 都不存在，畫面上也沒有按鈕會打開它。要收費時再補。
+- **線上付款還沒串。** 目前收款後由管理員在後台「記錄付款」加額度。LINE Pay、藍新金流只有舊的前端程式（`UpgradeModal.tsx`），沒有後端，畫面上也沒有按鈕會打開它；要串金流時，付款成功的通知要由後端寫進 `ledger`，並在結帳前讓使用者勾選同意（見服務條款第六點）。
 
 ## 檔案地圖
 
@@ -161,7 +185,13 @@ src/utils/__tests__/             自動測試
 src/components/                  登入、管理員、歷史紀錄等視窗
 src/firebase.ts                  Firebase 初始化
 functions/api/translate.ts       翻譯 API
+functions/api/jobs.ts            開始翻譯一份檔案（扣額度、發工作單）
+functions/api/me.ts              目前登入者的額度
+functions/api/admin/credits.ts   管理員：額度、付款紀錄
 functions/api/visit.ts           網站瀏覽人數 API
+functions/_lib/                  後端共用程式（登入驗證、額度、模型、次數上限）
+public/terms.html、privacy.html  服務條款、隱私權政策
+src/components/CreditControls.tsx 管理後台的額度調整
 firestore.rules                  Firestore 權限規則
 firebase-blueprint.json          Firestore 資料欄位說明
 tools/opc_check.py               檢查輸出的 Office 檔會不會被說「需要修復」
