@@ -295,6 +295,15 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
 .tgo .btn--quiet { height: 42px; font-size: 0.875rem; font-weight: 700; box-shadow: none; background: #fff; color: var(--alert); border-color: var(--alert); }
 
 /* 電腦版：三張卡片並排，填滿畫面高度，不用捲 */
+.tdl { display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 0.8rem; }
+.tdl__h { font-size: 0.8125rem; font-weight: 800; color: var(--t-green); }
+.tdl__item { display: flex; align-items: center; gap: 0.6rem; width: 100%; min-height: 48px; padding: 0.55rem 0.7rem 0.55rem 0.9rem;
+  background: #fff; border: 2px solid var(--t-ink); border-radius: 14px; box-shadow: 3px 3px 0 var(--t-ink); text-align: left; cursor: pointer;
+  transition: transform .12s, box-shadow .12s; }
+.tdl__item:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 var(--t-ink); }
+.tdl__item:focus-visible { outline: 3px solid var(--t-indigo); outline-offset: 2px; }
+.tdl__name { flex: 1; min-width: 0; font-size: 0.875rem; font-weight: 700; color: var(--t-ink); overflow-wrap: anywhere; line-height: 1.3; }
+.tdl__act { flex-shrink: 0; padding: 0.3rem 0.7rem; border-radius: 999px; background: var(--t-green); color: #fff; font-size: 0.8125rem; font-weight: 800; }
 @media (min-width: 1024px) {
   .tri { flex: 1; max-height: 600px; }
   .tri__title { font-size: 1.45rem; }
@@ -304,6 +313,7 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
   .tcard--2 { overflow: visible; }
   .tsum { flex: 1; min-height: 4.2rem; margin-bottom: 0.4rem; }
   .tcard--3 .tcard__opts { margin-top: 0; margin-bottom: 0.9rem; }
+  .tdl { max-height: 13.5rem; overflow-y: auto; padding: 0 4px 4px 0; }   /* 檔案很多時在卡片裡捲動 */
 }
 @media (min-width: 1280px) {
   .tlangs { grid-template-columns: repeat(3, 1fr); }
@@ -328,7 +338,7 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
   .tcard--3 .tcard__n, .tcard--3 .tcard__h, .tcard--3 .tsum, .tcard__tip { display: none; }
   .tcard--3 .tcard__opts { border-top: 0; margin: 0 0 0.8rem; padding: 0.8rem 0.9rem; background: var(--t-card); border: 2px solid var(--t-ink); border-radius: 16px; }
 }
-@media (prefers-reduced-motion: reduce) { .drop__icon, .tlang, .neo-pill, .tgo .btn { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .drop__icon, .tlang, .neo-pill, .tgo .btn, .tdl__item { transition: none; } }
 
 /* 手機：標題和帳號列擠在同一行會重疊——帳號列只留頭像與登出、按鈕縮小，標題可縮可換行 */
 .tri__top > div:first-child { flex: 1 1 auto; min-width: 0; }

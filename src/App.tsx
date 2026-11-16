@@ -96,6 +96,36 @@ type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 
 // 嵌在「移次搞定」首頁（iframe）裡時，外層已經有品牌標頭，這裡就不再重複顯示
 const EMBEDDED = (() => { try { return window.self !== window.top; } catch { return true; } })();
 
+// 手機、平板（觸控螢幕）：不自動下載。iPhone 一次只接受一個自動下載，第二個會被吞掉，
+// 而且下載後會跳到檔案預覽頁、不好回來。改成翻好後列出檔案，點一下用分享選單儲存。
+const IS_TOUCH = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
+
+const MIME: Record<string, string> = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  pdf: 'application/pdf',
+};
+
+type OutputFile = { name: string; blob: Blob };
+
+// 手機用分享選單（可存到「檔案」、用 Word 開、傳到 LINE），不支援時才一般下載
+async function deliverFile(out: OutputFile) {
+  if (IS_TOUCH && typeof navigator.share === 'function') {
+    const ext = out.name.split('.').pop()?.toLowerCase() || '';
+    const file = new File([out.blob], out.name, { type: out.blob.type || MIME[ext] || 'application/octet-stream' });
+    if (navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file] });
+        return;
+      } catch (e) {
+        if ((e as Error)?.name === 'AbortError') return;   // 使用者自己關掉分享選單
+      }
+    }
+  }
+  saveAs(out.blob, out.name);
+}
+
 // 精簡的選項列：標題與兩個切換鈕同一行，下面只顯示目前選項的說明（省高度，避免畫面要捲動）
 function OptionRow({ n, label, hint, value, onChange, options, compact }: {
   n: string; label: string; hint?: string; compact?: boolean; value: string; onChange: (v: string) => void;
@@ -137,6 +167,11 @@ export default function App() {
   const [dbHistory, setDbHistory] = useState<any[]>([]);
   const [files, setFiles] = useState<File[]>([]);
   const [processingFiles, setProcessingFiles] = useState<File[]>([]);
+  const [outputs, setOutputs] = useState<OutputFile[]>([]);   // 這次翻好的檔案，可以重複下載
+  // 手機上第一個檔案翻好時，把下載清單捲進畫面
+  useEffect(() => {
+    if (IS_TOUCH && outputs.length === 1) document.querySelector('.tdl')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [outputs.length]);
   const [selectedLanguages, setSelectedLanguages] = useState<string[]>(['英文']);
   const [outputMode, setOutputMode] = useState<'combined' | 'separate'>('combined');
   // PPTX 版面模式：append = 同一頁雙語對照；duplicate-slide = 另外插一頁純譯文
@@ -650,6 +685,7 @@ export default function App() {
       clearQualityIssues();
       setProgress(0);
       setFileProgress({});
+      setOutputs([]);
       isCancelledRef.current = false;
 
       const filesToProcess = [...files];
@@ -694,7 +730,8 @@ export default function App() {
           
           if (results && results.length > 0) {
             for (const result of results) {
-              saveAs(result.blob, result.name);
+              setOutputs(prev => [...prev, result]);
+              if (!IS_TOUCH) saveAs(result.blob, result.name);   // 電腦照舊自動下載
               await saveToFirestore(currentFile.name, result.name, extension || 'unknown', selectedLanguages, industry);
             }
           }
@@ -1149,6 +1186,17 @@ export default function App() {
               files={processingFiles}
               fileProgress={fileProgress}
             />
+              {outputs.length > 0 && (
+                <div className="tdl">
+                  <p className="tdl__h">{IS_TOUCH ? '翻好了！點一下儲存或分享' : '翻好的檔案（沒下載到可以再點一次）'}</p>
+                  {outputs.map((o, i) => (
+                    <button key={i} type="button" className="tdl__item" onClick={() => deliverFile(o)}>
+                      <span className="tdl__name">{o.name}</span>
+                      <span className="tdl__act">{IS_TOUCH ? '儲存' : '下載'}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="tgo">
                 {!user ? (
                   <button
@@ -1220,7 +1268,7 @@ export default function App() {
                   </button>
                 )}
               </div>
-              <p className="tcard__tip">翻好會自動下載</p>
+              <p className="tcard__tip">{IS_TOUCH ? '翻好後點檔名儲存' : '翻好會自動下載'}</p>
             </section>
           </div>
         </div>
