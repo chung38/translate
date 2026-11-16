@@ -55,6 +55,8 @@
 | 翻譯 API：登入驗證、檢查工作單、呼叫翻譯模型 | `functions/api/translate.ts` |
 | 額度：開始翻譯扣額度、查剩餘、管理員調整與記錄付款 | `functions/api/jobs.ts`、`me.ts`、`admin/credits.ts`，規則在 `functions/_lib/credits.ts` |
 | 翻譯模型與參數 | `functions/_lib/model.ts` |
+| 給 AI 的翻譯指令（提示詞）、單次字數上限 | `functions/_lib/prompt.ts` |
+| 網站安全標頭（防點擊劫持等） | `public/_headers` |
 | 服務條款、隱私權政策 | `public/terms.html`、`public/privacy.html`（網址是 /terms、/privacy） |
 | 網站瀏覽人數 | `functions/api/visit.ts`（後端）、`index.html` 的「瀏覽人數」段落（顯示） |
 | 登入、管理員、歷史紀錄等視窗 | `src/components/` |
@@ -87,7 +89,7 @@
 
 ```bash
 npm install
-npm test           # 自動測試（61 項：翻譯邏輯、額度與工作單、次數上限、瀏覽人數）
+npm test           # 自動測試（65 項：翻譯邏輯、翻譯指令、額度與工作單、次數上限、瀏覽人數）
 npm run lint       # 型別檢查
 cp .dev.vars.example .dev.vars   # 填入 OPENAI_API_KEY
 npm run preview    # 跟正式站一樣（含翻譯 API）：http://localhost:8788
@@ -119,7 +121,7 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
 
 - **計費單位**：上傳 1 份檔案算 1 份，不管選幾種語言、輸出成幾個檔案。新帳號免費 2 份（`FREE_QUOTA`）。
 - **扣額度的時機**：每份檔案按下「開始翻譯」時，網頁先呼叫 `/api/jobs`，後端扣 1 份並發一張「工作單」。這份檔案之後的每一批翻譯都要帶著工作單，後端才會翻；所以繞過網頁直接呼叫翻譯 API 沒有用。
-- **工作單限制**：只限本人、12 小時內、最多 800 次呼叫（56 頁掃描 PDF 約 100～150 次）。翻譯中途失敗時，重試同一份檔案沿用同一張工作單，不會重複扣。
+- **工作單限制**：只限本人、12 小時內、最多 800 次呼叫、累計 100 萬字（56 頁掃描 PDF 約 100～150 次）。翻譯中途失敗時，重試同一份檔案沿用同一張工作單，不會重複扣。
 - **管理員**：`ADMIN_EMAILS` 裡的人翻譯不扣額度、不受每日上限。
 - **舊帳號搬家**：每個人第一次使用新版時，自動用他在 Firestore 的舊額度（`quota`）和翻譯紀錄筆數建立帳戶。上線後請到管理後台看一次大家的額度是否正確。
 - **管理後台**：每位用戶旁邊的「調整」可以「記錄付款」（份數＋金額＋備註）、「加額度」或「設定總額度」，下面會列出這個人所有的額度變動紀錄。付款功能串好之後，付款成功也會寫進同一份紀錄。
@@ -127,6 +129,8 @@ npm run dev        # 只改畫面、要即時更新時用：http://localhost:517
   `SELECT a.email, a.quota, a.used FROM accounts a ORDER BY a.updated_at DESC;`
 
 ## 翻譯 API 的保護
+
+瀏覽器只送「要翻的句子、目標語言、產業別」，給 AI 的翻譯指令在後端組（`functions/_lib/prompt.ts`），所以這個 API 只能拿來翻譯，不能被拿去問其他問題。單次最多 50 段、4 萬字；每張工作單累計最多 100 萬字。
 
 每次呼叫 `/api/translate` 依序檢查：
 
@@ -188,7 +192,8 @@ functions/api/jobs.ts            開始翻譯一份檔案（扣額度、發工�
 functions/api/me.ts              目前登入者的額度
 functions/api/admin/credits.ts   管理員：額度、付款紀錄
 functions/api/visit.ts           網站瀏覽人數 API
-functions/_lib/                  後端共用程式（登入驗證、額度、模型、次數上限）
+functions/_lib/                  後端共用程式（登入驗證、額度、翻譯指令、模型、次數上限）
+public/_headers                  網站安全標頭
 public/terms.html、privacy.html  服務條款、隱私權政策
 src/components/CreditControls.tsx 管理後台的額度調整
 firestore.rules                  Firestore 權限規則

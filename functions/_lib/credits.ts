@@ -3,12 +3,13 @@
 // accounts：每人一筆，quota = 總共可以翻幾份檔案、used = 已經用掉幾份
 // ledger  ：每一次變動的紀錄（建立帳戶、翻譯扣額度、管理員加額度、記錄付款）
 // jobs    ：每開始翻譯一份檔案就發一張「工作單」，之後這份檔案的每一批翻譯都要帶著它；
-//           同一張工作單 12 小時內、最多 800 次呼叫，避免一份額度被拿去無限翻譯。
+//           同一張工作單 12 小時內、最多 800 次呼叫、累計 100 萬字，避免一份額度被拿去無限翻譯。
 //
 // 計費單位：一份上傳的檔案算 1 份，不管選幾種語言、輸出成一個或多個檔案。
 
 export const DEFAULT_FREE_QUOTA = 2;
 export const JOB_MAX_CALLS = 800;
+export const JOB_MAX_CHARS = 1_000_000;   // 約 500 頁文字量的文件（含失敗重送）
 export const JOB_TTL_MS = 12 * 3600_000;
 
 export interface Credit { uid: string; email: string | null; quota: number; used: number; updated_at?: string }
@@ -26,8 +27,10 @@ export async function ensureCreditTables(db: D1Database) {
     db.prepare('CREATE TABLE IF NOT EXISTS accounts (uid TEXT PRIMARY KEY, email TEXT, quota INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)'),
     db.prepare('CREATE TABLE IF NOT EXISTS ledger (id INTEGER PRIMARY KEY AUTOINCREMENT, uid TEXT NOT NULL, kind TEXT NOT NULL, files INTEGER NOT NULL DEFAULT 0, amount INTEGER, note TEXT, by_email TEXT, created_at TEXT NOT NULL)'),
     db.prepare('CREATE INDEX IF NOT EXISTS ledger_uid ON ledger (uid, id)'),
-    db.prepare('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, uid TEXT NOT NULL, file TEXT, calls INTEGER NOT NULL DEFAULT 0, max_calls INTEGER NOT NULL, created_at INTEGER NOT NULL)'),
+    db.prepare('CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, uid TEXT NOT NULL, file TEXT, calls INTEGER NOT NULL DEFAULT 0, max_calls INTEGER NOT NULL, created_at INTEGER NOT NULL, chars INTEGER NOT NULL DEFAULT 0)'),
   ]);
+  // 舊版建立的 jobs 沒有 chars 欄位：補上（已經有就會報錯，忽略即可）
+  try { await db.prepare('ALTER TABLE jobs ADD COLUMN chars INTEGER NOT NULL DEFAULT 0').run(); } catch { /* 已經有了 */ }
   ready.add(db);
 }
 
@@ -68,12 +71,13 @@ export async function startJob(db: D1Database, uid: string, file: string, charge
   return { ok: true, jobId, credit: await getCredit(db, uid) };
 }
 
-// 每一批翻譯：確認工作單是本人的、還沒過期、次數沒超過，順便記一次
-export async function useJob(db: D1Database, uid: string, jobId: string, now = Date.now()): Promise<boolean> {
+// 每一批翻譯：確認工作單是本人的、還沒過期、次數與字數都沒超過，順便記下來
+export async function useJob(db: D1Database, uid: string, jobId: string, chars = 0, now = Date.now()): Promise<boolean> {
   if (!jobId) return false;
   await ensureCreditTables(db);
-  const row = await db.prepare('UPDATE jobs SET calls = calls + 1 WHERE id = ?1 AND uid = ?2 AND calls < max_calls AND created_at > ?3 RETURNING calls')
-    .bind(jobId, uid, now - JOB_TTL_MS).first();
+  const row = await db.prepare(
+    'UPDATE jobs SET calls = calls + 1, chars = chars + ?4 WHERE id = ?1 AND uid = ?2 AND calls < max_calls AND created_at > ?3 AND chars + ?4 <= ?5 RETURNING calls'
+  ).bind(jobId, uid, now - JOB_TTL_MS, Math.max(0, Math.floor(chars)), JOB_MAX_CHARS).first();
   return !!row;
 }
 

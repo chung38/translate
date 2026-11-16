@@ -1,0 +1,10 @@
+# Cloudflare Pages 的安全標頭（只套用在網頁和檔案，不影響 /api）
+# - X-Frame-Options / frame-ancestors：只允許自己的網站把頁面嵌進框框（首頁嵌翻譯頁），防點擊劫持
+# - 不要加 Cross-Origin-Opener-Policy，會讓 Google 登入的彈出視窗壞掉
+/*
+  X-Frame-Options: SAMEORIGIN
+  Content-Security-Policy: frame-ancestors 'self'
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+  Strict-Transport-Security: max-age=31536000; includeSubDomains

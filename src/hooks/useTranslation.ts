@@ -252,45 +252,7 @@ export const useTranslation = (
     if (texts.length === 0 || targetLangs.length === 0) return texts.map(() => ({}));
 
     try {
-      const industryContext = industry ? `。這是一個關於「${industry}」行業的文件，請使用該行業的專業術語進行翻譯` : '';
-      const prompt = `你是一個專業的翻譯官${industryContext}。
-      請將以下文字陣列中的每一項同時翻譯成以下語言：${targetLangs.join('、')}。
-
-      請嚴格以 JSON 格式回傳結果，格式如下：
-      {
-        "translations": [
-          { ${targetLangs.map(l => `"${l}": "翻譯內容"`).join(', ')} },
-          ...
-        ]
-      }
-
-      要求：
-      1. 確保回傳的 "translations" 陣列長度與輸入的文字陣列長度完全一致 (${texts.length})。
-      2. 每個物件的鍵 (Key) 必須完全對應目標語言名稱：${targetLangs.map(l => `"${l}"`).join(', ')}。
-      3. **極度重要：翻譯後的文字內容中，絕對不要包含任何語言名稱的標籤或前綴（例如絕對不要出現 [英文]、[泰文]、English: 等字樣），只能有翻譯後的純文字。**
-      4. 確保翻譯內容完全使用目標語言，不要夾雜原始語言。
-      5. **標籤保留與對應：** 譯文必須原封不動地保留原文中的排版標籤 (如 [f0], [f1])。
-      6. **每一個原文中出現的 tag 都必須在譯文中出現一次且只出現一次，不能遺失、不能合併、不能改變編號。**
-      7. **若原文有 [f0]...[/f0][f1]...[/f1][f2]...[/f2]，譯文也必須保留完全相同的 [f0]、[f1]、[f2] 結構。**
-      8. **禁止把兩個 tag 的內容合併成一個 tag，也禁止省略任何短詞內容；像「現場」、「日期」、「地址」這類短詞也必須翻譯。**
-      9. **防斷字原則：** 當原文的標籤切斷了同一個詞 (如 \`[f1]設[/f1][f2]備[/f2]\`)，翻譯後的目標語言「同一個音節/單字」內部**絕對不能有空格** (例如 \`[f1]thi[/f1][f2]ết bị[/f2]\`)。
-      10. **不同詞彙之間的必定空格 (Critical Spacing Rule)：** 當原文在沒有空格的狀態下切換標籤 (例如 \`[f0]打開[/f0][f1]總電源[/f1]\`)，當翻譯為越南文或英文時，**如果這兩個標籤代表的是兩個不同的單字，你必須在標籤內側或外側加上空格！**
-         **[極度重要範例]：**
-         ❌ 錯誤：\`[f0]Mở[/f0][f1]tủ điện số PB1[/f1]\` (單字會黏在一起變成 Mởtủ)
-         ✅ 正確：\`[f0]Mở [/f0][f1]tủ điện số PB1[/f1]\` (加上了空格，單字分離)
-         ❌ 錯誤：\`[f2], sau đó[/f2][f3]bật công tắc[/f3]\` (變成 đóbật)
-         ✅ 正確：\`[f2], sau đó [/f2][f3]bật công tắc[/f3]\`
-      11. **表單填寫空格保留與字母防散（極度重要）：**
-         - 若原文中存在連續多個空白字元（例如做為排版或手寫填寫空間的 \`年   月   日\` 或 \`Name:      \`），你**必須**在翻譯結果中原封不動保留對應的大片空白（例如 \`Năm   Tháng   Ngày\`）。
-         - **但是！** 若原文是因為排版對齊，而在同一個詞彙的中文字之間插入了空格（例如 \`申  請  人:\` 或 \`工  作  地:\`），當翻譯成拼音語言（如英文、印文、越文）時，**絕對不准**將空格照抄分布到字母之間！請直接輸出正常拼寫的單字（例如輸出 \`Pemohon:\`，**嚴禁**輸出 \`P e m o h o n:\`；輸出 \`Người yêu cầu:\`，**嚴禁**輸出 \`N g ư ờ i  y ê u  c ầ u:\`）。
-      12. 不要包含任何 Markdown 標籤（如 \`\`\`json）或額外文字，只回傳純 JSON 字串。
-      13. **完整翻譯檢查：**
-         - 原文中的中文正文必須完整翻譯，不得因為句子內含英文專有名詞、設備名稱、縮寫或型號而略過其餘中文。
-         - Interlock、LOTO、HMI、AUTO、MANUAL、VETO、Human Limits 等術語可依語意保留，但周圍所有中文必須完整翻譯。
-         - 若目標語言為印尼文，譯文不得殘留中文字，也禁止出現「jika 不幸 menimbulkan」這類中印混雜內容。
-
-      待翻譯內容陣列：
-      ${JSON.stringify(texts)}`;
+      const body = { texts, languages: targetLangs, industry };   // 翻譯指令由後端組：functions/_lib/prompt.ts
 
       const controller = new AbortController();
       // Increase timeout to 5 minutes (300000ms) to handle large batches and server-side retries
@@ -310,7 +272,7 @@ export const useTranslation = (
           'Authorization': `Bearer ${idToken}`,
           ...(currentJobId ? { 'X-Job-Id': currentJobId } : {}),
         },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify(body),
         signal: controller.signal
       });
 
@@ -475,6 +437,11 @@ export const useTranslation = (
       const isNetworkError = err?.message?.includes('Load failed') || err?.message?.includes('Failed to fetch') || err?.name === 'TypeError' || err?.message?.includes('NetworkError') || err?.name === 'AbortError';
       const isJsonError = err?.message?.includes('無法解析 API 回傳的 JSON 格式') || err?.message?.includes('API 回傳格式不正確') || err?.message?.includes('API 回傳筆數不一致') || err?.message?.includes('翻譯回傳筆數不一致') || err?.message?.includes('Invalid JSON from server');
       const isAuthError = err?.message?.includes('Authentication') || err?.message?.includes('API key') || err?.message?.includes('401') || err?.message?.includes('配置');
+
+      // 這一批字數超過後端單次上限：拆半再送
+      if (err?.message?.includes('過長') && texts.length > 1) {
+        return await splitAndTranslate(texts, targetLangs, industry, qualityRetryCount);
+      }
 
       if ((isRateLimit || isNetworkError || isJsonError) && retryCount < 10) {
         const waitTime = isRateLimit

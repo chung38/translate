@@ -18,7 +18,7 @@ vi.mock('../functions/_lib/auth', async (orig) => {
   };
 });
 
-import { adjustCredit, createCredit, getCredit, JOB_MAX_CALLS, listLedger, startJob, useJob } from '../functions/_lib/credits';
+import { adjustCredit, createCredit, getCredit, JOB_MAX_CALLS, JOB_MAX_CHARS, listLedger, startJob, useJob } from '../functions/_lib/credits';
 import { isAdmin } from '../functions/_lib/auth';
 import { onRequestGet as meGet } from '../functions/api/me';
 import { onRequestPost as jobsPost } from '../functions/api/jobs';
@@ -73,6 +73,8 @@ describe('credits（D1）', () => {
     expect(await useJob(db, 'a', jobId)).toBe(true);
     expect(await useJob(db, 'someone-else', jobId)).toBe(false);
     expect(await useJob(db, 'a', jobId, Date.now() + 13 * 3600_000)).toBe(false);   // 過期
+    expect(await useJob(db, 'a', jobId, JOB_MAX_CHARS + 1)).toBe(false);   // 字數超過上限：整批拒絕、不記
+    expect(await useJob(db, 'a', jobId, 1000)).toBe(true);
     sqlite.prepare('UPDATE jobs SET calls = ? WHERE id = ?').run(JOB_MAX_CALLS, jobId);
     expect(await useJob(db, 'a', jobId)).toBe(false);   // 次數用完
   });
@@ -117,15 +119,22 @@ describe('翻譯 API 流程', () => {
     expect(job.status).toBe(200);
     expect(job.body).toMatchObject({ remaining: 0 });
 
-    const noJob = await call(translatePost, env, '/api/translate', { token, body: { prompt: 'x' } });
+    const noJob = await call(translatePost, env, '/api/translate', { token, body: { texts: ['安全第一'], languages: ['越南文'] } });
     expect(noJob.status).toBe(403);
     expect(noJob.body.error.message).toContain('重新整理');
 
-    const ok = await call(translatePost, env, '/api/translate', { token, body: { prompt: 'x' }, headers: { 'X-Job-Id': job.body.jobId } });
+    // 舊版網頁自己組好整段指令送來：不接受
+    const oldClient = await call(translatePost, env, '/api/translate', { token, body: { prompt: '寫一首詩' }, headers: { 'X-Job-Id': job.body.jobId } });
+    expect(oldClient.status).toBe(403);
+
+    const ok = await call(translatePost, env, '/api/translate', { token, body: { texts: ['安全第一'], languages: ['越南文'] }, headers: { 'X-Job-Id': job.body.jobId } });
     expect(ok.status).toBe(200);
+    const sent = JSON.parse(String((vi.mocked(fetch).mock.calls.find(c => String(c[0]).includes('openai'))![1] as RequestInit).body));
+    expect(sent.messages[1].content).toContain('你是一個專業的翻譯官');
+    expect(sent.messages[1].content).toContain('["安全第一"]');
     expect(ok.headers.get('X-Translate-Model')).toBe('gpt-6-luna');
 
-    const bad = await call(translatePost, env, '/api/translate', { token, body: { prompt: 'x' }, headers: { 'X-Job-Id': 'fake' } });
+    const bad = await call(translatePost, env, '/api/translate', { token, body: { texts: ['安全第一'], languages: ['越南文'] }, headers: { 'X-Job-Id': 'fake' } });
     expect(bad.status).toBe(403);
 
     const none = await call(jobsPost, env, '/api/jobs', { token, body: { file: 'b.docx' } });
@@ -148,7 +157,7 @@ describe('翻譯 API 流程', () => {
     stubFetch({ [uid]: { pending: true } });
     const env = { DB: db, FIREBASE_PROJECT_ID: 'p', OPENAI_API_KEY: 'sk' };
     expect((await call(jobsPost, env, '/api/jobs', { token: `${uid}|g@x.tw|yes`, body: {} })).status).toBe(403);
-    expect((await call(translatePost, env, '/api/translate', { token: `${uid}|g@x.tw|yes`, body: { prompt: 'x' } })).status).toBe(403);
+    expect((await call(translatePost, env, '/api/translate', { token: `${uid}|g@x.tw|yes`, body: { texts: ['安全第一'], languages: ['越南文'] } })).status).toBe(403);
   });
 
   it('沒接 D1 時照舊：不用工作單，依 Firestore 的額度與紀錄筆數判斷', async () => {
@@ -156,8 +165,8 @@ describe('翻譯 API 流程', () => {
     stubFetch({ [ok]: { history: 1 }, [full]: { history: 2 } });
     const env = { FIREBASE_PROJECT_ID: 'p', OPENAI_API_KEY: 'sk' };
     expect((await call(jobsPost, env, '/api/jobs', { token: `${ok}|o@x.tw|yes`, body: {} })).body).toMatchObject({ jobId: null, enabled: false });
-    expect((await call(translatePost, env, '/api/translate', { token: `${ok}|o@x.tw|yes`, body: { prompt: 'x' } })).status).toBe(200);
-    expect((await call(translatePost, env, '/api/translate', { token: `${full}|f@x.tw|yes`, body: { prompt: 'x' } })).status).toBe(403);
+    expect((await call(translatePost, env, '/api/translate', { token: `${ok}|o@x.tw|yes`, body: { texts: ['安全第一'], languages: ['越南文'] } })).status).toBe(200);
+    expect((await call(translatePost, env, '/api/translate', { token: `${full}|f@x.tw|yes`, body: { texts: ['安全第一'], languages: ['越南文'] } })).status).toBe(403);
   });
 
   it('管理後台：只有管理員能看與調整', async () => {

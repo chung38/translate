@@ -301,45 +301,22 @@ export default function App() {
         // 管理員身分改由 Firestore 的 users/{uid}.role 決定，不再用寫死的 email 判斷
 
         if (!userSnap.exists()) {
-          const q = query(collection(db, 'users'), where('email', '==', user.email), limit(1));
-          const emailQuerySnap = await getDocs(q);
-          
-          let existingData: Partial<UserProfile> = {};
-          if (!emailQuerySnap.empty && user.emailVerified) {
-            const oldDoc = emailQuerySnap.docs[0];
-            const oldData = oldDoc.data() as UserProfile;
-            
-            if (oldData.role !== undefined) existingData.role = oldData.role;
-            if (oldData.isPaid !== undefined) existingData.isPaid = oldData.isPaid;
-            if (oldData.quota !== undefined) existingData.quota = oldData.quota;
-            if (oldData.displayName || user.displayName) existingData.displayName = oldData.displayName || user.displayName || undefined;
-            if (oldData.photoURL || user.photoURL) existingData.photoURL = oldData.photoURL || user.photoURL || undefined;
-            
-            if (oldDoc.id !== user.uid) {
-              try {
-                await deleteDoc(doc(db, 'users', oldDoc.id));
-              } catch (e) {
-                console.error("Failed to delete old profile:", e);
-              }
-            }
-          }
-
-          // 注意：...existingData 必須放在最前面。
-          // 原本放在最後，會把下面算好的 role / isPaid / quota / displayName
-          // 又整個蓋回舊值，導致管理員自動升級對搬移過來的帳號永遠失效。
+          // 第一次登入：只建立自己的資料。
+          // 舊版會用 Email 搜尋「所有用戶」來搬移舊資料，但一般用戶沒有權限搜尋全部用戶，
+          // 整段會失敗，新用戶就不會出現在管理後台。額度已改由後端記錄，不需要再搬。
+          // 這些欄位要符合 firestore.rules 的建立規則（role 為 user、quota 2、isPaid false）。
           const newProfile: UserProfile = {
-            ...existingData,
             uid: user.uid,
             email: user.email || null,
             emailVerified: user.emailVerified,
-            displayName: existingData.displayName || user.displayName || (user.email ? user.email.split('@')[0] : '未命名用戶'),
-            photoURL: existingData.photoURL || user.photoURL || null,
+            displayName: user.displayName || (user.email ? user.email.split('@')[0] : '未命名用戶'),
+            photoURL: user.photoURL || null,
             createdAt: Timestamp.now(),
-            role: existingData.role || 'user',
-            isPaid: existingData.isPaid || false,
-            quota: existingData.quota !== undefined ? existingData.quota : 2,
+            role: 'user',
+            isPaid: false,
+            quota: 2,
           };
-          
+
           Object.keys(newProfile).forEach(key => {
             if (newProfile[key as keyof UserProfile] === undefined) {
               delete newProfile[key as keyof UserProfile];

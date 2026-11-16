@@ -1,6 +1,7 @@
 // Cloudflare Pages Function — /api/translate：翻譯一批文字
 //
-// 每次呼叫依序檢查：
+// 瀏覽器只送「要翻的句子、目標語言、產業別」，翻譯指令由後端組（functions/_lib/prompt.ts），
+// 所以這個 API 只能拿來翻譯。每次呼叫依序檢查：
 //   1. 已登入、Email 已驗證
 //   2. 帳號沒被停用
 //   3. 帶著有效的工作單（X-Job-Id，開始翻譯每份檔案時由 /api/jobs 發出並扣額度）
@@ -14,6 +15,7 @@ import { loadMe } from '../_lib/account';
 import { freeQuota, useJob } from '../_lib/credits';
 import { pruneUsage, takeDailySlot } from '../_lib/limits';
 import { callModel, pickProvider } from '../_lib/model';
+import { buildTranslatePrompt, parseTranslateRequest } from '../_lib/prompt';
 
 export const onRequestPost: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
@@ -36,15 +38,15 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     return json(errorBody('尚未設定翻譯服務金鑰，請到 Cloudflare → Settings → Variables and Secrets 新增 OPENAI_API_KEY。'), 500);
   }
 
-  let prompt: string;
+  // 瀏覽器只送要翻的句子、目標語言、產業別；翻譯指令在後端組（functions/_lib/prompt.ts）
+  let parsed: ReturnType<typeof parseTranslateRequest>;
   try {
-    const body = await request.json() as { prompt?: string };
-    prompt = body?.prompt ?? '';
+    parsed = parseTranslateRequest(await request.json());
   } catch {
     return json(errorBody('無效的請求內容'), 400);
   }
-  if (!prompt || typeof prompt !== 'string') return json(errorBody('無效的請求內容'), 400);
-  if (prompt.length > 200000) return json(errorBody('文本內容過長，超過系統單次處理限制。'), 400);
+  if (!('req' in parsed)) return json(errorBody(parsed.message), parsed.message.includes('重新整理') ? 403 : 400);
+  const prompt = buildTranslatePrompt(parsed.req);
 
   // ── 3. 額度：每份檔案要有工作單 ────────────────────────────────────────
   if (env.DB && me.credit) {
@@ -52,11 +54,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     if (!jobId) return json(errorBody('網站已更新，請重新整理頁面後再翻譯。'), 403);
     let ok = true;
     try {
-      ok = await useJob(env.DB, user.uid, jobId);
+      ok = await useJob(env.DB, user.uid, jobId, parsed.chars);
     } catch (e) {
       console.error('檢查工作單失敗，本次放行：', e);
     }
-    if (!ok) return json(errorBody('這份檔案的翻譯授權已失效（超過 12 小時或次數用完），請重新按「開始翻譯」。'), 403);
+    if (!ok) return json(errorBody('這份檔案的翻譯授權已失效（超過 12 小時，或這份檔案的翻譯量超過上限），請重新按「開始翻譯」。'), 403);
   } else {
     const p = me.profile;
     const quota = p?.quota ?? freeQuota(env);
