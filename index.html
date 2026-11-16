@@ -811,8 +811,8 @@ function seaHtml(){
 function newsView(){
   return `<div class="pagehead" style="--k:${KIND.news.color}"><span class="kind">新聞</span><b>移工新聞</b></div>
     <div class="jump"><a href="#" data-anchor-only="tw">🇹🇼 台灣媒體</a><a href="#" data-anchor-only="sea">🌏 東南亞頭條</a></div>`
-    + `<div id="tw">${panel('news', '🇹🇼 台灣熱門移工新聞', newsList(50) + '<p class="src-note">由 Google 新聞彙整各家媒體，同一事件合併為一則，依報導媒體數排序；點標題開啟原媒體網頁。</p>', `<span class="n">近 ${NEWS?.days || 3} 天${NEWS?.updatedAt ? '・' + ago(NEWS.updatedAt) + '更新' : ''}</span>`)}</div>`
-    + `<div id="sea">${panel('news', '🌏 東南亞當地頭條', '<p class="lead">越南、菲律賓、泰國、印尼當地華文報的熱門與頭條新聞，每國 3 則；同一事件只列一次，各國之間也不重複。</p>' + seaHtml() + '<p class="src-note">依各報首頁的熱門排行與頭條順序自動挑選，排除娛樂、體育、國際及社團訃告；簡體字已轉為繁體。點標題開啟原媒體網頁。</p>', `<span class="n">${SEA?.updatedAt ? ago(SEA.updatedAt) + '更新' : ''}</span>`)}</div>`;
+    + `<div id="tw">${panel('news', '🇹🇼 台灣熱門移工新聞', newsList(50), `<span class="n">近 ${NEWS?.days || 3} 天${NEWS?.updatedAt ? '・' + ago(NEWS.updatedAt) + '更新' : ''}</span>`)}</div>`
+    + `<div id="sea">${panel('news', '🌏 東南亞當地頭條', seaHtml(), `<span class="n">${SEA?.updatedAt ? ago(SEA.updatedAt) + '更新' : ''}</span>`)}</div>`;
 }
 
 // ---------- 工具箱（專線、辦事處、行事曆、數字） ----------
