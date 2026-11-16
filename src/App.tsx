@@ -107,23 +107,25 @@ const MIME: Record<string, string> = {
   pdf: 'application/pdf',
 };
 
-type OutputFile = { name: string; blob: Blob };
+type OutputFile = { name: string; blob: Blob; saved?: boolean };
 
-// 手機用分享選單（可存到「檔案」、用 Word 開、傳到 LINE），不支援時才一般下載
-async function deliverFile(out: OutputFile) {
+// 手機用分享選單（可存到「檔案」、用 Word 開、傳到 LINE），不支援時才一般下載。
+// 回傳 true 代表有存到／分享出去；使用者自己關掉分享選單時回傳 false。
+async function deliverFile(out: OutputFile): Promise<boolean> {
   if (IS_TOUCH && typeof navigator.share === 'function') {
     const ext = out.name.split('.').pop()?.toLowerCase() || '';
     const file = new File([out.blob], out.name, { type: out.blob.type || MIME[ext] || 'application/octet-stream' });
     if (navigator.canShare?.({ files: [file] })) {
       try {
         await navigator.share({ files: [file] });
-        return;
+        return true;
       } catch (e) {
-        if ((e as Error)?.name === 'AbortError') return;   // 使用者自己關掉分享選單
+        if ((e as Error)?.name === 'AbortError') return false;
       }
     }
   }
   saveAs(out.blob, out.name);
+  return true;
 }
 
 // 精簡的選項列：標題與兩個切換鈕同一行，下面只顯示目前選項的說明（省高度，避免畫面要捲動）
@@ -730,8 +732,8 @@ export default function App() {
           
           if (results && results.length > 0) {
             for (const result of results) {
-              setOutputs(prev => [...prev, result]);
               if (!IS_TOUCH) saveAs(result.blob, result.name);   // 電腦照舊自動下載
+              setOutputs(prev => [...prev, { ...result, saved: !IS_TOUCH }]);
               await saveToFirestore(currentFile.name, result.name, extension || 'unknown', selectedLanguages, industry);
             }
           }
@@ -1188,11 +1190,23 @@ export default function App() {
             />
               {outputs.length > 0 && (
                 <div className="tdl">
-                  <p className="tdl__h">{IS_TOUCH ? '翻好了！點一下儲存或分享' : '翻好的檔案（沒下載到可以再點一次）'}</p>
+                  <div className="tdl__top">
+                    <p className="tdl__h">
+                      {outputs.every(o => o.saved) ? '全部存好了' : IS_TOUCH ? '翻好了！點一下儲存或分享' : '翻好的檔案（沒下載到可以再點一次）'}
+                    </p>
+                    <button type="button" className="tdl__clear" onClick={() => {
+                      const left = outputs.filter(o => !o.saved).length;
+                      if (left > 0 && !window.confirm(`還有 ${left} 個檔案沒存，清除後要重新翻譯才拿得到。確定要清除嗎？`)) return;
+                      setOutputs([]);
+                    }}>清除</button>
+                  </div>
                   {outputs.map((o, i) => (
-                    <button key={i} type="button" className="tdl__item" onClick={() => deliverFile(o)}>
+                    <button key={i} type="button" className={`tdl__item${o.saved ? ' is-saved' : ''}`}
+                      onClick={async () => {
+                        if (await deliverFile(o)) setOutputs(prev => prev.map((x, j) => j === i ? { ...x, saved: true } : x));
+                      }}>
                       <span className="tdl__name">{o.name}</span>
-                      <span className="tdl__act">{IS_TOUCH ? '儲存' : '下載'}</span>
+                      <span className="tdl__act">{o.saved ? (IS_TOUCH ? '✓ 已存' : '✓ 已下載') : (IS_TOUCH ? '儲存' : '下載')}</span>
                     </button>
                   ))}
                 </div>

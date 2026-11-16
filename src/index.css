@@ -296,7 +296,12 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
 
 /* 電腦版：三張卡片並排，填滿畫面高度，不用捲 */
 .tdl { display: flex; flex-direction: column; gap: 0.45rem; margin-bottom: 0.8rem; }
+.tdl__top { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; }
 .tdl__h { font-size: 0.8125rem; font-weight: 800; color: var(--t-green); }
+.tdl__clear { flex-shrink: 0; min-height: 32px; padding: 0 0.75rem; border: 2px solid var(--t-line); border-radius: 999px; background: #fff;
+  font-size: 0.8125rem; font-weight: 700; color: var(--t-muted); cursor: pointer; }
+.tdl__clear:hover { border-color: var(--t-ink); color: var(--t-ink); }
+.tdl__clear:focus-visible { outline: 3px solid var(--t-indigo); outline-offset: 2px; }
 .tdl__item { display: flex; align-items: center; gap: 0.6rem; width: 100%; min-height: 48px; padding: 0.55rem 0.7rem 0.55rem 0.9rem;
   background: #fff; border: 2px solid var(--t-ink); border-radius: 14px; box-shadow: 3px 3px 0 var(--t-ink); text-align: left; cursor: pointer;
   transition: transform .12s, box-shadow .12s; }
@@ -304,6 +309,9 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
 .tdl__item:focus-visible { outline: 3px solid var(--t-indigo); outline-offset: 2px; }
 .tdl__name { flex: 1; min-width: 0; font-size: 0.875rem; font-weight: 700; color: var(--t-ink); overflow-wrap: anywhere; line-height: 1.3; }
 .tdl__act { flex-shrink: 0; padding: 0.3rem 0.7rem; border-radius: 999px; background: var(--t-green); color: #fff; font-size: 0.8125rem; font-weight: 800; }
+.tdl__item.is-saved { background: #f1f8f6; box-shadow: 3px 3px 0 #9fbdb6; border-color: #7aa59c; }
+.tdl__item.is-saved .tdl__name { color: #4c6661; }
+.tdl__item.is-saved .tdl__act { background: #fff; color: var(--t-green); box-shadow: inset 0 0 0 2px var(--t-green); }
 @media (min-width: 1024px) {
   .tri { flex: 1; max-height: 600px; }
   .tri__title { font-size: 1.45rem; }
