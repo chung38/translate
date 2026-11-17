@@ -58,3 +58,28 @@ describe('repairTranslationTags', () => {
     expect(repairTranslationTags('安全第一', 'An toàn là trên hết')).toBe('An toàn là trên hết');
   });
 });
+
+import { hasMixedLanguage, translationNeedsQualityRetry } from '../../hooks/useTranslation';
+
+describe('譯文混到別的語言', () => {
+  // 實際案例：印尼文譯文裡夾了泰文
+  it('印尼文裡夾泰文要重翻', () => {
+    const src = '[f0]劇烈溫差衝擊[/f0]：頻繁進出冷凍/冷藏庫';
+    const bad = '[f0]Perubahan suhu yang ekstrem[/f0]: Seringเข้า keluar ruang pembeku';
+    expect(hasMixedLanguage(src, bad, '印尼文')).toBe(true);
+    expect(translationNeedsQualityRetry(src, bad, '印尼文')).toBe(true);
+    expect(translationNeedsQualityRetry('早班人員清晨出門', 'Saat pekerjanะเช้าออกจากบ้านในตอนเช้ามืด', '印尼文')).toBe(true);
+  });
+
+  it('正常的印尼文、泰文、越南文不會誤判', () => {
+    expect(hasMixedLanguage('搬重物時保持自然呼吸', 'Saat mengangkat barang berat, jagalah pernapasan tetap alami', '印尼文')).toBe(false);
+    expect(hasMixedLanguage('搬重物時保持自然呼吸', 'ขณะยกของหนักให้หายใจตามธรรมชาติ', '泰文')).toBe(false);
+    expect(hasMixedLanguage('搬重物時保持自然呼吸', 'Khi mang vác vật nặng, hãy thở tự nhiên', '越南文')).toBe(false);
+  });
+
+  it('印尼文、英文裡夾越南文字母要重翻；原文本來就有的不算', () => {
+    expect(hasMixedLanguage('保持呼吸', 'Jagalah hơi thở tetap alami', '印尼文')).toBe(true);
+    expect(hasMixedLanguage('負責人：阮文雄 Nguyễn Văn Hùng', 'Penanggung jawab: Nguyễn Văn Hùng', '印尼文')).toBe(false);
+    expect(hasMixedLanguage('ภาษาไทย 對照：安全第一', 'ภาษาไทย: Safety first', '英文')).toBe(false);
+  });
+});

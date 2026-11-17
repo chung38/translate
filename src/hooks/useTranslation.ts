@@ -69,7 +69,21 @@ const hasTargetScript = (text: string, base: string) => {
   return true;
 };
 
-const translationNeedsQualityRetry = (
+// 越南文專用字母（ă â đ ê ô ơ ư 與各種聲調），印尼文、英文不會用到
+const VI_ONLY_RE = /[\u0103\u0111\u01a1\u01b0\u1ea0-\u1ef9]/i;
+
+// 譯文裡混進「別的目標語言」的文字，例如印尼文裡夾泰文。
+// 多種語言放在同一個請求裡翻時偶爾會發生；原文本來就有的文字（例如中泰對照的原文）不算。
+export const hasMixedLanguage = (source: string, translated: string, targetLang: string): boolean => {
+  const src = stripAllTags(source || '');
+  const tgt = stripAllTags(translated || '');
+  const base = langBase(targetLang);
+  if (base !== 'th' && THAI_RE.test(tgt) && !THAI_RE.test(src)) return true;
+  if (base !== 'vi' && VI_ONLY_RE.test(tgt) && !VI_ONLY_RE.test(src)) return true;
+  return false;
+};
+
+export const translationNeedsQualityRetry = (
   source: string,
   translated: string,
   targetLang: string
@@ -77,6 +91,8 @@ const translationNeedsQualityRetry = (
   const cleanSource = stripAllTags(source || '').trim();
   const cleanTarget = stripAllTags(translated || '').trim();
   if (!cleanTarget) return true;
+
+  if (hasMixedLanguage(cleanSource, cleanTarget, targetLang)) return true;
 
   // 原文本來就沒有中文（已經是外文、或純數字符號）→ 沒有漏翻的問題
   if (!containsHan(cleanSource)) return false;
@@ -251,6 +267,17 @@ export const useTranslation = (
   ): Promise<Record<string, string>[]> => {
     if (texts.length === 0 || targetLangs.length === 0) return texts.map(() => ({}));
 
+    // 一次只翻一種語言：多種語言放在同一個請求裡，模型偶爾會把別的語言混進來
+    // （例如印尼文裡夾泰文）。各語言同時送出，所以總時間差不多。
+    if (targetLangs.length > 1) {
+      const perLang = await Promise.all(
+        targetLangs.map(lang => translateBatch(texts, [lang], industry, retryCount, qualityRetryCount))
+      );
+      return texts.map((_, i) =>
+        Object.fromEntries(targetLangs.map((lang, k) => [lang, perLang[k][i]?.[lang] ?? ''])) as Record<string, string>
+      );
+    }
+
     try {
       const body = { texts, languages: targetLangs, industry };   // 翻譯指令由後端組：functions/_lib/prompt.ts
 
@@ -377,7 +404,7 @@ export const useTranslation = (
         return newItem;
       });
 
-      // 中文殘留或空白譯文只重翻有問題的段落，最多兩次。
+      // 中文殘留、混到別的語言、空白譯文：只重翻有問題的段落（只翻這一種語言），最多兩次。
       const MAX_QUALITY_RETRIES = 2;
       if (qualityRetryCount < MAX_QUALITY_RETRIES) {
         for (const lang of targetLangs) {

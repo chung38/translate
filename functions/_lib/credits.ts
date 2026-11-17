@@ -3,13 +3,14 @@
 // accounts：每人一筆，quota = 總共可以翻幾份檔案、used = 已經用掉幾份
 // ledger  ：每一次變動的紀錄（建立帳戶、翻譯扣額度、管理員加額度、記錄付款）
 // jobs    ：每開始翻譯一份檔案就發一張「工作單」，之後這份檔案的每一批翻譯都要帶著它；
-//           同一張工作單 12 小時內、最多 800 次呼叫、累計 100 萬字，避免一份額度被拿去無限翻譯。
+//           同一張工作單 12 小時內、最多 1500 次呼叫、累計 150 萬字，避免一份額度被拿去無限翻譯。
+//           （每種語言各送一次，所以選越多語言用得越多）
 //
 // 計費單位：一份上傳的檔案算 1 份，不管選幾種語言、輸出成一個或多個檔案。
 
 export const DEFAULT_FREE_QUOTA = 2;
-export const JOB_MAX_CALLS = 800;
-export const JOB_MAX_CHARS = 1_000_000;   // 約 500 頁文字量的文件（含失敗重送）
+export const JOB_MAX_CALLS = 1500;
+export const JOB_MAX_CHARS = 1_500_000;   // 約 250 頁的文件翻 3 種語言（含失敗重送）
 export const JOB_TTL_MS = 12 * 3600_000;
 
 export interface Credit { uid: string; email: string | null; quota: number; used: number; updated_at?: string }
