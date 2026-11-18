@@ -1,5 +1,9 @@
 import React from 'react';
 import type { Worksheet } from 'exceljs';
+import {
+  detectGridLines, fitText, layoutSegments, layoutTextItems, sampleBlockColors, textItemBoxes, wrapText,
+  type GridLines, type LayoutBlock, type RawTextItem, type Segment,
+} from './pdfLayout';
 
 type TranslationStatus = 'idle' | 'processing' | 'translating' | 'generating' | 'completed' | 'error';
 
@@ -1786,9 +1790,10 @@ export const processExcel = async (
 
 // ─────────────────────────────────────────────────────────────
 // PDF 版面模式
-//   'compare'        = 目前的做法：整份重新排版成「原文 + 譯文」條列（沒有原頁畫面）
+//   'compare'        = 整份重新排版成「原文 + 譯文」條列（沒有原頁畫面）
 //   'duplicate-page' = 一頁原檔、一頁翻譯：原稿頁原樣轉成圖片，
-//                      後面插入一頁「依原位置排版」的純譯文頁。
+//                      後面插入一頁「原稿上直接換成譯文」的翻譯頁（表格線、圖片都保留）。
+//   怎麼切格子、接段落、算譯文範圍在 ./pdfLayout.ts
 // ─────────────────────────────────────────────────────────────
 export type PdfLayoutMode = 'compare' | 'duplicate-page';
 
@@ -1797,15 +1802,9 @@ export const PDF_LAYOUT = {
   pageImageScale: 2,        // 原稿頁轉圖的解析度倍率（越大越清楚、檔案越大）
   pageImageQuality: 0.82,   // 原稿頁 JPEG 品質
   textCanvasScale: 2,       // 譯文頁畫布倍率
-  minFontSize: 5,           // 譯文最小字級 (pt)
-  shrinkFloor: 0.45,        // 譯文最多縮到原字級的幾成（還是塞不下才會再往下縮）
+  translatedPageQuality: 0.9, // 譯文頁 JPEG 品質（字要清楚，所以比原稿頁高一點）
+  minFontSize: 4.5,         // 譯文最小字級 (pt)，再小就印不清楚
   lineHeightRatio: 1.15,    // 譯文換行行高
-  rightMargin: 12,          // 譯文可用寬度保留的右邊界
-  maxBlockLines: 6,         // 單一區塊最多允許展開幾行（避免蓋掉下一段）
-  ghostBackground: true,    // 譯文頁要不要墊一層原頁底圖（方便對照表格線、圖片位置）
-  ghostOpacity: 0.28,       // 底圖濃度，太高會吃掉譯文可讀性
-  textBackdrop: true,       // 譯文下面墊一層半透明白底，深色底圖也看得清楚
-  textBackdropAlpha: 0.86,
   // ── OCR（沒有文字層的掃描檔／簡報圖）────────────────────
   ocrRenderScale: 2.5,        // OCR 用的解析度倍率，越大越準也越慢
   ocrMinConfidence: 55,     // 低於這個信心的行直接丟掉（多半是圖形雜訊）
@@ -1882,52 +1881,26 @@ export const processPdf = async (
 
   const totalPages = pdf.numPages;
 
-  interface TextLine {
-    y: number;
-    x: number;
-    text: string;
-    fontSize: number;
-    width?: number;   // 這一行原本佔多寬，用來判斷上下行是不是同一欄
-  }
-
   interface PageData {
     pdfWidth: number;
     pdfHeight: number;
-    lines: TextLine[];
+    blocks: LayoutBlock[];
+    /** 原稿頁畫面（JPEG），「一頁原檔一頁翻譯」要用 */
+    image?: string;
   }
 
-  function groupToLines(items: any[]): TextLine[] {
-    if (!items?.length) return [];
-    const sorted = [...items]
-      .filter(i => i.str?.trim())
-      .sort((a, b) => {
-        const dy = b.transform[5] - a.transform[5];
-        return Math.abs(dy) > 2 ? dy : a.transform[4] - b.transform[4];
-      });
-    const lines: TextLine[] = [];
-    for (const item of sorted) {
-      const x = item.transform[4];
-      const y = item.transform[5];
-      const fontSize = Math.abs(item.transform[3]) || 12;
-      const itemWidth = typeof item.width === 'number' ? item.width : 0;
-      const match = lines.find(
-        l => Math.abs(l.y - y) < Math.max(l.fontSize, fontSize) * 0.6
-      );
-      if (match) {
-        match.width = Math.max(match.width || 0, x + itemWidth - Math.min(match.x, x));
-        const needSpace =
-          x > match.x && !match.text.endsWith(' ') && !item.str.startsWith(' ');
-        match.text = x < match.x
-          ? item.str + ' ' + match.text
-          : match.text + (needSpace ? ' ' : '') + item.str;
-        if (x < match.x) match.x = x;
-        match.fontSize = Math.max(match.fontSize, fontSize);
-      } else {
-        lines.push({ y, x, text: item.str, fontSize, width: itemWidth });
-      }
-    }
-    return lines.sort((a, b) => b.y - a.y);
-  }
+  // 把頁面算成圖：找表格線、當原稿頁、當譯文頁的底圖都用這一張
+  const renderPage = async (page: any, scale: number) => {
+    const viewport = page.getViewport({ scale });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(viewport.width));
+    canvas.height = Math.max(1, Math.round(viewport.height));
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+    return { canvas, ctx };
+  };
 
   const pages: PageData[] = [];
 
@@ -1937,21 +1910,40 @@ export const processPdf = async (
 
     const page = await pdf.getPage(pageNum);
     const origVp = page.getViewport({ scale: 1 });
+    const PW = origVp.width;
+    const PH = origVp.height;
 
     const textContent = await page.getTextContent();
-    let lines = groupToLines(textContent.items as any[]);
+    // 文字位置統一換算到「畫面上看到的頁面」：頁面有旋轉（掃描的橫式頁）、
+    // 或頁框原點不在 (0,0) 的檔案，位置才會跟算出來的頁面圖片對得上
+    const vt = origVp.transform;
+    const items = (textContent.items as any[])
+      .filter(i => typeof i?.str === 'string' && Array.isArray(i.transform))
+      .map(i => {
+        const t = pdfjsLib.Util.transform(vt, i.transform);
+        return { str: i.str, width: i.width, transform: [t[0], -t[1], -t[2], -t[3], t[4], PH - t[5]] };
+      }) as RawTextItem[];
+    const textLength = items.map(i => i.str).join('').trim().length;
 
-    if (textContent.items.map((i: any) => i.str || '').join('').trim().length < 20) {
+    const IMG_SCALE = PDF_LAYOUT.pageImageScale;
+    const { canvas: pageCanvas, ctx: pageCtx } = await renderPage(page, IMG_SCALE);
+    const pagePixels = () => pageCtx.getImageData(0, 0, pageCanvas.width, pageCanvas.height).data;
+
+    let blocks: LayoutBlock[] = [];
+
+    if (textLength >= 20) {
+      // 有文字層：依表格線把文字切成一格一格、一段一段
+      let grid: GridLines | undefined;
+      try {
+        grid = detectGridLines(pagePixels(), pageCanvas.width, pageCanvas.height, IMG_SCALE, textItemBoxes(items, PH));
+      } catch (gridErr) {
+        console.warn('表格線偵測失敗，改用文字位置判斷', gridErr);
+      }
+      blocks = layoutTextItems(items, PW, PH, grid);
+    } else {
       console.log(`Page ${pageNum}: 文字稀少，改用 OCR`);
       const RENDER_SCALE = PDF_LAYOUT.ocrRenderScale;
-      const viewport = page.getViewport({ scale: RENDER_SCALE });
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(viewport.width);
-      canvas.height = Math.round(viewport.height);
-      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvas, canvasContext: ctx, viewport }).promise;
+      const { canvas, ctx } = await renderPage(page, RENDER_SCALE);
 
       // 深色底的投影片（白字黑底）直接丟給 OCR 幾乎都會變雜訊，先反相
       let ocrSource: HTMLCanvasElement = canvas;
@@ -1987,90 +1979,100 @@ export const processPdf = async (
       });
       const { data } = await worker.recognize(ocrSource, {}, { blocks: true, text: true });
       await worker.terminate();
+      canvas.width = 0;
+      canvas.height = 0;
 
-      // 有 bbox 就照原圖位置擺，沒有才退回「從上往下排」的舊做法
-      const ocrLines: TextLine[] = [];
-      const blocks = (data as any).blocks || [];
-      for (const block of blocks) {
+      // OCR 的每一行 → 一段文字（有位置），再跟文字層一樣整理成翻譯區塊
+      const ocrSegments: Segment[] = [];
+      for (const block of (data as any).blocks || []) {
         for (const paragraph of block.paragraphs || []) {
           for (const line of paragraph.lines || []) {
             // 投影片常常左右兩欄在同一個水平線上，OCR 會併成一行。
             // 字距太大就切開，譯文才不會橫跨整頁。
-            const columnGap = origVp.width * PDF_LAYOUT.ocrColumnGapRatio * RENDER_SCALE;
+            const columnGap = PW * PDF_LAYOUT.ocrColumnGapRatio * RENDER_SCALE;
             const words = (line.words || []).filter((w: any) => (w.text || '').trim());
-            const segments: { text: string; bbox: any }[] = [];
-
+            const parts: { text: string; bbox: any }[] = [];
             if (words.length > 0) {
               let current: any[] = [words[0]];
               for (let wi = 1; wi < words.length; wi++) {
-                const prev = words[wi - 1];
-                const word = words[wi];
-                if (word.bbox.x0 - prev.bbox.x1 > columnGap) {
-                  segments.push(mergeOcrWords(current));
-                  current = [word];
+                if (words[wi].bbox.x0 - words[wi - 1].bbox.x1 > columnGap) {
+                  parts.push(mergeOcrWords(current));
+                  current = [words[wi]];
                 } else {
-                  current.push(word);
+                  current.push(words[wi]);
                 }
               }
-              segments.push(mergeOcrWords(current));
+              parts.push(mergeOcrWords(current));
             } else if (line.bbox) {
-              segments.push({ text: line.text || '', bbox: line.bbox });
+              parts.push({ text: line.text || '', bbox: line.bbox });
             }
-
-            for (const segment of segments) {
-              const text = (segment.text || '').replace(/\s+/g, ' ').trim();
-              if (!isUsableOcrText(text, line.confidence ?? 0)) continue;
-              const bbox = segment.bbox;
-              if (!bbox) continue;
-              const height = (bbox.y1 - bbox.y0) / RENDER_SCALE;
-              ocrLines.push({
-                x: bbox.x0 / RENDER_SCALE,
-                // TextLine.y 跟 PDF 一樣由下往上算
-                y: origVp.height - bbox.y1 / RENDER_SCALE,
+            for (const part of parts) {
+              const text = (part.text || '').replace(/\s+/g, ' ').trim();
+              if (!isUsableOcrText(text, line.confidence ?? 0) || !part.bbox) continue;
+              const box = {
+                left: part.bbox.x0 / RENDER_SCALE,
+                top: part.bbox.y0 / RENDER_SCALE,
+                right: part.bbox.x1 / RENDER_SCALE,
+                bottom: part.bbox.y1 / RENDER_SCALE,
+              };
+              ocrSegments.push({
+                ...box,
                 text,
-                fontSize: Math.max(6, Math.min(48, height * 0.82)),
-                width: (bbox.x1 - bbox.x0) / RENDER_SCALE,
+                fontSize: Math.max(6, Math.min(48, (box.bottom - box.top) * 0.82)),
+                glyphs: [box],
               });
             }
           }
         }
       }
 
-      if (ocrLines.length > 0) {
-        lines = ocrLines.sort((a, b) => b.y - a.y);
+      if (ocrSegments.length > 0) {
+        let grid: GridLines | undefined;
+        try {
+          grid = detectGridLines(pagePixels(), pageCanvas.width, pageCanvas.height, IMG_SCALE, ocrSegments);
+        } catch {
+          grid = undefined;
+        }
+        blocks = layoutSegments(ocrSegments, PW, PH, grid);
       } else {
-        lines = (data.text || '')
+        // 沒有位置資訊：從上往下排
+        const lines = (data.text || '')
           .split('\n')
-          .map(t => t.replace(/\s+/g, ' ').trim())
-          .filter(t => isUsableOcrText(t, 100))
-          .map((t, i) => ({ y: origVp.height - i * 16, x: 0, text: t, fontSize: 12 }));
+          .map((t: string) => t.replace(/\s+/g, ' ').trim())
+          .filter((t: string) => isUsableOcrText(t, 100));
+        blocks = lines.map((t: string, i: number) => {
+          const top = 20 + i * 16;
+          const box = { left: 20, top, right: PW - 20, bottom: top + 14 };
+          return { text: t, fontSize: 12, glyphs: [], source: box, box, vertical: false };
+        });
       }
     }
 
-    pages.push({
-      pdfWidth: origVp.width,
-      pdfHeight: origVp.height,
-      lines,
-    });
+    const image = layoutMode === 'duplicate-page'
+      ? pageCanvas.toDataURL('image/jpeg', PDF_LAYOUT.pageImageQuality)
+      : undefined;
+    pageCanvas.width = 0;
+    pageCanvas.height = 0;
+    (page as any).cleanup?.();
+
+    pages.push({ pdfWidth: PW, pdfHeight: PH, blocks, image });
   }
 
-  if (pages.every(p => p.lines.length === 0)) {
+  if (pages.every(p => p.blocks.length === 0)) {
     throw new Error('無法從 PDF 中提取任何文字，即使嘗試了 OCR 辨識。');
   }
 
   updateProgress(20, 'translating');
 
   const allLineTexts: string[] = [];
-  const linePageIdx: number[] = [];
   // 每一頁自己的區塊清單（保留原始座標），「一頁原檔一頁翻譯」模式要靠它排版
-  const pageBlocks: { line: TextLine; gi: number }[][] = pages.map(() => []);
+  const pageBlocks: { block: LayoutBlock; gi: number }[][] = pages.map(() => []);
 
   for (let pi = 0; pi < pages.length; pi++) {
-    for (const line of pages[pi].lines) {
-      if (line.text.trim()) {
-        pageBlocks[pi].push({ line, gi: allLineTexts.length });
-        allLineTexts.push(line.text);
-        linePageIdx.push(pi);
+    for (const block of pages[pi].blocks) {
+      if (block.text.trim()) {
+        pageBlocks[pi].push({ block, gi: allLineTexts.length });
+        allLineTexts.push(block.text);
       }
     }
   }
@@ -2110,11 +2112,6 @@ export const processPdf = async (
   const TRANS_LINE_HEIGHT = TRANS_FONT_SIZE * 1.6;
   const TEXT_SCALE = 2;
 
-  const blockHeight =
-    ORIG_LINE_HEIGHT + LINE_GAP +
-    targetLanguages.length * TRANS_LINE_HEIGHT +
-    BLOCK_GAP;
-
   const TRANS_COLORS = ['#1e3a8a', '#5b21b6', '#065f46', '#7c2d12'];
 
   const { jsPDF } = await import('jspdf');
@@ -2129,169 +2126,141 @@ export const processPdf = async (
   const fontFor = (size: number, bold = false) =>
     `${bold ? 'bold ' : ''}${size}pt ${CJK_FONT_STACK}`;
 
-  // 依寬度換行：英數字整個單字不拆，中文/泰文逐字拆
-  const wrapByWidth = (
-    ctx: CanvasRenderingContext2D,
-    text: string,
-    maxWidth: number
-  ): string[] => {
-    if (maxWidth <= 0) return [text];
-    if (ctx.measureText(text).width <= maxWidth) return [text];
-    const tokens = text.match(/[A-Za-z0-9@._%+\-/]+|\s+|[\s\S]/g) || [text];
-    const out: string[] = [];
-    let cur = '';
-    for (const tk of tokens) {
-      const next = cur + tk;
-      if (cur && ctx.measureText(next).width > maxWidth) {
-        out.push(cur.replace(/\s+$/, ''));
-        cur = tk.replace(/^\s+/, '');
-      } else {
-        cur = next;
-      }
-    }
-    if (cur.trim()) out.push(cur.replace(/\s+$/, ''));
-    return out.length ? out : [text];
-  };
-
   // ── 「依原位置排版」的譯文頁 ───────────────────────────────
-  // 把每一段譯文畫在原文原本的座標上，字級自動縮到塞得進原本的空間。
+  // 原稿頁完整保留（表格線、圖片、勾選框都在），只把原文的位置蓋掉、寫上譯文。
+  const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = reject;
+    im.src = src;
+  });
+
   const drawTranslatedPage = (
     pageIdx: number,
     langs: string[],
-    ghost?: HTMLImageElement | null
+    pageImage: HTMLImageElement | null
   ): HTMLCanvasElement => {
     const { pdfWidth: PW, pdfHeight: PH } = pages[pageIdx];
     const S = PDF_LAYOUT.textCanvasScale;
     const canvas = document.createElement('canvas');
     canvas.width = Math.max(1, Math.round(PW * S));
     canvas.height = Math.max(1, Math.round(PH * S));
-    const ctx = canvas.getContext('2d')!;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
     ctx.scale(S, S);
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, PW, PH);
+    if (pageImage) ctx.drawImage(pageImage, 0, 0, PW, PH);
 
-    // 墊一層很淡的原稿底圖，對照表格線、圖片位置時比較好認
-    if (ghost && PDF_LAYOUT.ghostBackground) {
-      ctx.save();
-      ctx.globalAlpha = PDF_LAYOUT.ghostOpacity;
-      ctx.drawImage(ghost, 0, 0, PW, PH);
-      ctx.restore();
+    const blocks = pageBlocks[pageIdx].filter(({ gi }) =>
+      langs.some(l => (translatedLines[gi]?.[l] || '').trim())
+    );
+
+    const measure = (text: string, size: number) => {
+      ctx.font = fontFor(size);
+      return ctx.measureText(text).width;
+    };
+
+    // 1) 先記下每一段原本的底色和字的顏色（紅字照樣用紅字）
+    let pixels: Uint8ClampedArray | null = null;
+    try {
+      pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+    } catch {
+      pixels = null;
     }
+    const colors = blocks.map(({ block }) => sampleBlockColors(pixels, canvas.width, canvas.height, S, block));
 
-    ctx.textBaseline = 'alphabetic';
-
-    const blocks = pageBlocks[pageIdx];
-
-    for (let k = 0; k < blocks.length; k++) {
-      const { line, gi } = blocks[k];
-      const translations = translatedLines[gi] || {};
-
-      // 這一段可以用的垂直空間 = 到「同一欄」下一段原文之間的距離。
-      // 投影片常常左右分欄，用全頁的下一行會把空間算成 0。
-      const lineWidth = line.width && line.width > 0 ? line.width : PW - line.x;
-      let nextY = 12;
-      for (let n = k + 1; n < blocks.length; n++) {
-        const other = blocks[n].line;
-        const otherWidth = other.width && other.width > 0 ? other.width : PW - other.x;
-        const overlap =
-          Math.min(line.x + lineWidth, other.x + otherWidth) - Math.max(line.x, other.x);
-        if (overlap > Math.min(lineWidth, otherWidth) * 0.3) {
-          nextY = other.y;
-          break;
+    // 2) 蓋掉原文（只蓋字的位置，而且不超出格子，表格線才不會被蓋掉）
+    blocks.forEach(({ block }, k) => {
+      ctx.fillStyle = colors[k].background;
+      for (const g of block.glyphs) {
+        let l = g.left - 0.6, t = g.top - 0.4, r = g.right + 0.6, b = g.bottom + 0.4;
+        const c = block.cell;
+        if (c) {
+          if (c.hasLeft) l = Math.max(l, c.left + 0.9);
+          if (c.hasRight) r = Math.min(r, c.right - 0.9);
+          if (c.hasTop) t = Math.max(t, c.top + 0.9);
+          if (c.hasBottom) b = Math.min(b, c.bottom - 0.9);
         }
+        if (r > l && b > t) ctx.fillRect(l, t, r - l, b - t);
       }
-      const rawGap = line.y - nextY;
-      const gapBelow = Math.min(
-        Math.max(rawGap, PDF_LAYOUT.minFontSize * PDF_LAYOUT.lineHeightRatio),
-        line.fontSize * PDF_LAYOUT.maxBlockLines
-      );
-      const slotH = gapBelow / Math.max(1, langs.length);
+    });
 
-      const availW = Math.max(60, PW - line.x - PDF_LAYOUT.rightMargin);
-      let cursorBaseline = PH - line.y;   // PDF 座標由下往上，畫布由上往下
+    // 3) 寫上譯文
 
-      langs.forEach((lang, langIdx) => {
-        const text = (translations[lang] || '').trim();
-        if (!text) return;
+    blocks.forEach(({ block, gi }, k) => {
+      const translations = translatedLines[gi] || {};
+      const texts = langs
+        .map((lang, li) => ({ lang, li, text: (translations[lang] || '').trim() }))
+        .filter(t => t.text);
+      if (!texts.length) return;
 
-        const color = TRANS_COLORS[langIdx % TRANS_COLORS.length];
-        let textX = line.x;
-        let labelW = 0;
+      const box = block.box;
+      const multi = langs.length > 1;
+      const minFont = PDF_LAYOUT.minFontSize;
+      const maxFont = Math.max(minFont, block.maxFont ?? block.fontSize);
+      const inkFor = (li: number) => (multi ? TRANS_COLORS[li % TRANS_COLORS.length] : colors[k].ink);
 
-        let fs = Math.max(
-          PDF_LAYOUT.minFontSize,
-          Math.min(line.fontSize, slotH / PDF_LAYOUT.lineHeightRatio)
-        );
-        const floor = Math.max(PDF_LAYOUT.minFontSize, line.fontSize * PDF_LAYOUT.shrinkFloor);
-
-        if (langs.length > 1) {
-          ctx.font = fontFor(Math.max(PDF_LAYOUT.minFontSize, fs - 1), true);
-          labelW = ctx.measureText(`[${lang}] `).width;
+      if (block.vertical) {
+        // 直排標籤：整段轉 90 度，由下往上讀
+        const length = box.bottom - box.top;
+        const thickness = box.right - box.left;
+        const joined = texts.map(t => (multi ? `[${t.lang}] ${t.text}` : t.text)).join('\n');
+        const fit = fitText(joined, length - 2, thickness, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio);
+        ctx.save();
+        ctx.translate(box.left, box.bottom);
+        ctx.rotate(-Math.PI / 2);
+        ctx.font = fontFor(fit.fontSize);
+        ctx.fillStyle = inkFor(texts[0].li);
+        const lh = fit.fontSize * PDF_LAYOUT.lineHeightRatio;
+        const totalH = fit.lines.length * lh;
+        let baseline = Math.max(0, (thickness - totalH) / 2) + fit.fontSize * 0.9;
+        for (const line of fit.lines) {
+          const w = ctx.measureText(line).width;
+          ctx.fillText(line, Math.max(1, (length - w) / 2), baseline);
+          baseline += lh;
         }
+        ctx.restore();
+        return;
+      }
 
-        // 先縮字級試著塞進這段的空間，塞不下再換行
-        let wrapped: string[] = [];
-        for (;;) {
-          ctx.font = fontFor(fs);
-          wrapped = wrapByWidth(ctx, text, availW - labelW);
-          const maxLines = Math.max(1, Math.floor(slotH / (fs * PDF_LAYOUT.lineHeightRatio)));
-          if (wrapped.length <= maxLines) break;
-          if (fs <= PDF_LAYOUT.minFontSize) break;
-          fs = Math.max(PDF_LAYOUT.minFontSize, fs - (fs > floor ? 0.5 : 0.25));
+      const width = box.right - box.left;
+      const slotH = (box.bottom - box.top) / texts.length;
+      // 原文在格子裡置中的（例如表頭），譯文也置中
+      const c = block.cell;
+      const centered = !!c && c.hasLeft && c.hasRight &&
+        Math.abs((block.source.left - c.left) - (c.right - block.source.right)) < 3 &&
+        block.source.left - c.left > 4;
+
+      texts.forEach((t, slot) => {
+        const text = multi ? `[${t.lang}] ${t.text}` : t.text;
+        const fit = fitText(text, width, slotH, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio);
+        ctx.font = fontFor(fit.fontSize);
+        ctx.fillStyle = inkFor(t.li);
+        const lh = fit.fontSize * PDF_LAYOUT.lineHeightRatio;
+        const slotTop = box.top + slot * slotH;
+        // 只有一行的：對齊原文的基準線，看起來跟原本排在同一個位置
+        let baseline = slotTop + fit.fontSize * 0.88;
+        if (texts.length === 1 && fit.lines.length === 1) {
+          const origBaseline = block.source.top + block.fontSize * 0.9;
+          baseline = Math.max(baseline, Math.min(origBaseline, box.bottom - fit.fontSize * 0.15));
         }
-
-        if (langs.length > 1) {
-          ctx.font = fontFor(Math.max(PDF_LAYOUT.minFontSize, fs - 1), true);
-          const labelText = `[${lang}] `;
-          if (PDF_LAYOUT.textBackdrop) {
-            ctx.save();
-            ctx.globalAlpha = PDF_LAYOUT.textBackdropAlpha;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(textX - 1.5, cursorBaseline - fs * 0.95, ctx.measureText(labelText).width + 3, fs * 1.2);
-            ctx.restore();
+        for (const line of fit.lines) {
+          let x = box.left;
+          if (centered) {
+            const cellCenter = (c!.left + c!.right) / 2;
+            x = Math.max(box.left, cellCenter - ctx.measureText(line).width / 2);
           }
-          ctx.fillStyle = color;
-          ctx.fillText(labelText, textX, cursorBaseline);
-          textX += ctx.measureText(labelText).width + 1;
+          ctx.fillText(line, x, baseline);
+          baseline += lh;
         }
-
-        ctx.font = fontFor(fs);
-        wrapped.forEach((w, wi) => {
-          const drawX = wi === 0 ? textX : line.x;
-
-          // 先墊一層半透明白底，底圖較深時譯文才看得清楚
-          if (PDF_LAYOUT.textBackdrop) {
-            const wWidth = ctx.measureText(w).width;
-            ctx.save();
-            ctx.globalAlpha = PDF_LAYOUT.textBackdropAlpha;
-            ctx.fillStyle = '#ffffff';
-            ctx.fillRect(
-              (wi === 0 ? line.x : drawX) - 1.5,
-              cursorBaseline - fs * 0.95,
-              wWidth + (wi === 0 ? textX - line.x : 0) + 3,
-              fs * 1.2
-            );
-            ctx.restore();
-          }
-
-          ctx.fillStyle = color;
-          ctx.fillText(w, drawX, cursorBaseline);
-          cursorBaseline += fs * PDF_LAYOUT.lineHeightRatio;
-        });
-
-        // 下一個語言從這裡接著往下（至少空出一個 slot）
-        cursorBaseline = Math.max(
-          cursorBaseline,
-          (PH - line.y) + (langIdx + 1) * slotH
-        );
       });
-    }
+    });
 
     // 頁尾標記，方便對照
     ctx.font = fontFor(7);
     ctx.fillStyle = '#9ca3af';
     const tag = `譯文　第 ${pageIdx + 1} / ${pages.length} 頁`;
-    ctx.fillText(tag, PW - ctx.measureText(tag).width - 16, PH - 10);
+    ctx.fillText(tag, PW - ctx.measureText(tag).width - 16, PH - 6);
 
     return canvas;
   };
@@ -2303,54 +2272,36 @@ export const processPdf = async (
     for (let pi = 0; pi < pages.length; pi++) {
       if (isCancelledRef.current) throw new Error('Cancelled');
 
-      const { pdfWidth: PW, pdfHeight: PH } = pages[pi];
+      const { pdfWidth: PW, pdfHeight: PH, image } = pages[pi];
       const orient: 'landscape' | 'portrait' = PW > PH ? 'landscape' : 'portrait';
 
-      // 1) 原稿頁：整頁原樣算圖（表格、圖片、版面都保留）
-      const pg = await pdf.getPage(pi + 1);
-      const vp = pg.getViewport({ scale: PDF_LAYOUT.pageImageScale });
-      const oc = document.createElement('canvas');
-      oc.width = Math.max(1, Math.round(vp.width));
-      oc.height = Math.max(1, Math.round(vp.height));
-      const octx = oc.getContext('2d')!;
-      octx.fillStyle = '#ffffff';
-      octx.fillRect(0, 0, oc.width, oc.height);
-      await pg.render({ canvas: oc, canvasContext: octx, viewport: vp }).promise;
-      const origImg = oc.toDataURL('image/jpeg', PDF_LAYOUT.pageImageQuality);
-      oc.width = 0;
-      oc.height = 0;
-      (pg as any).cleanup?.();
-
-      let ghost: HTMLImageElement | null = null;
-      if (PDF_LAYOUT.ghostBackground) {
+      let pageImage: HTMLImageElement | null = null;
+      if (image) {
         try {
-          ghost = await new Promise<HTMLImageElement>((resolve, reject) => {
-            const im = new Image();
-            im.onload = () => resolve(im);
-            im.onerror = reject;
-            im.src = origImg;
-          });
+          pageImage = await loadImage(image);
         } catch {
-          ghost = null;
+          pageImage = null;
         }
       }
 
-      // 2) 每一種語言組合各自輸出一份
       for (let g = 0; g < langGroups.length; g++) {
         if (!docs[g]) {
           docs[g] = new jsPDF({ orientation: orient, unit: 'pt', format: [PW, PH] });
         } else {
           docs[g].addPage([PW, PH], orient);
         }
-        docs[g].addImage(origImg, 'JPEG', 0, 0, PW, PH);
+        // 1) 原稿頁
+        if (image) docs[g].addImage(image, 'JPEG', 0, 0, PW, PH);
 
+        // 2) 譯文頁
         docs[g].addPage([PW, PH], orient);
-        const tCanvas = drawTranslatedPage(pi, langGroups[g], ghost);
-        docs[g].addImage(tCanvas.toDataURL('image/png'), 'PNG', 0, 0, PW, PH, undefined, 'FAST');
+        const tCanvas = drawTranslatedPage(pi, langGroups[g], pageImage);
+        docs[g].addImage(tCanvas.toDataURL('image/jpeg', PDF_LAYOUT.translatedPageQuality), 'JPEG', 0, 0, PW, PH);
         tCanvas.width = 0;
         tCanvas.height = 0;
       }
 
+      pages[pi].image = undefined;   // 用完就放掉，大檔案比較不會吃光記憶體
       updateProgress(70 + ((pi + 1) / pages.length) * 30);
     }
 
@@ -2363,7 +2314,8 @@ export const processPdf = async (
     return generatedFiles;
   }
 
-  // ── 模式二（原本的做法）：整份重排成原文／譯文對照條列 ──────
+  // ── 模式二：整份重排成原文／譯文對照條列 ──────
+  // 一段原文、下面接譯文；整段會自動換行，放不下就換頁。
   for (const langs of langGroups) {
     if (isCancelledRef.current) throw new Error('Cancelled');
 
@@ -2378,91 +2330,80 @@ export const processPdf = async (
     });
 
     const contentWidth = PW - PAGE_MARGIN * 2;
-    const usableHeight = PH - PAGE_MARGIN * 2;
-    const blocksPerOutputPage = Math.floor(usableHeight / blockHeight);
-
-    const flushCanvasToPdf = (
-      tc: HTMLCanvasElement,
-      isFirstPage: boolean,
-      pw: number,
-      ph: number
-    ) => {
-      if (!isFirstPage) {
-        doc.addPage([pw, ph], pw > ph ? 'landscape' : 'portrait');
-      }
-      doc.setFillColor(255, 255, 255);
-      doc.rect(0, 0, pw, ph, 'F');
-      doc.addImage(tc.toDataURL('image/png'), 'PNG', 0, 0, pw, ph, undefined, 'FAST');
-    };
+    const pageBottom = PH - PAGE_MARGIN;
 
     let isFirstPdfPage = true;
-    let blockOnPage = 0;
-    let curY = PAGE_MARGIN;
-
     const makeCanvas = () => {
       const tc = document.createElement('canvas');
       tc.width = PW * TEXT_SCALE;
       tc.height = PH * TEXT_SCALE;
-      const ctx = tc.getContext('2d')!;
-      ctx.scale(TEXT_SCALE, TEXT_SCALE);
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, PW, PH);
-      return { tc, ctx };
+      const c = tc.getContext('2d')!;
+      c.scale(TEXT_SCALE, TEXT_SCALE);
+      c.fillStyle = '#ffffff';
+      c.fillRect(0, 0, PW, PH);
+      return { tc, ctx: c };
     };
-
     let { tc, ctx } = makeCanvas();
+    let curY = PAGE_MARGIN;
+    let pageHasContent = false;
+
+    const flush = () => {
+      if (!isFirstPdfPage) doc.addPage([PW, PH], PW > PH ? 'landscape' : 'portrait');
+      doc.addImage(tc.toDataURL('image/jpeg', PDF_LAYOUT.translatedPageQuality), 'JPEG', 0, 0, PW, PH);
+      isFirstPdfPage = false;
+      tc.width = 0;
+      tc.height = 0;
+    };
+    const measureWith = (font: (size: number) => string) => (text: string, size: number) => {
+      ctx.font = font(size);
+      return ctx.measureText(text).width;
+    };
+    const origFont = (size: number) => `${size}pt Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
 
     for (let gi = 0; gi < allLineTexts.length; gi++) {
-      if (blockOnPage >= blocksPerOutputPage) {
-        flushCanvasToPdf(tc, isFirstPdfPage, PW, PH);
-        isFirstPdfPage = false;
-        blockOnPage = 0;
-        curY = PAGE_MARGIN;
-        ({ tc, ctx } = makeCanvas());
-      }
-
-      const origText = allLineTexts[gi];
       const translations = translatedLines[gi] || {};
-
-      const origBaseline = curY + ORIG_LINE_HEIGHT;
-      ctx.font = `${ORIG_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", sans-serif`;
-      ctx.fillStyle = '#444444';
-      ctx.fillText(origText, PAGE_MARGIN, origBaseline, contentWidth);
-
-      curY += ORIG_LINE_HEIGHT + LINE_GAP;
-
-      langs.forEach((lang, langIdx) => {
-        const translatedText = translations[lang] || '';
-        if (!translatedText) {
-          curY += TRANS_LINE_HEIGHT;
-          return;
-        }
-
-        const transBaseline = curY + TRANS_LINE_HEIGHT;
-        const colorIdx = langIdx % TRANS_COLORS.length;
-
-        let textX = PAGE_MARGIN;
-
-        if (langs.length > 1) {
-          ctx.font = `bold ${ORIG_FONT_SIZE - 1}pt Arial, sans-serif`;
-          ctx.fillStyle = TRANS_COLORS[colorIdx];
-          const label = `[${lang}] `;
-          ctx.fillText(label, textX, transBaseline);
-          textX += ctx.measureText(label).width + 2;
-        }
-
-        ctx.font = `${TRANS_FONT_SIZE}pt Arial, "Noto Sans TC", "Microsoft JhengHei", "Noto Sans Thai", sans-serif`;
-        ctx.fillStyle = TRANS_COLORS[colorIdx];
-        ctx.fillText(translatedText, textX, transBaseline, contentWidth - (textX - PAGE_MARGIN));
-
-        curY += TRANS_LINE_HEIGHT;
+      // 先算好這一段要幾行，整段放不下就換頁（太長的段落才允許跨頁）
+      const origLines = wrapText(allLineTexts[gi], contentWidth, ORIG_FONT_SIZE, measureWith(origFont));
+      const transParts = langs.map((lang, langIdx) => {
+        const label = langs.length > 1 ? `[${lang}] ` : '';
+        const text = (translations[lang] || '').trim();
+        return {
+          langIdx,
+          lines: text ? wrapText(label + text, contentWidth, TRANS_FONT_SIZE, measureWith(size => fontFor(size))) : [],
+        };
       });
-
+      const rows: { text: string; font: string; color: string; h: number }[] = [
+        ...origLines.map(t => ({ text: t, font: origFont(ORIG_FONT_SIZE), color: '#444444', h: ORIG_LINE_HEIGHT })),
+        ...transParts.flatMap(part => part.lines.map((t, i) => ({
+          text: t,
+          font: fontFor(TRANS_FONT_SIZE),
+          color: TRANS_COLORS[part.langIdx % TRANS_COLORS.length],
+          h: TRANS_LINE_HEIGHT + (i === 0 ? LINE_GAP : 0),
+        }))),
+      ];
+      const total = rows.reduce((a, r) => a + r.h, 0);
+      if (pageHasContent && curY + total > pageBottom && total <= pageBottom - PAGE_MARGIN) {
+        flush();
+        ({ tc, ctx } = makeCanvas());
+        curY = PAGE_MARGIN;
+        pageHasContent = false;
+      }
+      for (const row of rows) {
+        if (curY + row.h > pageBottom && pageHasContent) {
+          flush();
+          ({ tc, ctx } = makeCanvas());
+          curY = PAGE_MARGIN;
+        }
+        ctx.font = row.font;
+        ctx.fillStyle = row.color;
+        ctx.fillText(row.text, PAGE_MARGIN, curY + row.h - 3);
+        curY += row.h;
+        pageHasContent = true;
+      }
       curY += BLOCK_GAP;
-      blockOnPage++;
     }
 
-    flushCanvasToPdf(tc, isFirstPdfPage, PW, PH);
+    flush();
 
     const blob = doc.output('blob');
     const prefix = outputMode === 'separate' ? `${langs[0]}_` : 'translated_';
