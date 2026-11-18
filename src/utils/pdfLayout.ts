@@ -50,6 +50,11 @@ export interface LayoutBlock {
   cell?: Cell;
   /** 直排標籤：譯文要轉 90 度寫 */
   vertical: boolean;
+  /**
+   * 同一格裡由上往下排的清單（□1～□5）：畫的時候整格一起重排，
+   * 短的項目省下來的空間給長的用，整格用同一個字級
+   */
+  stack?: { id: number; region: Box };
 }
 
 export const LAYOUT = {
@@ -468,15 +473,57 @@ function readStackedColumns(lines: Segment[]): string {
   return out.reduce(joinText, '');
 }
 
+/**
+ * 被填寫空格切開的句子接回去：
+ * 「保險對象因＿＿＿，無法親自辦理……特委託＿＿＿代辦。」原本會變成三段分開翻，
+ * 翻出來的英文接不起來。同一列、同一格，後面那段是以標點開頭（或是很短的結尾「代辦。」）
+ * 就接成一句，空格用「＿＿」表示。
+ */
+function joinBlankFragments(list: { seg: Segment; cell: Cell }[]): { seg: Segment; cell: Cell }[] {
+  const items = [...list].sort((p, q) => p.seg.top - q.seg.top || p.seg.left - q.seg.left);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < items.length && !changed; i++) {
+      const a = items[i];
+      if (!isTranslatable(a.seg.text)) continue;
+      const fs = a.seg.fontSize;
+      const sameRow = (o: Segment) =>
+        Math.abs(o.top - a.seg.top) < fs * 0.5 && Math.abs(o.bottom - a.seg.bottom) < fs * 0.5;
+      // 右邊最近的一段（同一列）
+      let b: (typeof items)[number] | undefined;
+      for (const o of items) {
+        if (o === a || !sameRow(o.seg) || o.seg.left < a.seg.right - 0.5) continue;
+        if (!b || o.seg.left < b.seg.left) b = o;
+      }
+      if (!b || !isTranslatable(b.seg.text)) continue;
+      if (Math.abs(a.cell.left - b.cell.left) >= 1 || Math.abs(a.cell.right - b.cell.right) >= 1) continue;
+      const bt = b.seg.text.trim();
+      const continues = /^[，,、；;：:）)]/.test(bt) || (visibleChars(bt).length <= 8 && /[。.]/.test(bt));
+      if (!continues) continue;
+      const merged: Segment = {
+        ...unionBox([a.seg, b.seg]),
+        text: `${a.seg.text}＿＿${b.seg.text}`,
+        fontSize: Math.max(a.seg.fontSize, b.seg.fontSize),
+        glyphs: [...a.seg.glyphs, ...b.seg.glyphs],
+      };
+      items.splice(items.indexOf(b), 1);
+      items[items.indexOf(a)] = { seg: merged, cell: a.cell };
+      changed = true;
+    }
+  }
+  return items;
+}
+
 export function layoutSegments(
   segments: Segment[],
   pageW: number,
   pageH: number,
   grid?: GridLines,
 ): LayoutBlock[] {
-  const segs = segments
-    .map(s => ({ seg: s, cell: findCell(s, grid, pageW, pageH) }))
-    .sort((p, q) => p.seg.top - q.seg.top || p.seg.left - q.seg.left);
+  const segs = joinBlankFragments(
+    segments.map(s => ({ seg: s, cell: findCell(s, grid, pageW, pageH) }))
+  ).sort((p, q) => p.seg.top - q.seg.top || p.seg.left - q.seg.left);
 
   // 沒有格線時，用「長行」右端的中位數當作「寫滿」的參考（不用最大值，避免被一兩行凸出去的拉走）
   const longRights = segs
@@ -505,6 +552,8 @@ export function layoutSegments(
       const first = p.lines[0];
       if (seg.left < first.left - fs * 1.5 || seg.left > first.left + fs * 3) continue;
       if (startsNewItem(seg.text)) continue;
+      // 上一行以句號結束、下一行很短：是另一個欄位標籤（例：「……代辦。」下面的「委託人簽章」）
+      if (/[。.]$/.test(last.text.trim()) && visibleChars(seg.text).length <= 8) continue;
       const rightLimit = cell.hasRight ? cell.right : contentRight;
       // 下一行只剩一個字（「□5.其」換行到「他」）也算接續
       const orphan = /^[\u3400-\u9fff]$/.test(visibleChars(seg.text)) &&
@@ -631,7 +680,52 @@ export function layoutSegments(
       vertical,
     });
   }
+
+  markStacks(blocks, all);
   return blocks;
+}
+
+/**
+ * 找出「同一格裡由上往下排的清單」：同一個格子、項目之間沒有並排、左邊大致對齊，
+ * 而且整個範圍裡沒有其他東西（勾選框、數字之類不翻的原文）。
+ */
+function markStacks(blocks: LayoutBlock[], all: Segment[]) {
+  const byCell = new Map<string, LayoutBlock[]>();
+  for (const b of blocks) {
+    const c = b.cell;
+    if (b.vertical || !c || !c.hasLeft || !c.hasRight || !c.hasTop) continue;
+    const key = `${Math.round(c.left)},${Math.round(c.right)},${Math.round(c.top)}`;
+    if (!byCell.has(key)) byCell.set(key, []);
+    byCell.get(key)!.push(b);
+  }
+  let id = 0;
+  for (const list of byCell.values()) {
+    if (list.length < 2) continue;
+    list.sort((a, b) => a.source.top - b.source.top);
+    const fs = Math.max(...list.map(b => b.fontSize));
+    const firstLeft = list[0].source.left;
+    let ok = list.every((b, i) =>
+      Math.abs(b.source.left - firstLeft) <= fs * 2 &&
+      (i === 0 || b.source.top >= list[i - 1].source.bottom - 1)
+    );
+    if (!ok) continue;
+    const region: Box = {
+      left: Math.min(...list.map(b => b.box.left)),
+      right: Math.min(...list.map(b => b.box.right)),
+      top: Math.min(...list.map(b => b.box.top)),
+      bottom: Math.max(...list.map(b => b.box.bottom)),
+    };
+    // 範圍裡有其他原文（不是這些項目自己的字）就不重排，免得蓋到
+    const ownGlyph = (o: Segment) => o.glyphs.every(g => list.some(b => b.glyphs.includes(g)));
+    ok = !all.some(o =>
+      !ownGlyph(o) &&
+      Math.min(o.right, region.right) - Math.max(o.left, region.left) > 0.5 &&
+      Math.min(o.bottom, region.bottom) - Math.max(o.top, region.top) > 0.5
+    );
+    if (!ok) continue;
+    id++;
+    for (const b of list) b.stack = { id, region };
+  }
 }
 
 /** 有文字層的頁面：片段 → 翻譯區塊 */
@@ -642,6 +736,54 @@ export function layoutTextItems(
   grid?: GridLines,
 ): LayoutBlock[] {
   return layoutSegments(segmentsFromTextItems(items, pageW, pageH, grid), pageW, pageH, grid);
+}
+
+// ── 同一格、同一排用同一個字級 ──────────────────────────────
+
+/**
+ * 哪些區塊的譯文要用同一個字級（回傳區塊索引的分組，只回傳兩個以上的組）。
+ * - 同一個格子裡的（左右格線相同、上下範圍重疊）：例如「檢附書據」那格的 □1～□5
+ * - 表格同一排、一排高的格子（上緣是同一條橫線）：例如表頭「臺灣地區內／臺灣地區外／住院部分負擔超過上限」
+ * - 並排的清單欄（同一排、各自是一串 □1～□5 的格子）
+ * 原文字級差很多的（標題和註解）不放同一組；直排標籤、不在表格裡的段落不分組。
+ * 每段各自配合空間選字級的話，短的字大、長的字小，同一格擺在一起會忽大忽小。
+ */
+export function fontGroups(blocks: Pick<LayoutBlock, 'cell' | 'fontSize' | 'vertical' | 'stack'>[]): number[][] {
+  const parent = blocks.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const join = (a: number, b: number) => { parent[find(a)] = find(b); };
+
+  const inTable = (b: (typeof blocks)[number]) => !b.vertical && !!b.cell && b.cell.hasLeft && b.cell.hasRight;
+  for (let i = 0; i < blocks.length; i++) {
+    const a = blocks[i];
+    if (!inTable(a)) continue;
+    for (let j = i + 1; j < blocks.length; j++) {
+      const b = blocks[j];
+      if (!inTable(b)) continue;
+      const ratio = Math.max(a.fontSize, b.fontSize) / Math.min(a.fontSize, b.fontSize);
+      if (ratio > 1.25) continue;
+      const ca = a.cell!, cb = b.cell!;
+      const sameColumn = Math.abs(ca.left - cb.left) < 1 && Math.abs(ca.right - cb.right) < 1;
+      const vOverlap = Math.min(ca.bottom, cb.bottom) - Math.max(ca.top, cb.top);
+      const sameCell = sameColumn && vOverlap > 1;
+      // 同一排：只限一排高的格子（表頭、單行欄位），高的格子內容各不相同，不硬拉成一樣
+      const oneRow = (c: Cell, f: number) => c.hasBottom && c.bottom - c.top <= f * 2.8;
+      const sameBand = ca.hasTop && cb.hasTop && Math.abs(ca.top - cb.top) < 2 &&
+        oneRow(ca, a.fontSize) && oneRow(cb, b.fontSize);
+      // 並排的清單欄（例：「檢附書據」的臺灣地區內／外／住院部分負擔三欄）
+      const parallelLists = !!a.stack && !!b.stack && Math.abs(ca.top - cb.top) < 2;
+      if (sameCell || sameBand || parallelLists) join(i, j);
+    }
+  }
+
+  const groups = new Map<number, number[]>();
+  blocks.forEach((_, i) => {
+    if (!inTable(blocks[i])) return;
+    const r = find(i);
+    if (!groups.has(r)) groups.set(r, []);
+    groups.get(r)!.push(i);
+  });
+  return [...groups.values()].filter(g => g.length >= 2);
 }
 
 // ── 底色與字色 ──────────────────────────────────────────────
@@ -758,7 +900,8 @@ export function wrapText(text: string, maxWidth: number, fontSize: number, measu
 
 /**
  * 找出塞得進 width × height 的最大字級（不超過 maxFont）。
- * 短的標籤寧可縮小一點排成一行，也不要被拆成兩行。
+ * 短的標籤排成一行比較好讀：一行的字級跟換行的差不多（八成以上）就用一行。
+ * 上限調低到一個本來就放得下的字級時，結果一定還是那個字級（同一格統一字級要靠這個）。
  * 真的塞不下就用最小字級，回傳 fits = false。
  */
 export function fitText(
@@ -781,22 +924,24 @@ export function fitText(
     return { lines, ok: wordsFit && lines.length * fs * lineHeight <= height + fs * 0.25 && widest <= width + 0.5 };
   };
 
-  // 短標籤（沒有換行、字數少）：先試試看一行放得下的最大字級，不要小於原本的七成
+  // 可以換行時的最大字級
+  let general: { fontSize: number; lines: string[]; fits: boolean } | null = null;
+  for (let fs = top; ; fs = step(fs)) {
+    const { lines, ok } = fitsAt(fs);
+    if (ok) { general = { fontSize: fs, lines, fits: true }; break; }
+    if (fs <= minFont) { general = { fontSize: minFont, lines, fits: false }; break; }
+  }
+
+  // 短標籤：排成一行的最大字級
   const isShort = !text.includes('\n') && text.length <= 28;
-  if (isShort) {
-    for (let fs = top; fs >= Math.max(minFont, top * 0.7); fs = step(fs)) {
+  if (isShort && general.lines.length > 1) {
+    for (let fs = top; fs >= minFont; fs = step(fs)) {
+      if (fs < general.fontSize * 0.8) break;
       if (measure(text, fs) <= width + 0.5 && fs * lineHeight <= height + fs * 0.25) {
         return { fontSize: fs, lines: [text], fits: true };
       }
       if (fs <= minFont) break;
     }
   }
-
-  let fs = top;
-  for (;;) {
-    const { lines, ok } = fitsAt(fs);
-    if (ok) return { fontSize: fs, lines, fits: true };
-    if (fs <= minFont) return { fontSize: minFont, lines, fits: false };
-    fs = step(fs);
-  }
+  return general;
 }

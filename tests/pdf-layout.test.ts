@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   cleanCjkSpacing, startsNewItem, detectGridLines, layoutTextItems, wrapText, fitText,
-  sampleBlockColors, type GridLines, type RawTextItem,
+  sampleBlockColors, fontGroups, type GridLines, type RawTextItem,
 } from '../src/utils/pdfLayout';
 
 // 健保自墊醫療費用核退申請書：表格、直排標籤、字距排版都有，拿來當回歸測試
@@ -114,6 +114,35 @@ describe('layoutTextItems — 申請書第 1 頁（表格）', () => {
     expect(overlaps).toBe(0);
   });
 
+  it('被填寫空格切開的句子接成一句，下面的簽章欄不會被併進來', () => {
+    expect(texts).toContain('保險對象因＿＿，無法親自辦理自墊醫療費用核退相關事宜，特委託＿＿代辦。');
+    expect(texts).toContain('委託人簽章');
+    expect(texts.some(t => t.startsWith('✽保險對象因＿＿，無法親自辦理將核退費用優先繳付'))).toBe(true);
+  });
+
+  it('同一格、同一排、並排清單用同一個字級', () => {
+    const groups = fontGroups(blocks).map(g => g.map(i => blocks[i].text));
+    const groupOf = (t: string) => groups.find(g => g.includes(t)) || [];
+    // 同一格的清單
+    expect(groupOf('□1.醫療費用收據正本及費用明細')).toEqual(expect.arrayContaining(['□5.其他', '□4.住院案件者:出院病歷摘要']));
+    // 同一排的欄位
+    expect(groupOf('姓名')).toEqual(expect.arrayContaining(['身分證字號', '出生日期', '年月日']));
+    // 表頭
+    expect(groupOf('臺灣地區內')).toEqual(expect.arrayContaining(['臺灣地區外', '住院部分負擔超過上限']));
+    // 並排的三欄清單
+    expect(groupOf('□3.其他')).toEqual(expect.arrayContaining(['□5.其他']));
+    // 窄的標籤格不要跟旁邊的大格綁在一起
+    expect(groupOf('收據非正本聲明')).not.toContain('簽章');
+  });
+
+  it('同一格由上往下的清單標成可以整格重排', () => {
+    const stacked = (t: string) => blocks.find(b => b.text === t)?.stack?.id;
+    expect(stacked('□1.醫療費用收據正本及費用明細')).toBeDefined();
+    expect(stacked('□1.醫療費用收據正本及費用明細')).toBe(stacked('□5.其他'));
+    // 並排的（同一列好幾項）不能重排
+    expect(stacked('□1.保險對象簽章')).toBeUndefined();
+  });
+
   it('直排標籤讓開上面的圓圈編號', () => {
     const label = find('自墊費用原因(請於原因欄詳述)')!;
     expect(label.box.top).toBeGreaterThan(330);   // ⑤ 在 y≈ 320–332
@@ -179,6 +208,12 @@ describe('wrapText / fitText', () => {
   it('單字真的放不下時，最小字級才逐字母拆', () => {
     const lines = wrapText('Supercalifragilistic', 20, 4.5, measure);
     expect(lines.length).toBeGreaterThan(1);
+  });
+
+  it('上限調低到本來放得下的字級，結果還是那個字級', () => {
+    const free = fitText('Date of Birth', 48, 18, 10.35, 4.5, measure);
+    const capped = fitText('Date of Birth', 48, 18, free.fontSize, 4.5, measure);
+    expect(capped.fontSize).toBe(free.fontSize);
   });
 
   it('塞不下時回傳最小字級', () => {

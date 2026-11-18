@@ -1,7 +1,7 @@
 import React from 'react';
 import type { Worksheet } from 'exceljs';
 import {
-  detectGridLines, fitText, layoutSegments, layoutTextItems, sampleBlockColors, textItemBoxes, wrapText,
+  detectGridLines, fitText, fontGroups, layoutSegments, layoutTextItems, sampleBlockColors, textItemBoxes, wrapText,
   type GridLines, type LayoutBlock, type RawTextItem, type Segment,
 } from './pdfLayout';
 
@@ -2186,8 +2186,103 @@ export const processPdf = async (
     });
 
     // 3) 寫上譯文
+    //    先算每一段自己放得下的最大字級，再讓同一格、同一排的用同一個（取最小的），
+    //    不然短的標籤字很大、長的句子字很小，擠在同一格裡忽大忽小
+    const minFont = PDF_LAYOUT.minFontSize;
+    const fittedSize = blocks.map(({ block, gi }) => {
+      if (block.vertical) return Infinity;
+      const texts = langs
+        .map(lang => ({ lang, text: (translatedLines[gi]?.[lang] || '').trim() }))
+        .filter(t => t.text);
+      if (!texts.length) return Infinity;
+      const width = block.box.right - block.box.left;
+      const slotH = (block.box.bottom - block.box.top) / texts.length;
+      const maxFont = Math.max(minFont, block.maxFont ?? block.fontSize);
+      return Math.min(...texts.map(t =>
+        fitText(langs.length > 1 ? `[${t.lang}] ${t.text}` : t.text, width, slotH, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio).fontSize
+      ));
+    });
+    // 同一格的清單（□1～□5）整格一起重排：從上往下接著排，短的省下來的空間給長的用
+    const lh = PDF_LAYOUT.lineHeightRatio;
+    const itemTexts = (gi: number) => langs
+      .map((lang, li) => ({ li, text: (translatedLines[gi]?.[lang] || '').trim(), lang }))
+      .filter(t => t.text)
+      .map(t => ({ li: t.li, text: langs.length > 1 ? `[${t.lang}] ${t.text}` : t.text }));
+    const stackLines = (k: number, size: number) => {
+      const { block, gi } = blocks[k];
+      const width = block.stack!.region.right - block.box.left;
+      return itemTexts(gi).flatMap(t => wrapText(t.text, width, size, measure).map(line => ({ line, li: t.li })));
+    };
+    const stackGap = (size: number) => size * 0.35;
+    const stackHeight = (members: number[], size: number) =>
+      members.reduce((h, k) => h + stackLines(k, size).length * size * lh, 0) + stackGap(size) * (members.length - 1);
+    const stackMembers = new Map<number, number[]>();
+    blocks.forEach(({ block }, k) => {
+      if (!block.stack || !itemTexts(blocks[k].gi).length) return;
+      if (!stackMembers.has(block.stack.id)) stackMembers.set(block.stack.id, []);
+      stackMembers.get(block.stack.id)!.push(k);
+    });
+    const preferred = [...fittedSize];
+    for (const members of stackMembers.values()) {
+      if (members.length < 2) continue;
+      const region = blocks[members[0]].block.stack!.region;
+      const top = Math.max(minFont, Math.min(...members.map(k => blocks[k].block.maxFont ?? blocks[k].block.fontSize)));
+      const longWords = members.flatMap(k => itemTexts(blocks[k].gi)
+        .flatMap(t => t.text.split(/\s+|(?<=[-/])/))
+        .filter(w => /[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff]{2,}/.test(w))
+        .map(w => ({ w, width: region.right - blocks[k].block.box.left })));
+      let size = top;
+      while (size > minFont) {
+        const wordsFit = longWords.every(x => measure(x.w, size) <= x.width + 0.5);
+        if (wordsFit && stackHeight(members, size) <= region.bottom - region.top + size * 0.25) break;
+        size = Math.max(minFont, size - (size > 8 ? 0.5 : 0.25));
+      }
+      // 整格重排比各自排還小的話就不用重排
+      const separately = Math.min(...members.map(k => fittedSize[k]));
+      if (size > separately) for (const k of members) preferred[k] = size;
+      else stackMembers.delete(blocks[members[0]].block.stack!.id);
+    }
+
+    const sharedSize = new Map<number, number>();
+    for (const group of fontGroups(blocks.map(b => b.block))) {
+      const size = Math.min(...group.map(k => preferred[k]));
+      if (Number.isFinite(size)) for (const k of group) sharedSize.set(k, size);
+    }
+
+    // 重排的清單：照原本位置放，放不下才往下推；推到超出格子就改成從上往下緊接著排
+    const stackDrawn = new Set<number>();
+    for (const members of stackMembers.values()) {
+      if (members.length < 2) continue;
+      const region = blocks[members[0]].block.stack!.region;
+      const size = Math.min(...members.map(k => sharedSize.get(k) ?? preferred[k]));
+      const ordered = [...members].sort((a, b) => blocks[a].block.source.top - blocks[b].block.source.top);
+      const place = (keepOriginal: boolean) => {
+        let y = region.top;
+        const tops: number[] = [];
+        for (const k of ordered) {
+          const t = keepOriginal ? Math.max(y, blocks[k].block.box.top) : y;
+          tops.push(t);
+          y = t + stackLines(k, size).length * size * lh + stackGap(size);
+        }
+        return { tops, end: y - stackGap(size) };
+      };
+      let plan = place(true);
+      if (plan.end > region.bottom + size * 0.25) plan = place(false);
+      ordered.forEach((k, idx) => {
+        const { block } = blocks[k];
+        let baseline = plan.tops[idx] + size * 0.88;
+        ctx.font = fontFor(size);
+        for (const { line, li } of stackLines(k, size)) {
+          ctx.fillStyle = langs.length > 1 ? TRANS_COLORS[li % TRANS_COLORS.length] : colors[k].ink;
+          ctx.fillText(line, block.box.left, baseline);
+          baseline += size * lh;
+        }
+        stackDrawn.add(k);
+      });
+    }
 
     blocks.forEach(({ block, gi }, k) => {
+      if (stackDrawn.has(k)) return;
       const translations = translatedLines[gi] || {};
       const texts = langs
         .map((lang, li) => ({ lang, li, text: (translations[lang] || '').trim() }))
@@ -2196,8 +2291,7 @@ export const processPdf = async (
 
       const box = block.box;
       const multi = langs.length > 1;
-      const minFont = PDF_LAYOUT.minFontSize;
-      const maxFont = Math.max(minFont, block.maxFont ?? block.fontSize);
+      const maxFont = Math.max(minFont, Math.min(block.maxFont ?? block.fontSize, sharedSize.get(k) ?? Infinity));
       const inkFor = (li: number) => (multi ? TRANS_COLORS[li % TRANS_COLORS.length] : colors[k].ink);
 
       if (block.vertical) {
