@@ -18,11 +18,13 @@ import {
   setDoc, 
   Timestamp
 } from '../firebase';
+import { verifySentMessage, verifySendError } from '../utils/verifyEmail';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess?: (message?: string) => void;
+  /** message：要顯示的提示；isError：true 用紅色錯誤框，否則用綠色提示框 */
+  onSuccess?: (message?: string, isError?: boolean) => void;
 }
 
 /** 偵測是否為 WebView（Line、Facebook、Instagram 等 App 內建瀏覽器） */
@@ -62,7 +64,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     try {
       await sendPasswordResetEmail(auth, email);
       setResetSent(true);
-      setError('密碼重設信已發送，請檢查您的信箱。');
+      setError('密碼重設信已寄出，請檢查您的信箱；沒看到請找「垃圾郵件」或「促銷內容」資料夾。');
     } catch (err: any) {
       let msg = '發送失敗，請檢查您的輸入';
       if (err.code === 'auth/user-not-found') msg = '找不到此電子郵件對應的帳號';
@@ -85,23 +87,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
     }
     setAuthLoading(true);
     setError(null);
+    let registerMsg: { text: string; isError?: boolean } | null = null;
     try {
       if (authMode === 'register') {
         const userCredential = await createUserWithEmailAndPassword(auth, email, password);
         await updateProfile(userCredential.user, { displayName });
-        
+
+        // 註冊後的提示：寄成功就告訴他寄到哪、去哪裡找；寄失敗就說怎麼補寄
         try {
           await sendEmailVerification(userCredential.user);
-          console.log("Verification email sent.");
+          registerMsg = { text: verifySentMessage(userCredential.user.email) };
         } catch (e: any) {
           console.error("Failed to send verification email:", e);
-          if (e.code === 'auth/too-many-requests') {
-            setError('發送驗證信次數過多，請稍後再試。');
-          } else {
-            setError('註冊成功，但驗證信發送失敗，請稍後登入並點擊「重發驗證信」。');
-          }
+          registerMsg = { text: `帳號已建立，但${verifySendError(e)}`, isError: true };
         }
-        
+
         const userRef = doc(db, 'users', userCredential.user.uid);
         await setDoc(userRef, {
           uid: userCredential.user.uid,
@@ -118,13 +118,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
         await signInWithEmailAndPassword(auth, email, password);
       }
       
-      const successMsg = authMode === 'register' ? (error || '註冊成功！請檢查您的電子郵件並點擊驗證連結以啟用完整權限。') : undefined;
-      
       setEmail('');
       setPassword('');
       setDisplayName('');
       onClose();
-      if (onSuccess) onSuccess(successMsg);
+      if (onSuccess) onSuccess(registerMsg?.text, registerMsg?.isError);
       
     } catch (err: any) {
       let msg = '認證失敗，請檢查您的輸入';

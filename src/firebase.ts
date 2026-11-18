@@ -10,6 +10,8 @@ const app = initializeApp(firebaseConfig);
 // Use getFirestore with the database ID
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth();
+// 驗證信、重設密碼信、Google 登入視窗都用繁體中文（預設是英文，收件人容易當成垃圾信）
+auth.languageCode = 'zh-TW';
 export const googleProvider = new GoogleAuthProvider();
 googleProvider.setCustomParameters({
   prompt: 'select_account'

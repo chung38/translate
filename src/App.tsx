@@ -26,7 +26,8 @@ import {
   Shield,
   Search,
   X,
-  Settings
+  Settings,
+  MailCheck
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { TranslationProgress } from './components/TranslationProgress';
@@ -38,6 +39,7 @@ import { DeletedModal } from './components/DeletedModal';
 import { UserProfile } from './types';
 import { useTranslation, setTranslationJob } from './hooks/useTranslation';
 import { api, errorMessage, type Credit } from './utils/api';
+import { verifySentMessage, verifySendError, VERIFY_FIRST_MESSAGE } from './utils/verifyEmail';
 import { processDocx, processExcel, processPdf, processPptx } from './utils/documentProcessors';
 import type { PptxLayoutMode, PdfLayoutMode } from './utils/documentProcessors';
 import { 
@@ -99,6 +101,9 @@ const EMBEDDED = (() => { try { return window.self !== window.top; } catch { ret
 
 // 手機、平板（觸控螢幕）：不自動下載。iPhone 一次只接受一個自動下載，第二個會被吞掉，
 // 而且下載後會跳到檔案預覽頁、不好回來。改成翻好後列出檔案，點一下用分享選單儲存。
+/** 寄出驗證信後要等幾秒才能再寄（連按會被 Firebase 暫時封鎖） */
+const RESEND_WAIT_SECONDS = 60;
+
 const IS_TOUCH = typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: coarse)').matches;
 
 const MIME: Record<string, string> = {
@@ -217,6 +222,30 @@ export default function App() {
   } = useTranslation(user);
 
   const [reloadCounter, setReloadCounter] = useState(0);
+  // 綠色提示（例如「驗證信已寄出」），跟紅色錯誤分開，不會被當成錯誤
+  const [notice, setNotice] = useState<string | null>(null);
+  const [resendWait, setResendWait] = useState(0);
+
+  useEffect(() => {
+    if (resendWait <= 0) return;
+    const t = setTimeout(() => setResendWait(w => w - 1), 1000);
+    return () => clearTimeout(t);
+  }, [resendWait]);
+
+  const resendVerification = async () => {
+    if (!user || resendWait > 0) return;
+    setResendWait(RESEND_WAIT_SECONDS);   // 先鎖住，避免連點
+    try {
+      await sendEmailVerification(user);
+      setError(null);
+      setNotice(verifySentMessage(user.email));
+    } catch (e) {
+      console.error('Failed to resend verification email', e);
+      setNotice(null);
+      setError(verifySendError(e));
+      setResendWait(0);
+    }
+  };
 
   // 登入、完成 Email 驗證後讀一次伺服器上的額度
   useEffect(() => { refreshCredit(); }, [user?.uid, reloadCounter]);
@@ -277,6 +306,8 @@ export default function App() {
           if (auth.currentUser?.emailVerified) {
             setReloadCounter(c => c + 1);
             clearInterval(intervalId);
+            setError(null);
+            setNotice('Email 驗證完成，可以開始翻譯了。');
           }
         } catch (e) {
           console.error("Failed to poll user reload", e);
@@ -655,7 +686,7 @@ export default function App() {
     }
 
     if (!auth.currentUser?.emailVerified && !userProfile?.isManuallyAdded) {
-      setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
+      setError(VERIFY_FIRST_MESSAGE);
       return;
     }
 
@@ -815,8 +846,10 @@ export default function App() {
         <AuthModal 
           isOpen={showAuthModal} 
           onClose={() => setShowAuthModal(false)} 
-          onSuccess={(msg) => {
-            if (msg) setError(msg);
+          onSuccess={(msg, isError) => {
+            if (!msg) return;
+            if (isError) { setError(msg); setNotice(null); }
+            else { setNotice(msg); setError(null); setResendWait(RESEND_WAIT_SECONDS); }
           }}
         />
 
@@ -917,18 +950,13 @@ export default function App() {
                         </div>
                       )}
                       {!user.emailVerified && !userProfile?.isManuallyAdded && (
-                        <button 
-                          onClick={async () => {
-                            try {
-                              await sendEmailVerification(user);
-                              setError('驗證信已重新發送，請檢查您的信笱。');
-                            } catch (e) {
-                              setError('發送驗證信失敗，請稍後再試。');
-                            }
-                          }}
-                          className="tag tag--brass ml-2 hover:brightness-95"
+                        <button
+                          onClick={resendVerification}
+                          disabled={resendWait > 0}
+                          title={resendWait > 0 ? '剛寄出，請先到信箱（含垃圾郵件）找找看' : '再寄一次驗證信'}
+                          className="tag tag--brass ml-2 hover:brightness-95 disabled:opacity-60 disabled:cursor-default"
                         >
-                          重發驗證信
+                          {resendWait > 0 ? `已寄出（${resendWait} 秒後可再寄）` : '重發驗證信'}
                         </button>
                       )}
                       <button onClick={handleLogout} className="ml-2 text-[var(--muted)] hover:text-[var(--alert)] transition-colors">
@@ -950,6 +978,26 @@ export default function App() {
           </header>
 
           <div className="tri__notes">
+            {/* 綠色提示：驗證信已寄出、驗證完成等 */}
+            <AnimatePresence>
+            {notice && (
+              <motion.div
+                key="notice-top"
+                initial={{ opacity: 0, y: -8 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -8 }}
+                className="note note--signal mb-4"
+                role="status"
+              >
+                <MailCheck className="w-4 h-4 shrink-0 mt-0.5" />
+                <p className="flex-1 whitespace-pre-line">{notice}</p>
+                <button onClick={() => setNotice(null)} aria-label="關閉提示" className="opacity-60 hover:opacity-100 transition-opacity ml-2 shrink-0">
+                  <X className="w-4 h-4" />
+                </button>
+              </motion.div>
+            )}
+            </AnimatePresence>
+
             {/* Error Message — 顯示在頂部 */}
             <AnimatePresence>
             {error && (
@@ -1259,10 +1307,10 @@ export default function App() {
                         if (auth.currentUser?.emailVerified) {
                           setReloadCounter(c => c + 1);
                         } else {
-                          setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。系統會自動偵測您的驗證狀態。');
+                          setError(VERIFY_FIRST_MESSAGE);
                         }
                       } catch (e) {
-                        setError('請先至您的信笱收取驗證信並完成驗證，才可使用翻譯功能。');
+                        setError(VERIFY_FIRST_MESSAGE);
                       }
                     }}
                     className="btn btn--brass"

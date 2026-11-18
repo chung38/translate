@@ -159,6 +159,7 @@ html, body, #root { height: 100%; }
 .note { display: flex; gap: 0.7rem; padding: 0.85rem 0.95rem; border-radius: var(--r-md); font-size: 0.8125rem; line-height: 1.6; }
 .note--alert { background: var(--alert-dim); border: 1px solid #ecd5d5; color: #7d2626; }
 .note--brass { background: var(--brass-dim); border: 1px solid #eddfba; color: #7a4f0d; }
+.note--signal { background: var(--signal-dim); border: 1px solid #cfe3dc; color: var(--signal-ink); }
 
 .meter { width: 64px; height: 3px; border-radius: 2px; background: var(--rule-soft); overflow: hidden; }
 .meter__fill { height: 100%; background: var(--signal); transition: width .35s ease; }
