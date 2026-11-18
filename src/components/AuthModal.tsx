@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, User as UserIcon, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
+import { X, AlertCircle, Loader2, ExternalLink } from 'lucide-react';
 import { 
   auth, 
   db, 
@@ -208,7 +208,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
   return (
     <AnimatePresence>
       {isOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm">
+        // 視窗比畫面高時（例如電腦版首頁的翻譯框比較矮）可以上下捲動，不會切掉下面的「註冊」
+        <div className="fixed inset-0 z-[100] overflow-y-auto bg-slate-900/40 backdrop-blur-sm">
+          <div className="min-h-full flex items-center justify-center p-4">
           <motion.div 
             initial={{ opacity: 0, scale: 0.95 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -222,18 +224,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               <X className="w-5 h-5" />
             </button>
 
-            <div className="p-8">
-              <div className="text-center mb-8">
-                <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center mx-auto mb-4">
-                  <UserIcon className="w-6 h-6 text-emerald-600" />
-                </div>
-                <h2 className="text-2xl font-bold text-[var(--ink)]">
+            <div className="p-6 sm:p-8">
+              <div className="text-center mb-4">
+                <h2 className="text-xl font-bold text-[var(--ink)]">
                   {authMode === 'login' ? '歡迎回來' : authMode === 'register' ? '建立帳號' : '重設密碼'}
                 </h2>
-                <p className="text-sm text-[var(--muted)] mt-1">
-                  {authMode === 'login' ? '請登入您的帳號以繼續' : authMode === 'register' ? '註冊一個新帳號開始使用' : '輸入您的電子郵件，我們將發送密碼重設連結給您'}
-                </p>
+                {authMode === 'reset' && (
+                  <p className="text-sm text-[var(--muted)] mt-1">輸入您的電子郵件，我們將發送密碼重設連結給您</p>
+                )}
               </div>
+
+              {/* 登入／註冊切換放在最上面：畫面比較矮時也一眼看得到「註冊」 */}
+              {authMode !== 'reset' && (
+                <div role="tablist" aria-label="登入或註冊" className="grid grid-cols-2 gap-1 p-1 mb-5 rounded-xl bg-[var(--paper)] border border-[var(--rule)]">
+                  {(['login', 'register'] as const).map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="tab"
+                      aria-selected={authMode === m}
+                      onClick={() => { setAuthMode(m); setError(null); }}
+                      className={`py-2 rounded-lg text-sm font-bold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-600 ${
+                        authMode === m ? 'bg-white text-emerald-700 shadow-sm' : 'text-[var(--muted)] hover:text-[var(--ink)]'
+                      }`}
+                    >
+                      {m === 'login' ? '登入' : '註冊新帳號'}
+                    </button>
+                  ))}
+                </div>
+              )}
 
               {/* WebView 警告橫幅 */}
               {inWebView && (
@@ -366,7 +385,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                     </button>
                   </form>
 
-                  <div className="relative my-8">
+                  <div className="relative my-5">
                     <div className="absolute inset-0 flex items-center">
                       <div className="w-full border-t border-[var(--rule)]"></div>
                     </div>
@@ -399,15 +418,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
                     {inWebView ? 'Google 登入（不支援此環境）' : authLoading ? '登入中...' : 'Google 登入'}
                   </button>
 
-                  <div className="mt-8 text-center">
-                    <button 
-                      onClick={() => { setAuthMode(authMode === 'login' ? 'register' : 'login'); setError(null); }}
-                      className="text-sm text-emerald-600 font-bold hover:underline"
-                    >
-                      {authMode === 'login' ? '還沒有帳號？立即註冊' : '已有帳號？返回登入'}
-                    </button>
-                  </div>
-                  <p className="mt-4 text-center text-xs text-[var(--muted)]">
+                  <p className="mt-5 text-center text-xs text-[var(--muted)]">
                     登入或註冊即表示你同意
                     <a href="/terms" target="_blank" rel="noopener" className="underline mx-0.5">服務條款</a>與
                     <a href="/privacy" target="_blank" rel="noopener" className="underline mx-0.5">隱私權政策</a>
@@ -416,6 +427,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, onSuccess
               )}
             </div>
           </motion.div>
+          </div>
         </div>
       )}
     </AnimatePresence>
