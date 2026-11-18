@@ -3,7 +3,7 @@
 /** 驗證信寄出後給使用者看的提示 */
 export function verifySentMessage(email: string | null | undefined): string {
   const to = email ? `驗證信已寄到 ${email}。` : '驗證信已寄出。';
-  return `${to}\n通常 1～2 分鐘內會到；沒看到的話，請找「垃圾郵件」或「促銷內容」資料夾（寄件人是 noreply 開頭的地址）。\n點信裡的連結後回到這一頁，系統會自動解鎖翻譯功能。`;
+  return `${to}\n通常 1～2 分鐘內會到；沒看到的話，請找「垃圾郵件」或「促銷內容」資料夾（寄件人是「移次搞定」service@yicipass.com）。\n點信裡的連結後回到這一頁，系統會自動解鎖翻譯功能。`;
 }
 
 /** 寄驗證信失敗時的說明 */
