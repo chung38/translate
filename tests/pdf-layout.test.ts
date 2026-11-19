@@ -4,6 +4,7 @@ import path from 'path';
 import {
   cleanCjkSpacing, startsNewItem, detectGridLines, layoutTextItems, wrapText, fitText,
   sampleBlockColors, fontGroups, findCell, layoutSegments, pageTextSize, groupFontSizes, isCenteredIn,
+  lineTokens, scriptMetrics, graphemes,
   type GridLines, type RawTextItem, type Segment,
 } from '../src/utils/pdfLayout';
 
@@ -365,5 +366,57 @@ describe('排版小細節', () => {
     expect(b.text).toBe('備註');
     expect(b.box.left).toBeLessThan(541);
     expect(b.box.right - b.box.left).toBeGreaterThan(26);
+  });
+});
+
+describe('越南文、印尼文、泰文', () => {
+  const TH = 'ขาดระบบบริหารหอพักอย่างมืออาชีพ ทั้งการทำความสะอาดพื้นที่ส่วนกลาง กฎระเบียบการใช้ชีวิต ข้อกำหนดการใช้ไฟฟ้าและเปลวไฟ';
+
+  it('泰文照詞斷行：不從字中間斷開，母音、聲調不會跑到下一行開頭', () => {
+    const words = new Set(lineTokens(TH).map(w => w.trim()).filter(Boolean));
+    expect(words.has('บริหาร')).toBe(true);
+    expect(words.has('หอพัก')).toBe(true);
+    for (const width of [60, 90, 140]) {
+      const lines = wrapText(TH, width, 10, measure);
+      expect(lines.length).toBeGreaterThan(1);
+      expect(lines.join('').replace(/\s/g, '')).toBe(TH.replace(/\s/g, ''));
+      for (const l of lines) expect(/^\p{M}/u.test(l)).toBe(false);
+      // 每一行的頭尾都落在詞的邊界上
+      let pos = 0;
+      const flat = TH.replace(/\s/g, '');
+      const boundaries = new Set<number>([0]);
+      for (const w of lineTokens(TH)) { if (!w.trim()) continue; pos += w.replace(/\s/g, '').length; boundaries.add(pos); }
+      let at = 0;
+      for (const l of lines) { at += l.replace(/\s/g, '').length; expect(boundaries.has(at)).toBe(true); }
+      expect(at).toBe(flat.length);
+    }
+  });
+
+  it('越南文分開寫的聲調符號黏著字母', () => {
+    const decomposed = 'Ky\u0301 tu\u0301c xa\u0301'.normalize('NFD');
+    expect(graphemes('a\u0301b')).toEqual(['a\u0301', 'b']);
+    for (const l of wrapText(decomposed, 18, 10, measure)) expect(/^\p{M}/u.test(l)).toBe(false);
+  });
+
+  it('金額不拆開；標點黏前面、左括號黏後面', () => {
+    const t = lineTokens('biaya listrik (lebih dari NT$125.000 per bulan), total NT$2,000.');
+    expect(t).toContain('NT$125.000');
+    expect(t).toContain('NT$2,000.');
+    expect(t).toContain('(lebih');
+    expect(t).toContain('bulan),');
+    expect(lineTokens('風險，建安')).toEqual(['風', '險，', '建', '安']);
+  });
+
+  it('行高跟著語言：泰文最寬、越南文稍寬', () => {
+    const th = scriptMetrics('หอพัก').lineHeight;
+    const vi = scriptMetrics('Thiếu chế độ quản lý').lineHeight;
+    // 知道是越南文的頁面：沒有疊兩層符號的「Ghi chú」也用同一個行高
+    expect(scriptMetrics('Ghi chú', 1.15, '越南文').lineHeight).toBeCloseTo(vi);
+    expect(scriptMetrics('No.', 1.15, '泰文').lineHeight).toBeCloseTo(th);
+    const en = scriptMetrics('Dormitory').lineHeight;
+    expect(th).toBeGreaterThan(vi);
+    expect(vi).toBeGreaterThan(en);
+    expect(en).toBeCloseTo(1.15);
+    expect(scriptMetrics('Asrama pekerja').lineHeight).toBeCloseTo(1.15);   // 印尼文就是一般拉丁字母
   });
 });

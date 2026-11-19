@@ -1012,6 +1012,80 @@ export function pageTextSize(
   return null;
 }
 
+// ── 斷行單位 ───────────────────────────────────────────────
+// 泰文、寮文、高棉文、緬甸文的字和字之間不空格，要用瀏覽器內建的字典斷詞（Intl.Segmenter），
+// 不然會從一個字的中間斷開，甚至把母音、聲調符號跟它的字母拆到兩行。
+const SEA_RE = /[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u19E0-\u19FF]/;
+const segmenters = new Map<string, any>();
+const seaLocale = (s: string) =>
+  /[\u0E80-\u0EFF]/.test(s) ? 'lo' : /[\u1780-\u17FF\u19E0-\u19FF]/.test(s) ? 'km' : /[\u1000-\u109F]/.test(s) ? 'my' : 'th';
+/** 一個字母連同疊在上面、下面的符號算一個（泰文聲調、越南文分開寫的聲調） */
+export const graphemes = (s: string): string[] => s.match(/\P{M}\p{M}*|\p{M}+/gu) || [];
+
+/** 泰文等一段連續的字 → 一個一個詞 */
+export function seaWords(run: string): string[] {
+  const loc = seaLocale(run);
+  let seg = segmenters.get(loc);
+  if (seg === undefined) {
+    try {
+      const Seg = (Intl as any).Segmenter;
+      seg = Seg ? new Seg(loc, { granularity: 'word' }) : null;
+    } catch {
+      seg = null;
+    }
+    segmenters.set(loc, seg);
+  }
+  if (seg) return Array.from(seg.segment(run) as Iterable<{ segment: string }>, x => x.segment);
+  return graphemes(run);
+}
+
+const OPENERS = /^[(（\[{“‘"'「『《〈【]+$/;
+const CLOSERS = /^[,.;:!?)）\]}”’"'、，。；：！？」』》〉】…]+$/;
+/**
+ * 一段文字（沒有換行）切成斷行單位：英文單字（連著貨幣符號、數字、標點）、中文一個字、
+ * 泰文一個詞、空白。左括號黏後面、右括號和標點黏前面——行首不會出現「，」，行尾不會留「(」。
+ */
+export function lineTokens(para: string): string[] {
+  const raw = para.match(
+    /(?:[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff\u0300-\u036f@._%+'’$€£¥₫฿#&*~]|,(?=\d))+[-/]?|[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u19E0-\u19FF]+|[-/]|\s+|\P{M}\p{M}*|\p{M}+/gu,
+  ) || [para];
+  const out: string[] = [];
+  let pendingOpen = '';
+  for (const tk of raw) {
+    const pieces = SEA_RE.test(tk) ? seaWords(tk) : [tk];
+    for (const piece of pieces) {
+      if (OPENERS.test(piece)) { pendingOpen += piece; continue; }
+      if (CLOSERS.test(piece) && out.length && !/^\s+$/.test(out[out.length - 1]) && !pendingOpen) {
+        out[out.length - 1] += piece;
+        continue;
+      }
+      if (/^\s+$/.test(piece) && pendingOpen) { out.push(pendingOpen); pendingOpen = ''; }
+      out.push(pendingOpen + piece);
+      pendingOpen = '';
+    }
+  }
+  if (pendingOpen) out.push(pendingOpen);
+  return out;
+}
+
+/**
+ * 依文字的語言決定行高、第一行基準線的位置（都是字級的倍數）。
+ * 泰文的母音、聲調會疊在字的上面和下面，越南文一個字母上面可能疊兩個符號，
+ * 行距不拉開的話上下行的符號會撞在一起。
+ */
+export function scriptMetrics(text: string, baseLineHeight = 1.15, lang?: string): { lineHeight: number; ascent: number } {
+  // 知道目標語言就照語言決定（同一頁每一格的行距才一致），不知道再看文字本身
+  if (lang && /泰|寮|高棉|柬埔寨|緬甸|thai|lao|khmer|myanmar|burmese|ไทย/i.test(lang)) {
+    return { lineHeight: baseLineHeight * 1.3, ascent: 1.05 };
+  }
+  if (lang && /越南|vietnam|tiếng việt/i.test(lang)) return { lineHeight: baseLineHeight * 1.12, ascent: 0.95 };
+  if (SEA_RE.test(text)) return { lineHeight: baseLineHeight * 1.3, ascent: 1.05 };
+  if (/[\u0300-\u036f\u1ea0-\u1ef9\u01a0\u01a1\u01af\u01b0\u0102\u0103\u0110\u0111]/.test(text)) {
+    return { lineHeight: baseLineHeight * 1.12, ascent: 0.95 };
+  }
+  return { lineHeight: baseLineHeight, ascent: 0.88 };
+}
+
 /**
  * 依寬度換行：英數字整個單字不拆（但可以在 - / 後面斷），中文、泰文逐字拆。
  * 單一個字比整行還寬的，才逐字母硬拆。
@@ -1020,8 +1094,7 @@ export function wrapText(text: string, maxWidth: number, fontSize: number, measu
   const out: string[] = [];
   for (const para of text.split('\n')) {
     if (maxWidth <= 0 || measure(para, fontSize) <= maxWidth) { out.push(para); continue; }
-    // 左括號、左引號黏著後面的字（不會落單留在行尾），右括號、標點黏著前面的字
-    const tokens = para.match(/[(（\[{“‘"']*[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff@._%+'’]+[-/]?[,.;:!?)）\]}”’"、，。]*|[-/]|\s+|[\s\S]/g) || [para];
+    const tokens = lineTokens(para);
     let cur = '';
     const pushToken = (tk: string) => {
       const next = cur + tk;
@@ -1034,7 +1107,7 @@ export function wrapText(text: string, maxWidth: number, fontSize: number, measu
     };
     for (const tk of tokens) {
       if (tk.trim() && measure(tk, fontSize) > maxWidth) {
-        for (const ch of Array.from(tk)) pushToken(ch);   // 太長的單字只好逐字母拆
+        for (const ch of graphemes(tk)) pushToken(ch);   // 太長的單字只好逐字母拆（符號不跟字母分開）
       } else {
         pushToken(tk);
       }
@@ -1063,8 +1136,9 @@ export function fitText(
 ): { fontSize: number; lines: string[]; fits: boolean } {
   const top = Math.max(minFont, maxFont);
   const step = (fs: number) => Math.max(minFont, fs - (fs > 8 ? 0.5 : 0.25));
-  // 最長的英文單字：放不下就先縮字，不要把單字從中間拆開
-  const words = text.split(/[\s\n]+|(?<=[-/])/).filter(w => /[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff]{2,}/.test(w));
+  // 最長的英文單字、泰文詞：放不下就先縮字，不要把一個字從中間拆開
+  const words = text.split('\n').flatMap(lineTokens).filter(w =>
+    /[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff]{2,}/.test(w) || (SEA_RE.test(w) && graphemes(w).length >= 2));
   const fitsAt = (fs: number) => {
     const lines = wrapText(text, width, fs, measure);
     const widest = Math.max(...lines.map(l => measure(l, fs)));

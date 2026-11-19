@@ -3,7 +3,7 @@ import type { Worksheet } from 'exceljs';
 import { fitWorksheet, isSymbolFont, setCellAlignment, splitSymbolRuns, symbolCharsOf, type MeasureText } from './excelFit';
 import { defaultFontOf, readDiagonals, repairExcelPackage, type CellBox } from './excelPackage';
 import {
-  detectGridLines, fitText, groupFontSizes, isCenteredIn, layoutSegments, layoutTextItems, pageTextSize,
+  detectGridLines, fitText, groupFontSizes, isCenteredIn, layoutSegments, layoutTextItems, lineTokens, pageTextSize, scriptMetrics,
   sampleBlockColors, textItemBoxes, wrapText,
   type GridLines, type LayoutBlock, type RawTextItem, type Segment,
 } from './pdfLayout';
@@ -2241,7 +2241,8 @@ export const processPdf = async (
 
   const generatedFiles: { blob: Blob; name: string }[] = [];
 
-  const CJK_FONT_STACK = 'Arial, "Noto Sans TC", "Microsoft JhengHei", "Noto Sans Thai", sans-serif';
+  // 泰文：Windows 用 Leelawadee UI／Tahoma、Mac 用 Thonburi，都沒有才用 Noto Sans Thai
+  const CJK_FONT_STACK = 'Arial, "Noto Sans TC", "Microsoft JhengHei", "Leelawadee UI", Tahoma, Thonburi, "Noto Sans Thai", sans-serif';
   const fontFor = (size: number, bold = false) =>
     `${bold ? 'bold ' : ''}${size}pt ${CJK_FONT_STACK}`;
 
@@ -2254,6 +2255,8 @@ export const processPdf = async (
     im.src = src;
   });
 
+  /** 譯文頁頁尾要不要寫出語言（同一個檔案裡有好幾種語言的譯文頁時） */
+  let pageLangTag = false;
   const drawTranslatedPage = (
     pageIdx: number,
     langs: string[],
@@ -2308,6 +2311,10 @@ export const processPdf = async (
     //    先算每一段自己放得下的最大字級，再讓同一格、同一排的用同一個（取最小的），
     //    不然短的標籤字很大、長的句子字很小，擠在同一格裡忽大忽小
     const minFont = PDF_LAYOUT.minFontSize;
+    // 行高跟著語言調整（泰文、越南文要比較寬）
+    const pageLang = langs.length === 1 ? langs[0] : undefined;
+    const lhOf = (text: string) => scriptMetrics(text, PDF_LAYOUT.lineHeightRatio, pageLang).lineHeight;
+    const ascentOf = (text: string) => scriptMetrics(text, PDF_LAYOUT.lineHeightRatio, pageLang).ascent;
     const fittedSize = blocks.map(({ block, gi }) => {
       if (block.vertical) return Infinity;
       const texts = langs
@@ -2318,11 +2325,10 @@ export const processPdf = async (
       const slotH = (block.box.bottom - block.box.top) / texts.length;
       const maxFont = Math.max(minFont, block.maxFont ?? block.fontSize);
       return Math.min(...texts.map(t =>
-        fitText(langs.length > 1 ? `[${t.lang}] ${t.text}` : t.text, width, slotH, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio).fontSize
+        fitText(langs.length > 1 ? `[${t.lang}] ${t.text}` : t.text, width, slotH, maxFont, minFont, measure, lhOf(t.text)).fontSize
       ));
     });
     // 同一格的清單（□1～□5）整格一起重排：從上往下接著排，短的省下來的空間給長的用
-    const lh = PDF_LAYOUT.lineHeightRatio;
     const itemTexts = (gi: number) => langs
       .map((lang, li) => ({ li, text: (translatedLines[gi]?.[lang] || '').trim(), lang }))
       .filter(t => t.text)
@@ -2333,8 +2339,11 @@ export const processPdf = async (
       return itemTexts(gi).flatMap(t => wrapText(t.text, width, size, measure).map(line => ({ line, li: t.li })));
     };
     const stackGap = (size: number) => size * 0.35;
-    const stackHeight = (members: number[], size: number) =>
-      members.reduce((h, k) => h + stackLines(k, size).length * size * lh, 0) + stackGap(size) * (members.length - 1);
+    const stackText = (members: number[]) => members.map(k => itemTexts(blocks[k].gi).map(t => t.text).join('\n')).join('\n');
+    const stackHeight = (members: number[], size: number) => {
+      const lh = lhOf(stackText(members));
+      return members.reduce((h, k) => h + stackLines(k, size).length * size * lh, 0) + stackGap(size) * (members.length - 1);
+    };
     const stackMembers = new Map<number, number[]>();
     blocks.forEach(({ block }, k) => {
       if (!block.stack || !itemTexts(blocks[k].gi).length) return;
@@ -2347,18 +2356,18 @@ export const processPdf = async (
       const region = blocks[members[0]].block.stack!.region;
       const top = Math.max(minFont, Math.min(...members.map(k => blocks[k].block.maxFont ?? blocks[k].block.fontSize)));
       const longWords = members.flatMap(k => itemTexts(blocks[k].gi)
-        .flatMap(t => t.text.split(/\s+|(?<=[-/])/))
-        .filter(w => /[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff]{2,}/.test(w))
-        .map(w => ({ w, width: region.right - blocks[k].block.box.left })));
+        .flatMap(t => t.text.split('\n').flatMap(lineTokens))
+        .filter(w => /[A-Za-z0-9\u00c0-\u024f\u1e00-\u1eff]{2,}/.test(w) || /[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF]{2,}/.test(w))
+        .map(w => ({ w: w.trim(), width: region.right - blocks[k].block.box.left })));
       let size = top;
       while (size > minFont) {
         const wordsFit = longWords.every(x => measure(x.w, size) <= x.width + 0.5);
         if (wordsFit && stackHeight(members, size) <= region.bottom - region.top + size * 0.25) break;
         size = Math.max(minFont, size - (size > 8 ? 0.5 : 0.25));
       }
-      // 整格重排比各自排還小的話就不用重排
+      // 整格重排比各自排還小的話就不用重排（一樣大就重排：從上往下接著排，間距比較平均）
       const separately = Math.min(...members.map(k => fittedSize[k]));
-      if (size > separately) for (const k of members) preferred[k] = size;
+      if (size >= separately - 0.01) for (const k of members) preferred[k] = size;
       else stackMembers.delete(blocks[members[0]].block.stack!.id);
     }
 
@@ -2387,21 +2396,39 @@ export const processPdf = async (
       const region = blocks[members[0]].block.stack!.region;
       const size = Math.min(...members.map(k => sharedSize.get(k) ?? preferred[k]));
       const ordered = [...members].sort((a, b) => blocks[a].block.source.top - blocks[b].block.source.top);
-      const place = (keepOriginal: boolean) => {
+      const lh = lhOf(stackText(members));
+      const ascent = ascentOf(stackText(members));
+      const place = (keepOriginal: boolean, extraGap = 0) => {
         let y = region.top;
         const tops: number[] = [];
         for (const k of ordered) {
           const t = keepOriginal ? Math.max(y, blocks[k].block.box.top) : y;
           tops.push(t);
-          y = t + stackLines(k, size).length * size * lh + stackGap(size);
+          y = t + stackLines(k, size).length * size * lh + stackGap(size) + extraGap;
         }
-        return { tops, end: y - stackGap(size) };
+        return { tops, end: y - stackGap(size) - extraGap };
       };
       let plan = place(true);
-      if (plan.end > region.bottom + size * 0.25) plan = place(false);
+      // 照原位置排的間距忽大忽小（譯文有長有短：前面幾項中間空一大塊、後面擠在一起）
+      // → 改成從上往下排，剩下的空間平均分給每個間隔。
+      // 旁邊有並排的清單（例：檢附書據三欄）就不改，各欄的項目才會對齊同一列。
+      const gaps = ordered.slice(1).map((k, idx) => {
+        const prev = ordered[idx];
+        return plan.tops[idx + 1] - (plan.tops[idx] + stackLines(prev, size).length * size * lh);
+      });
+      const uneven = gaps.length >= 2 && Math.max(...gaps) - Math.min(...gaps) > size * 0.8;
+      const hasParallel = [...stackMembers.values()].some(other => other !== members && other.length >= 2 &&
+        Math.abs(blocks[other[0]].block.stack!.region.top - region.top) < 2);
+      const pushed = ordered.some((k, idx) => plan.tops[idx] > blocks[k].block.box.top + 0.5);
+      if ((uneven || pushed) && !hasParallel || plan.end > region.bottom + size * 0.25) {
+        const packed = place(false);
+        const spare = region.bottom - packed.end;
+        const extra = ordered.length > 1 ? Math.max(0, Math.min(size * 0.8, spare / (ordered.length - 1))) : 0;
+        plan = place(false, extra);
+      }
       ordered.forEach((k, idx) => {
         const { block } = blocks[k];
-        let baseline = plan.tops[idx] + size * 0.88;
+        let baseline = plan.tops[idx] + size * ascent;
         ctx.font = fontFor(size);
         for (const { line, li } of stackLines(k, size)) {
           ctx.fillStyle = langs.length > 1 ? TRANS_COLORS[li % TRANS_COLORS.length] : colors[k].ink;
@@ -2430,13 +2457,13 @@ export const processPdf = async (
         const length = box.bottom - box.top;
         const thickness = box.right - box.left;
         const joined = texts.map(t => (multi ? `[${t.lang}] ${t.text}` : t.text)).join('\n');
-        const fit = fitText(joined, length - 2, thickness, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio);
+        const fit = fitText(joined, length - 2, thickness, maxFont, minFont, measure, lhOf(joined));
         ctx.save();
         ctx.translate(box.left, box.bottom);
         ctx.rotate(-Math.PI / 2);
         ctx.font = fontFor(fit.fontSize);
         ctx.fillStyle = inkFor(texts[0].li);
-        const lh = fit.fontSize * PDF_LAYOUT.lineHeightRatio;
+        const lh = fit.fontSize * lhOf(joined);
         const totalH = fit.lines.length * lh;
         let baseline = Math.max(0, (thickness - totalH) / 2) + fit.fontSize * 0.9;
         for (const line of fit.lines) {
@@ -2458,13 +2485,13 @@ export const processPdf = async (
       const capped = (sharedSize.get(k) ?? Infinity) < (block.maxFont ?? block.fontSize) - 0.01;
       texts.forEach((t, slot) => {
         const text = multi ? `[${t.lang}] ${t.text}` : t.text;
-        const fit = fitText(text, width, slotH, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio, capped ? 0.92 : 0.8);
+        const fit = fitText(text, width, slotH, maxFont, minFont, measure, lhOf(text), capped ? 0.92 : 0.8);
         ctx.font = fontFor(fit.fontSize);
         ctx.fillStyle = inkFor(t.li);
-        const lh = fit.fontSize * PDF_LAYOUT.lineHeightRatio;
+        const lh = fit.fontSize * lhOf(text);
         const slotTop = box.top + slot * slotH;
         // 只有一行的：對齊原文的基準線，看起來跟原本排在同一個位置
-        let baseline = slotTop + fit.fontSize * 0.88;
+        let baseline = slotTop + fit.fontSize * ascentOf(text);
         if (texts.length === 1 && fit.lines.length === 1) {
           const origBaseline = block.source.top + block.fontSize * 0.9;
           baseline = Math.max(baseline, Math.min(origBaseline, box.bottom - fit.fontSize * 0.15));
@@ -2486,13 +2513,13 @@ export const processPdf = async (
     // 頁尾標記，方便對照
     ctx.font = fontFor(7);
     ctx.fillStyle = '#9ca3af';
-    const tag = `譯文　第 ${pageIdx + 1} / ${pages.length} 頁`;
+    const tag = `${langs.length === 1 && pageLangTag ? `${langs[0]}譯文` : '譯文'}　第 ${pageIdx + 1} / ${pages.length} 頁`;
     ctx.fillText(tag, PW - ctx.measureText(tag).width - 16, PH - 6);
 
     return canvas;
   };
 
-  // ── 模式一：一頁原檔、一頁翻譯 ─────────────────────────────
+  // ── 模式一：一頁原檔、一頁翻譯（好幾種語言就一頁原檔、每種語言各一頁） ─────────
   if (layoutMode === 'duplicate-page') {
     const docs: any[] = langGroups.map(() => null);
 
@@ -2520,12 +2547,15 @@ export const processPdf = async (
         // 1) 原稿頁
         if (image) docs[g].addImage(image, 'JPEG', 0, 0, PW, PH);
 
-        // 2) 譯文頁
-        docs[g].addPage([PW, PH], orient);
-        const tCanvas = drawTranslatedPage(pi, langGroups[g], pageImage);
-        docs[g].addImage(tCanvas.toDataURL('image/jpeg', PDF_LAYOUT.translatedPageQuality), 'JPEG', 0, 0, PW, PH);
-        tCanvas.width = 0;
-        tCanvas.height = 0;
+        // 2) 譯文頁：選了好幾種語言時每種語言各一頁——好幾種語言塞進原本的格子裡，字會小到看不清楚
+        pageLangTag = langGroups[g].length > 1;
+        for (const lang of langGroups[g]) {
+          docs[g].addPage([PW, PH], orient);
+          const tCanvas = drawTranslatedPage(pi, [lang], pageImage);
+          docs[g].addImage(tCanvas.toDataURL('image/jpeg', PDF_LAYOUT.translatedPageQuality), 'JPEG', 0, 0, PW, PH);
+          tCanvas.width = 0;
+          tCanvas.height = 0;
+        }
       }
 
       pages[pi].image = undefined;   // 用完就放掉，大檔案比較不會吃光記憶體
