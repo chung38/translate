@@ -1,6 +1,7 @@
 import React from 'react';
 import type { Worksheet } from 'exceljs';
-import { fitWorksheet, isSymbolFont, splitSymbolRuns, symbolCharsOf, type MeasureText } from './excelFit';
+import { fitWorksheet, isSymbolFont, setCellAlignment, splitSymbolRuns, symbolCharsOf, type MeasureText } from './excelFit';
+import { defaultFontOf, readDiagonals, repairExcelPackage, type CellBox } from './excelPackage';
 import {
   detectGridLines, fitText, fontGroups, layoutSegments, layoutTextItems, sampleBlockColors, textItemBoxes, wrapText,
   type GridLines, type LayoutBlock, type RawTextItem, type Segment,
@@ -190,7 +191,9 @@ export const translateItemsByLanguage = async (
   industry: string,
   translateBatch: (texts: string[], targetLangs: string[], industry: string) => Promise<Record<string, string>[]>,
   isCancelledRef: React.MutableRefObject<boolean>,
-  onProgress?: (done: number, total: number) => void
+  onProgress?: (done: number, total: number) => void,
+  /** 跨好幾次呼叫共用的翻譯記錄（例：Excel 每張工作表各呼叫一次，同一個詞在每張表都翻得一樣） */
+  memo?: Map<string, Record<string, string>>
 ): Promise<Map<string, Record<string, string>>> => {
   const out = new Map<string, Record<string, string>>();
   const groups = new Map<string, { id: string; text: string }[]>();
@@ -208,20 +211,38 @@ export const translateItemsByLanguage = async (
     (groups.get(key) as { id: string; text: string }[]).push(item);
   }
 
-  const total = [...groups.values()].reduce((s, g) => s + g.length, 0);
+  // 一模一樣的文字（空白多寡不算）只送一次，大家共用同一個譯文——
+  // 表單裡重複好幾次的「廠商：」才不會一下翻 Supplier、一下翻 Manufacturer
+  type Unique = { key: string; text: string; ids: string[] };
+  const uniques = new Map<string, Unique[]>();
+  for (const [langKey, group] of groups) {
+    const list: Unique[] = [];
+    const byKey = new Map<string, Unique>();
+    for (const item of group) {
+      const key = `${langKey}\u0002${dedupeKey(item.text)}`;
+      const known = memo?.get(key);
+      if (known) { out.set(item.id, { ...(out.get(item.id) || {}), ...known }); continue; }
+      let u = byKey.get(key);
+      if (!u) { u = { key, text: item.text, ids: [] }; byKey.set(key, u); list.push(u); }
+      u.ids.push(item.id);
+    }
+    if (list.length) uniques.set(langKey, list);
+  }
+
+  const total = [...uniques.values()].reduce((s, g) => s + g.length, 0);
   let done = 0;
   if (total === 0) { onProgress?.(1, 1); return out; }
 
   const batchSize = 10;
   const concurrency = 3;
 
-  for (const [key, group] of groups) {
-    const langs = key.split('\u0001');
+  for (const [langKey, group] of uniques) {
+    const langs = langKey.split('\u0001');
 
     for (let i = 0; i < group.length; i += batchSize * concurrency) {
       if (isCancelledRef.current) throw new Error('Cancelled');
 
-      const slices: { id: string; text: string }[][] = [];
+      const slices: Unique[][] = [];
       const promises: Promise<Record<string, string>[]>[] = [];
 
       for (let j = 0; j < concurrency && i + j * batchSize < group.length; j++) {
@@ -241,8 +262,10 @@ export const translateItemsByLanguage = async (
 
       const results = await Promise.all(promises);
       results.forEach((res, k) => {
-        slices[k].forEach((item, idx) => {
-          out.set(item.id, { ...(out.get(item.id) || {}), ...res[idx] });
+        slices[k].forEach((u, idx) => {
+          const tr = res[idx] || {};
+          for (const id of u.ids) out.set(id, { ...(out.get(id) || {}), ...tr });
+          if (memo && langs.every(l => typeof tr[l] === 'string' && tr[l].trim())) memo.set(u.key, tr);
         });
         done += slices[k].length;
       });
@@ -253,6 +276,9 @@ export const translateItemsByLanguage = async (
 
   return out;
 };
+
+/** 判斷「同一段文字」用：空白多寡不算 */
+const dedupeKey = (text: string) => text.replace(/\s+/g, ' ').trim();
 
 const isChineseFont = (fontName: string | undefined) => {
   if (!fontName) return false;
@@ -1518,6 +1544,25 @@ export const processDocx = async (
 // Excel 撐開表格用：用瀏覽器量字寬（盡量用儲存格本來的字型，沒有的話用相近的中文字型）
 const excelMeasureCache = new Map<string, number>();
 let excelMeasureCtx: CanvasRenderingContext2D | null = null;
+/**
+ * 活頁簿預設字型的數字寬（像素，Excel 換算欄寬的單位）。
+ * 明體、楷體、宋體這類中文字型的數字固定是半個字寬（新細明體 12pt → 8px）；其他字型用量的。
+ */
+const excelDigitPx = (font: { name?: string; size?: number } | null): number | undefined => {
+  if (!font?.size) return undefined;
+  const emPx = (font.size * 96) / 72;
+  if (/明體|明体|細明|楷體|楷体|宋體|宋体|MingLiU|DFKai|BiauKai|SimSun|KaiTi|FangSong|仿宋/i.test(font.name || '')) {
+    return Math.round(emPx / 2);
+  }
+  try {
+    const pt = Math.max(...'0123456789'.split('').map(d => measureExcelText(d, font.size!, font.name)));
+    const px = Math.round((pt * 96) / 72);
+    return px >= 4 && px <= 40 ? px : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const measureExcelText: MeasureText = (text, size, font, bold) => {
   const key = `${font || ''}|${bold ? 1 : 0}|${text}`;
   let w100 = excelMeasureCache.get(key);
@@ -1550,8 +1595,25 @@ export const processExcel = async (
 ) => {
   updateProgress(10, 'processing');
   const ExcelJS = (await import('exceljs')).default;
+  const JSZip = (await import('jszip')).default;
+  const originalBuffer = await file.arrayBuffer();
   const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(await file.arrayBuffer());
+  await workbook.xlsx.load(originalBuffer.slice(0));
+
+  // exceljs 讀不到的東西直接從原檔讀：
+  //   表頭斜線 → 撐開表格時把斜線兩邊的字推到角落
+  //   預設字型 → 欄寬的單位（數字寬），算一欄有多寬要用
+  let diagonals = new Map<string, CellBox[]>();
+  let digitPx: number | undefined;
+  try {
+    const originalZip = await JSZip.loadAsync(originalBuffer.slice(0));
+    diagonals = await readDiagonals(originalZip);
+    digitPx = excelDigitPx(await defaultFontOf(originalZip));
+  } catch (e) {
+    console.warn('讀取 Excel 原檔資訊失敗，略過表頭斜線調整', e);
+  }
+  // 同一段文字在整個活頁簿只翻一次，譯法一致
+  const translationMemo = new Map<string, Record<string, string>>();
   
   const totalWorksheets = workbook.worksheets.length;
   let processedWorksheets = 0;
@@ -1566,8 +1628,14 @@ export const processExcel = async (
     isFormula?: boolean;
   }[] = [];
 
+  // 翻譯前每一格有沒有開「自動換行」——從還沒動過的活頁簿記下來
+  // （寫譯文時每一格都會開換行，exceljs 又讓同格式的格子共用樣式，之後再讀就不準了）
+  const originalWrap: Record<string, Map<string, boolean>> = {};
+
   for (const worksheet of workbook.worksheets) {
     if (isCancelledRef.current) throw new Error('Cancelled');
+    const sheetWrap = new Map<string, boolean>();
+    originalWrap[worksheet.name] = sheetWrap;
     
     const textsToTranslate: {
       row: number;
@@ -1581,6 +1649,7 @@ export const processExcel = async (
     worksheet.eachRow((row, rowNumber) => {
       row.eachCell((cell, colNumber) => {
         if (cell.type === 1) return;
+        sheetWrap.set(cell.address, !!cell.alignment?.wrapText);
         
         if (cell.value) {
           if (typeof cell.value === 'string' && cell.value.trim().length > 0) {
@@ -1644,7 +1713,8 @@ export const processExcel = async (
       (done, total) => {
         const sheetProgress = (done / total) * (60 / totalWorksheets);
         updateProgress(30 + (processedWorksheets * (60 / totalWorksheets)) + sheetProgress);
-      }
+      },
+      translationMemo
     );
 
     updateProgress(30 + ((processedWorksheets + 1) / totalWorksheets) * 60, 'generating');
@@ -1678,12 +1748,11 @@ export const processExcel = async (
   const langGroups = outputMode === 'separate' ? targetLanguages.map(l => [l]) : [targetLanguages];
 
   for (const langs of langGroups) {
-    const ExcelJS = (await import('exceljs')).default;
     const newWorkbook = new ExcelJS.Workbook();
-    await newWorkbook.xlsx.load(await file.arrayBuffer());
+    await newWorkbook.xlsx.load(originalBuffer.slice(0));
 
     const translatedCells: Record<string, Set<string>> = {};
-    const originalWrap: Record<string, Map<string, boolean>> = {};
+    const translatedFrom: Record<string, Map<string, number>> = {};
 
     for (const worksheet of newWorkbook.worksheets) {
       worksheet.eachRow((row, rowNumber) => {
@@ -1694,14 +1763,17 @@ export const processExcel = async (
             t => t.sheet === worksheet.name && t.row === rowNumber && t.col === colNumber
           );
           if (translationItem) {
-            let defaultFont: any = {};
+            // 沒有自己字型的那一段文字，Excel 是用儲存格的字型顯示——
+            // 譯文也要用儲存格字型（不然字級會掉回預設值，變得忽大忽小）
+            const cellFont: any = cell.font || {};
+            const withCellFont = (font: any) => font || cellFont;
+            let defaultFont: any = cellFont;
             if (typeof cell.value === 'object' && (cell.value as any).richText && (cell.value as any).richText.length > 0) {
-              defaultFont = (cell.value as any).richText[0].font || {};
-            } else if (cell.font) {
-              defaultFont = cell.font;
+              defaultFont = withCellFont((cell.value as any).richText[0].font);
             }
 
             const newRichText: any[] = [];
+            let originalRunCount = 0;
             const symbolChars = symbolCharsOf(
               typeof cell.value === 'object' ? (cell.value as any)?.richText : undefined
             );
@@ -1712,11 +1784,14 @@ export const processExcel = async (
             } else if (typeof cell.value === 'object' && (cell.value as any).richText) {
               const originalRichText = (cell.value as any).richText;
               originalRichText.forEach((rt: any) => {
-                newRichText.push({ text: rt.text, font: rt.font || defaultFont });
+                // 原文照原樣：沒有字型的段落就讓它繼續用儲存格字型
+                newRichText.push({ text: rt.text, font: rt.font });
               });
             } else {
               newRichText.push({ text: String(cell.value), font: defaultFont });
             }
+
+            originalRunCount = newRichText.length;
 
             langs.forEach(lang => {
               // 原文本來就已經是這個語言 → 不重複附加
@@ -1746,7 +1821,7 @@ export const processExcel = async (
                   
                   let originalFont = defaultFont;
                   if (translationItem.mergedRichText && translationItem.mergedRichText[id]) {
-                    originalFont = translationItem.mergedRichText[id].font || defaultFont;
+                    originalFont = withCellFont(translationItem.mergedRichText[id].font);
                   }
                   const adjustedOriginalFont = adjustFontForLanguage(originalFont, lang);
                   
@@ -1790,13 +1865,11 @@ export const processExcel = async (
 
             if (!translatedCells[worksheet.name]) translatedCells[worksheet.name] = new Set();
             translatedCells[worksheet.name].add(cell.address);
-            if (!originalWrap[worksheet.name]) originalWrap[worksheet.name] = new Map();
-            originalWrap[worksheet.name].set(cell.address, !!cell.alignment?.wrapText);
+            if (!translatedFrom[worksheet.name]) translatedFrom[worksheet.name] = new Map();
+            translatedFrom[worksheet.name].set(cell.address, originalRunCount);
           }
-          cell.alignment = { 
-            ...(cell.alignment || {}), 
-            wrapText: true 
-          };
+          // 每一格用自己的樣式物件（exceljs 讓同格式的格子共用樣式，不先分開的話改一格會動到別格）
+          setCellAlignment(cell, { wrapText: true });
         });
       });
 
@@ -1804,15 +1877,27 @@ export const processExcel = async (
       const sheetCells = translatedCells[worksheet.name];
       if (sheetCells?.size) {
         try {
-          fitWorksheet(worksheet, sheetCells, measureExcelText, { originalWrap: originalWrap[worksheet.name] });
+          fitWorksheet(worksheet, sheetCells, measureExcelText, {
+            originalWrap: originalWrap[worksheet.name],
+            translatedFrom: translatedFrom[worksheet.name],
+            diagonals: diagonals.get(worksheet.name),
+            digitPx,
+          });
         } catch (fitErr) {
           console.warn(`工作表「${worksheet.name}」自動調整列高失敗，保留原本大小`, fitErr);
         }
       }
     }
 
-    const buffer = await newWorkbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    let buffer: ArrayBuffer | Uint8Array = await newWorkbook.xlsx.writeBuffer() as ArrayBuffer;
+    // exceljs 會把預設字型換成 Calibri（每一欄都變窄）、把線條／形狀／圖表丟掉（例：表頭斜線），
+    // 從原檔補回去
+    try {
+      buffer = (await repairExcelPackage(JSZip, originalBuffer.slice(0), buffer)).data;
+    } catch (repairErr) {
+      console.warn('修補 Excel 輸出失敗，使用 exceljs 原本的輸出', repairErr);
+    }
+    const blob = new Blob([buffer as BlobPart], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const prefix = outputMode === 'separate' ? `${langs[0]}_` : 'translated_';
     generatedFiles.push({ blob, name: `${prefix}${file.name}` });
   }

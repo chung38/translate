@@ -54,7 +54,7 @@ export const EXCEL_FIT = {
   maxColWidth: 45,
   /** Excel 列高上限 */
   maxRowHeight: 409,
-  /** 預設字型的數字寬（px），Excel 換算欄寬用 */
+  /** 預設字型的數字寬（px），Excel 換算欄寬用（沒給的話當作 Calibri 11） */
   digitPx: 7,
   /** 幾列以內算「表單」：列印存成每張一頁 */
   formMaxRows: 60,
@@ -62,14 +62,18 @@ export const EXCEL_FIT = {
 
 export interface Range { top: number; left: number; bottom: number; right: number }
 
-/** Excel 欄寬（字元數）→ pt */
-export const colWidthToPt = (w: number) => {
-  const px = Math.trunc(((256 * w + Math.trunc(128 / EXCEL_FIT.digitPx)) / 256) * EXCEL_FIT.digitPx);
+/**
+ * Excel 欄寬（字元數）→ pt。
+ * 欄寬的單位是「預設字型的數字寬」：Calibri 11 是 7 像素、新細明體 12 是 8 像素。
+ */
+export const colWidthToPt = (w: number, digitPx: number = EXCEL_FIT.digitPx) => {
+  const px = Math.trunc(((256 * w + Math.trunc(128 / digitPx)) / 256) * digitPx);
   return px * 0.75;
 };
 
 /** pt → Excel 欄寬（字元數） */
-export const ptToColWidth = (pt: number) => Math.ceil((pt / 0.75 / EXCEL_FIT.digitPx) * 100) / 100 + 0.15;
+export const ptToColWidth = (pt: number, digitPx: number = EXCEL_FIT.digitPx) =>
+  Math.ceil((pt / 0.75 / digitPx) * 100) / 100 + 0.15;
 
 interface Paragraph { text: string; size: number; font?: string; bold?: boolean }
 
@@ -87,6 +91,8 @@ export function cellParagraphs(value: any, cellFont: any): Paragraph[] {
 
   const out: Paragraph[] = [];
   let cur: Paragraph | null = null;
+  // 字級只看這一行裡真的有字的那幾段：上一段結尾的換行不能把這一行的字級拉大
+  let sized = false;
   for (const run of runs) {
     const size = Number(run.font?.size) || baseSize;
     const parts = run.text.split(/\r?\n/);
@@ -94,9 +100,18 @@ export function cellParagraphs(value: any, cellFont: any): Paragraph[] {
       if (i > 0 || !cur) {
         cur = { text: '', size, font: run.font?.name, bold: !!run.font?.bold };
         out.push(cur);
+        sized = false;
+      }
+      if (!part) return;
+      if (!sized) {
+        cur!.size = size;
+        cur!.font = run.font?.name;
+        cur!.bold = !!run.font?.bold;
+        sized = true;
+      } else {
+        cur!.size = Math.max(cur!.size, size);
       }
       cur!.text += part;
-      cur!.size = Math.max(cur!.size, size);
     });
   }
   return out;
@@ -163,16 +178,46 @@ export interface FitResult {
 export interface FitOptions {
   /** 翻譯前每一格有沒有開「自動換行」（位址 → true/false） */
   originalWrap?: Map<string, boolean>;
+  /** 每一格的文字裡，從第幾段開始是譯文（位址 → 段數）；沒給的話當作第一行是原文 */
+  translatedFrom?: Map<string, number>;
+  /** 表頭斜線框住的範圍（從 1 起算）：列被撐高時，斜線上面的字靠上、下面的字靠下，才不會壓到線 */
+  diagonals?: Range[];
+  /** 活頁簿預設字型的數字寬（px）；新細明體 12 是 8 */
+  digitPx?: number;
 }
 
-/** 一格的值裡的換行都改成空白（譯文接在同一行） */
-function flattenValue(value: any): any {
+/** 一格的值裡的換行都改成空白（譯文接在同一行）；換行前面原文尾巴的空白一併拿掉 */
+export function flattenValue(value: any): any {
   const join = (t: string) => t.replace(/\s*\r?\n\s*/g, '  ');
   if (value && typeof value === 'object' && Array.isArray(value.richText)) {
-    const runs = value.richText.map((rt: any) => ({ ...rt, text: join(String(rt?.text ?? '')) }));
+    const texts = value.richText.map((rt: any) => String(rt?.text ?? ''));
+    for (let i = 1; i < texts.length; i++) {
+      if (!/^\s*\r?\n/.test(texts[i])) continue;
+      for (let j = i - 1; j >= 0; j--) {
+        texts[j] = texts[j].replace(/[ \t\u3000]+$/, '');
+        if (texts[j]) break;
+      }
+    }
+    const runs = value.richText.map((rt: any, i: number) => ({ ...rt, text: join(texts[i]) }));
     return { richText: runs };
   }
   return typeof value === 'string' ? join(value) : value;
+}
+
+/**
+ * 改一格的對齊方式。exceljs 讓格式相同的格子共用同一個樣式物件，
+ * 直接改 cell.alignment 會連別格一起改掉——先讓這一格有自己的樣式再改。
+ */
+export function setCellAlignment(cell: any, patch: Record<string, any>) {
+  cell.style = { ...(cell.style || {}), alignment: { ...(cell.alignment || {}), ...patch } };
+}
+
+/** 這一格翻譯前的內容（譯文之前的那幾段） */
+function originalPart(value: any, from: number | undefined): any {
+  if (value && typeof value === 'object' && Array.isArray(value.richText)) {
+    if (from !== undefined) return { richText: value.richText.slice(0, from) };
+  }
+  return value;
 }
 
 /**
@@ -183,6 +228,8 @@ function flattenValue(value: any): any {
  */
 export function fitWorksheet(ws: any, cells: Iterable<string>, measure: MeasureText, options: FitOptions = {}): FitResult {
   const result: FitResult = { rowsChanged: 0, colsWidened: 0, inlined: 0 };
+  const dpx = options.digitPx && options.digitPx > 0 ? options.digitPx : EXCEL_FIT.digitPx;
+  const toPt = (w: number) => colWidthToPt(w, dpx);
   const defaultRow = Number(ws.properties?.defaultRowHeight) || 15;
   const defaultCol = Number(ws.properties?.defaultColWidth) || 8.43;
 
@@ -217,46 +264,91 @@ export function fitWorksheet(ws: any, cells: Iterable<string>, measure: MeasureT
 
   type Box = { range: Range; paras: Paragraph[] };
   const boxes: Box[] = [];
-  for (const addr of cells) {
+  const cellList = [...cells];
+  const diagonals = options.diagonals || [];
+  const inBox = (b: Range, r: number, c: number) => r >= b.top && r <= b.bottom && c >= b.left && c <= b.right;
+
+  const widthPt = (r: Range) => {
+    let w = 0;
+    for (let c = r.left; c <= r.right; c++) w += toPt(colWidth(c));
+    return Math.max(0, w - EXCEL_FIT.paddingH);
+  };
+  const lineWidth = (paras: Paragraph[]) =>
+    Math.max(0, ...paras.map(p => measure(p.text.replace(/\s+$/, ''), p.size, p.font, p.bold) * EXCEL_FIT.safety));
+
+  // 短標籤（例：「廠商：」「品名：」）：原文一行就放得下、那一列也只有一行高。
+  // 表單裡同一欄、同一列的標籤一起決定：全部都能「原文＋譯文」接在同一行放得下才接，
+  // 只要有一個放不下就全部改成上下兩行——不然會一格一行、一格兩行，看起來很亂。
+  type Label = { cell: any; range: Range; paras: Paragraph[]; flat: any; fits: boolean };
+  const labels: Label[] = [];
+  const inline = (cell: any, flat: any) => {
+    cell.value = flat;
+    setCellAlignment(cell, { wrapText: false });
+    result.inlined++;
+  };
+
+  for (const addr of cellList) {
     const cell = ws.getCell(addr);
     const al = cell.alignment || {};
     if (al.shrinkToFit || (al.textRotation && al.textRotation !== 0)) continue;
-    let paras = cellParagraphs(cell.value, cell.font);
+    const paras = cellParagraphs(cell.value, cell.font);
     if (!paras.some(p => p.text.trim())) continue;
     const range = merges[cell.address] || { top: cell.row, left: cell.col, bottom: cell.row, right: cell.col };
 
-    // 原本沒開換行、靠左、右邊是空格的（例：「類別：醃漬類」），文字本來就往右延伸顯示。
-    // 硬塞在這一格裡會被擠成好幾行，所以譯文改接在同一行、照樣往右延伸。
     const wasWrapped = options.originalWrap?.get(cell.address);
     const horizontal = al.horizontal;
-    if (
-      wasWrapped === false && !merges[cell.address] &&
-      (!horizontal || horizontal === 'left' || horizontal === 'general')
-    ) {
+    const leftAligned = !horizontal || horizontal === 'left' || horizontal === 'general';
+    const inDiagonal = diagonals.some(d => inBox(d, cell.row, cell.col));
+    if (wasWrapped !== undefined && leftAligned && !inDiagonal && range.top === range.bottom && !ws.getRow(cell.row).hidden) {
       const flat = flattenValue(cell.value);
       const flatParas = cellParagraphs(flat, cell.font);
-      const textW = Math.max(...flatParas.map(p => measure(p.text, p.size, p.font, p.bold) * EXCEL_FIT.safety));
-      let room = colWidthToPt(colWidth(cell.col)) - EXCEL_FIT.paddingH;
-      for (let c = cell.col + 1; c <= Math.max(lastCol, cell.col + 1) && room < textW; c++) {
-        if (!isEmpty(cell.row, c) || coveredByMerge(cell.row, c)) break;
-        room += colWidthToPt(colWidth(c));
-      }
-      if (textW <= room) {
-        cell.value = flat;
-        cell.alignment = { ...al, wrapText: false };
-        result.inlined++;
-        paras = flatParas;
-        continue;   // 一行就夠，不用撐高
+      const textW = lineWidth(flatParas);
+      const own = widthPt(range);
+      const origParas = options.translatedFrom?.has(cell.address)
+        ? cellParagraphs(originalPart(cell.value, options.translatedFrom.get(cell.address)), cell.font)
+        : paras.slice(0, 1);
+      const origW = lineWidth(origParas);
+
+      // 原本沒開換行、字比格子寬、往右邊空格延伸顯示的（例：「類別：醃漬類」）：
+      // 硬塞在這一格裡會被擠成好幾行，所以譯文改接在同一行、照樣往右延伸。
+      if (wasWrapped === false && !merges[cell.address] && origW > own + 0.5) {
+        let room = own;
+        for (let c = cell.col + 1; c <= Math.max(lastCol, cell.col + 1) && room < textW; c++) {
+          if (!isEmpty(cell.row, c) || coveredByMerge(cell.row, c)) break;
+          room += toPt(colWidth(c));
+        }
+        if (textW <= room) { inline(cell, flat); continue; }
+      } else if (origParas.length === 1 && origW <= own + 0.5) {
+        const size = Math.max(...origParas.map(p => p.size));
+        const oneLineRow = rowHeight(cell.row) < 2 * size * EXCEL_FIT.lineHeight + EXCEL_FIT.paddingV;
+        if (oneLineRow) {
+          labels.push({ cell, range, paras, flat, fits: textW <= own + 0.5 });
+          continue;
+        }
       }
     }
     boxes.push({ range, paras });
   }
 
-  const widthPt = (r: Range) => {
-    let w = 0;
-    for (let c = r.left; c <= r.right; c++) w += colWidthToPt(colWidth(c));
-    return Math.max(0, w - EXCEL_FIT.paddingH);
-  };
+  // 同一欄或同一列的標籤分成一組
+  const parent = labels.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
+  const firstBy = new Map<string, number>();
+  labels.forEach((l, i) => {
+    for (const key of [`c${l.range.left}`, `r${l.range.top}`]) {
+      const j = firstBy.get(key);
+      if (j === undefined) firstBy.set(key, i);
+      else parent[find(i)] = find(j);
+    }
+  });
+  const groupFits = new Map<number, boolean>();
+  labels.forEach((l, i) => groupFits.set(find(i), (groupFits.get(find(i)) ?? true) && l.fits));
+  // 長的資料表不整組決定：一個長品名不該害幾百列全部變兩倍高
+  const isForm = lastRow <= EXCEL_FIT.formMaxRows;
+  labels.forEach((l, i) => {
+    if (isForm ? groupFits.get(find(i)) : l.fits) inline(l.cell, l.flat);
+    else boxes.push({ range: l.range, paras: l.paras });
+  });
 
   // 1) 英文長單字塞不下 → 加寬範圍最右邊那一欄（有上限）
   for (const b of boxes) {
@@ -267,7 +359,7 @@ export function fitWorksheet(ws: any, cells: Iterable<string>, measure: MeasureT
     if (!origColWidth.has(c)) origColWidth.set(c, colWidth(c));
     const base = origColWidth.get(c)!;
     if (base <= 0) continue;
-    const target = ptToColWidth(colWidthToPt(colWidth(c)) + (need - have));
+    const target = ptToColWidth(toPt(colWidth(c)) + (need - have), dpx);
     const capped = Math.min(target, base * EXCEL_FIT.maxWidenRatio, Math.max(base, EXCEL_FIT.maxColWidth));
     if (capped > colWidth(c) + 0.05) {
       ws.getColumn(c).width = Math.round(capped * 100) / 100;
@@ -308,6 +400,20 @@ export function fitWorksheet(ws: any, cells: Iterable<string>, measure: MeasureT
     }
   }
   result.rowsChanged = changed.size;
+
+  // 3.5) 表頭斜線：斜線框住的列被撐高了，斜線上面那格的字靠上、下面那格的字靠下，
+  //      字才會留在斜線兩邊的角落，不會被線劃過去
+  for (const d of diagonals) {
+    let grew = false;
+    for (let r = d.top; r <= d.bottom; r++) if (changed.has(r)) grew = true;
+    if (!grew) continue;
+    for (const addr of cellList) {
+      const cell = ws.getCell(addr);
+      if (!inBox(d, cell.row, cell.col)) continue;
+      if (cell.row === d.top) setCellAlignment(cell, { vertical: 'top' });
+      else if (cell.row === d.bottom) setCellAlignment(cell, { vertical: 'bottom' });
+    }
+  }
 
   // 4) 列印：撐開後表格變大，原本的列印設定可能會跑成好幾頁。
   //    表單（60 列以內）存成「每張一頁」，Excel 會自動縮小；更長的資料表只限制一頁寬、高度照常分頁。

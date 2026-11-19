@@ -52,6 +52,8 @@
 | 翻譯頁畫面（三步驟） | `src/App.tsx`、`src/index.css` |
 | Word／Excel／PPT／PDF 怎麼拆字、怎麼把譯文放回去 | `src/utils/documentProcessors.ts` |
 | PDF 版面分析：找表格線、切格子、接段落、直排標籤、譯文範圍與字級 | `src/utils/pdfLayout.ts`（測試：`tests/pdf-layout.test.ts`，用健保核退申請書當範例） |
+| Excel 翻譯後撐開表格：列高、太窄的欄、標籤排法（同一欄／列一致）、表頭斜線兩邊的字、列印一頁 | `src/utils/excelFit.ts`（測試：`tests/excel-fit.test.ts`） |
+| Excel 輸出修補：放回原檔預設字型（欄寬單位）、補回 exceljs 丟掉的線條／形狀／圖表 | `src/utils/excelPackage.ts`（測試：`tests/excel-package.test.ts`，含整份表單從頭跑到尾） |
 | 給 AI 的翻譯指令、一次送幾句、譯文標籤修復 | `src/hooks/useTranslation.ts` |
 | 翻譯 API：登入驗證、檢查工作單、呼叫翻譯模型 | `functions/api/translate.ts` |
 | 額度：開始翻譯扣額度、查剩餘、管理員調整與記錄付款 | `functions/api/jobs.ts`、`me.ts`、`admin/credits.ts`，規則在 `functions/_lib/credits.ts` |

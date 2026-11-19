@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import ExcelJS from 'exceljs';
 import {
   countLines, requiredHeight, fitWorksheet, colWidthToPt, splitSymbolRuns, symbolCharsOf, EXCEL_FIT,
+  cellParagraphs, flattenValue,
 } from '../src/utils/excelFit';
 
 // 量字寬：中文一個字一個字寬，其他半個字寬（跟實際字型差不多）
@@ -29,6 +30,26 @@ describe('countLines / requiredHeight', () => {
   it('高度 = 行數 × 字級 × 行高倍數', () => {
     const h = requiredHeight([{ text: '品名規格', size: 12 }, { text: 'Product', size: 12 }], 200, measure);
     expect(h).toBeCloseTo(2 * 12 * EXCEL_FIT.lineHeight + EXCEL_FIT.paddingV, 1);
+  });
+});
+
+describe('cellParagraphs / 欄寬', () => {
+  it('換行後的那一行用自己的字級（不會被上一段結尾的換行拉大）', () => {
+    const paras = cellParagraphs({ richText: [
+      { text: 'Drip Loss + Ice\n', font: { size: 14 } },
+      { text: '(To be completed by Quality Control)', font: { size: 12 } },
+    ] }, { size: 14 });
+    expect(paras.map(p => p.size)).toEqual([14, 12]);
+  });
+
+  it('欄寬單位跟著預設字型：新細明體 12 的數字寬 8 像素，比 Calibri 寬', () => {
+    expect(colWidthToPt(12.6640625, 8)).toBeCloseTo(75.75, 2);
+    expect(colWidthToPt(12.6640625)).toBeCloseTo(66.75, 2);
+  });
+
+  it('接成一行時，原文尾巴拿來留白的空格一併拿掉', () => {
+    const flat = flattenValue({ richText: [{ text: '品名：           ' }, { text: '\nProduct name:' }] });
+    expect(flat.richText.map((r: any) => r.text).join('')).toBe('品名：  Product name:');
   });
 });
 
