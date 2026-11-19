@@ -3,7 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import {
   cleanCjkSpacing, startsNewItem, detectGridLines, layoutTextItems, wrapText, fitText,
-  sampleBlockColors, fontGroups, type GridLines, type RawTextItem,
+  sampleBlockColors, fontGroups, findCell, layoutSegments, pageTextSize, groupFontSizes, isCenteredIn,
+  type GridLines, type RawTextItem, type Segment,
 } from '../src/utils/pdfLayout';
 
 // 健保自墊醫療費用核退申請書：表格、直排標籤、字距排版都有，拿來當回歸測試
@@ -238,5 +239,131 @@ describe('sampleBlockColors', () => {
     expect(sampleBlockColors(make(220, 20, 20), W, H, 1, block).ink).not.toBe('#111827');
     expect(sampleBlockColors(make(30, 30, 30), W, H, 1, block).ink).toBe('#111827');
     expect(sampleBlockColors(make(30, 30, 30), W, H, 1, block).background).toBe('#ffffff');
+  });
+});
+
+// ── 會議記錄表「一、」那一格：(四)的第二行行尾「，」凸出格線 ──────────────────
+// 位置照使用者原檔量的（pt）：決議事項欄 63–376，右邊是執行部門欄 376–473
+describe('行尾標點凸出格線', () => {
+  const fs = 12;
+  const seg = (text: string, left: number, top: number, right?: number): Segment => {
+    const r = right ?? left + Array.from(text).length * fs * 0.95;
+    return { text, left, right: r, top, bottom: top + fs, fontSize: fs, glyphs: [{ left, right: r, top, bottom: top + fs }] };
+  };
+  const segs = [
+    seg('現況聚泰自有宿舍由內部管理人員自行管理之問題點如下:', 67.5, 240, 374),
+    seg('(一)現有宿舍沒有使用執照，建安申報有極大審查不合格的', 67.5, 260, 374),
+    seg('風險。', 90, 280),
+    seg('(二)因應三期擴建，外籍移工人力將由現在總人數 47 人增', 67.5, 300, 374),
+    seg('加到約 67 人(約增加 20 人)，現有宿舍空間不足。', 90, 320, 330),
+    seg('(三)夏季用電支出偏高（每月逾 12.5 萬元），加上維修及', 67.5, 340, 374),
+    seg('雜支支出，整體營運費用無法管控。', 90, 360),
+    seg('(四)缺乏專業宿舍管理制度，包括公共區域清潔、生活規', 67.5, 380, 374),
+    seg('範、用電明火規定、緊急聯繫機制等均無有效管理方案，', 90, 400, 380.5),   // 「，」凸出格線 4.5pt
+    seg('安全危害風險高。', 90, 420),
+  ];
+  const grid: GridLines = {
+    v: [27, 63, 376, 473, 538, 569].map(x => ({ x, y0: 236, y1: 444 })),
+    h: [236, 444].map(y => ({ y, x0: 27, x1: 569 })),
+  };
+
+  it('凸出格線不到半個字的那一行還是算在原本那一格', () => {
+    const cell = findCell(segs[8], grid, 595, 842);
+    expect([cell.left, cell.right]).toEqual([63, 376]);
+  });
+
+  it('(四) 三行接成一段、跟同格的段落同一格，譯文不寫過格線', () => {
+    const blocks = layoutSegments(segs, 595, 842, grid);
+    const four = blocks.find(b => b.text.startsWith('(四)'))!;
+    expect(four.text).toContain('均無有效管理方案');
+    expect(four.text).toContain('安全危害風險高');
+    expect(blocks.filter(b => b.text.includes('安全危害')).length).toBe(1);
+    for (const b of blocks) {
+      expect(b.cell?.right).toBe(376);
+      expect(b.box.right).toBeLessThanOrEqual(376);
+    }
+    // 整格一起重排（同一個清單）
+    expect(new Set(blocks.map(b => b.stack?.id)).size).toBe(1);
+    expect(four.stack).toBeDefined();
+  });
+});
+
+describe('整頁字級一致', () => {
+  it('pageTextSize：依字數加權的中位數；大標題不算也不受限', () => {
+    const cap = pageTextSize([
+      { size: 22, sourceSize: 22, chars: 20 },          // 大標題
+      { size: 9, sourceSize: 12, chars: 600 },          // 內文
+      { size: 8, sourceSize: 12, chars: 500 },
+      { size: 12, sourceSize: 12, chars: 18 },          // 短標籤（空間大）
+      { size: 12, sourceSize: 12, chars: 25 },
+      { size: 6, sourceSize: 12, chars: 40 },
+    ])!;
+    expect(cap.size).toBe(9);
+    expect(cap.applies).toEqual([false, true, true, true, true, true]);
+  });
+
+  it('groupFontSizes：同一排特別擠的一格自己小，其他格不跟著縮；同一格的一定一樣', () => {
+    const cell = (left: number, right: number, top = 100, bottom = 120) =>
+      ({ left, right, top, bottom, hasLeft: true, hasRight: true, hasTop: true, hasBottom: true });
+    const row = [
+      { cell: cell(0, 40), fontSize: 12, vertical: false, text: '項次' },
+      { cell: cell(40, 350), fontSize: 12, vertical: false, text: '決議事項' },
+      { cell: cell(350, 450), fontSize: 12, vertical: false, text: '執行部門（人員）' },
+      { cell: cell(450, 480), fontSize: 12, vertical: false, text: '備註' },
+    ];
+    const sizes = groupFontSizes(row, [9.5, 12, 9, 5.5]);
+    expect([0, 1, 2].map(k => sizes.get(k))).toEqual([9, 9, 9]);
+    expect(sizes.get(3)).toBe(5.5);
+
+    const sameCell = [
+      { cell: cell(0, 300, 100, 300), fontSize: 12, vertical: false, text: '(一)很長的一段' },
+      { cell: cell(0, 300, 100, 300), fontSize: 12, vertical: false, text: '(二)短' },
+    ];
+    const s2 = groupFontSizes(sameCell, [5, 10]);
+    expect([s2.get(0), s2.get(1)]).toEqual([5, 5]);
+  });
+
+  it('表格外同一行的簽名欄標籤分成同一組', () => {
+    const lineBlock = (text: string, left: number) =>
+      ({ fontSize: 12, vertical: false, text, source: { left, right: left + 60, top: 700, bottom: 712 } });
+    const groups = fontGroups([lineBlock('呈董事長：', 30), lineBlock('總經理：', 160), lineBlock('陳廠長：', 290)]);
+    expect(groups).toEqual([[0, 1, 2]]);
+  });
+});
+
+describe('排版小細節', () => {
+  it('左括號不會落單留在行尾', () => {
+    const lines = wrapText('Responsible Department (Personnel)', 95, 10, measure);
+    for (const l of lines) expect(l.endsWith('(')).toBe(false);
+    expect(lines.join(' ')).toContain('(Personnel)');
+  });
+
+  it('兩邊對齊寫滿整格的段落不算置中；表頭標籤算', () => {
+    const c = { left: 63, right: 376, top: 0, bottom: 100, hasLeft: true, hasRight: true, hasTop: true, hasBottom: true };
+    expect(isCenteredIn({ left: 68, right: 371, top: 10, bottom: 90 }, c)).toBe(false);
+    expect(isCenteredIn({ left: 180, right: 259, top: 10, bottom: 22 }, c)).toBe(true);
+  });
+
+  it('靠右的一行（記錄：陳淑燕 4/29）譯文往左延伸、靠右對齊', () => {
+    const s: Segment = { text: '記錄：陳淑燕 4/29', left: 470, right: 565, top: 760, bottom: 772, fontSize: 12, glyphs: [] };
+    const body: Segment = { text: '這是一行很長的內文用來決定版心寬度這是一行很長的內文用來決定版心寬度', left: 30, right: 565, top: 700, bottom: 712, fontSize: 12, glyphs: [] };
+    const blocks = layoutSegments([body, s], 595, 842);
+    const rec = blocks.find(b => b.text.startsWith('記錄'))!;
+    expect(rec.alignRight).toBe(true);
+    expect(rec.box.left).toBeLessThan(100);
+  });
+
+  it('置中的窄格標籤可以用整格寬（Remarks 不會被拆成兩半）', () => {
+    const grid: GridLines = {
+      v: [538, 569].map(x => ({ x, y0: 180, y1: 222 })),
+      h: [180, 222].map(y => ({ y, x0: 538, x1: 569 })),
+    };
+    // 窄欄裡「備／註」上下兩行，每行置中
+    const s1: Segment = { text: '備', left: 547.5, right: 559.5, top: 186, bottom: 198, fontSize: 12, glyphs: [] };
+    const s2: Segment = { text: '註', left: 547.5, right: 559.5, top: 204, bottom: 216, fontSize: 12, glyphs: [] };
+    const [b] = layoutSegments([s1, s2], 595, 842, grid);
+    expect(b.text).toBe('備註');
+    expect(b.box.left).toBeLessThan(541);
+    expect(b.box.right - b.box.left).toBeGreaterThan(26);
   });
 });

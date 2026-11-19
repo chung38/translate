@@ -3,7 +3,8 @@ import type { Worksheet } from 'exceljs';
 import { fitWorksheet, isSymbolFont, setCellAlignment, splitSymbolRuns, symbolCharsOf, type MeasureText } from './excelFit';
 import { defaultFontOf, readDiagonals, repairExcelPackage, type CellBox } from './excelPackage';
 import {
-  detectGridLines, fitText, fontGroups, layoutSegments, layoutTextItems, sampleBlockColors, textItemBoxes, wrapText,
+  detectGridLines, fitText, groupFontSizes, isCenteredIn, layoutSegments, layoutTextItems, pageTextSize,
+  sampleBlockColors, textItemBoxes, wrapText,
   type GridLines, type LayoutBlock, type RawTextItem, type Segment,
 } from './pdfLayout';
 
@@ -2361,10 +2362,22 @@ export const processPdf = async (
       else stackMembers.delete(blocks[members[0]].block.stack!.id);
     }
 
-    const sharedSize = new Map<number, number>();
-    for (const group of fontGroups(blocks.map(b => b.block))) {
-      const size = Math.min(...group.map(k => preferred[k]));
-      if (Number.isFinite(size)) for (const k of group) sharedSize.set(k, size);
+    const sharedSize = groupFontSizes(blocks.map(b => b.block), preferred);
+
+    // 整頁統一：一般文字（大標題、直排標籤除外）不超過「大部分文字」用的字級
+    // （依字數加權的中位數）。不然空間大的短標籤、簽名欄會比塞得緊的內文大一大截，整頁忽大忽小。
+    const pageCap = pageTextSize(blocks.map((b, k) => ({
+      size: sharedSize.get(k) ?? preferred[k],
+      sourceSize: b.block.fontSize,
+      vertical: b.block.vertical,
+      chars: itemTexts(b.gi).reduce((n, t) => n + t.text.length, 0),
+    })));
+    if (pageCap) {
+      blocks.forEach((b, k) => {
+        if (!pageCap.applies[k]) return;
+        const size = sharedSize.get(k) ?? preferred[k];
+        if (Number.isFinite(size) && size > pageCap.size) sharedSize.set(k, pageCap.size);
+      });
     }
 
     // 重排的清單：照原本位置放，放不下才往下推；推到超出格子就改成從上往下緊接著排
@@ -2439,13 +2452,13 @@ export const processPdf = async (
       const slotH = (box.bottom - box.top) / texts.length;
       // 原文在格子裡置中的（例如表頭），譯文也置中
       const c = block.cell;
-      const centered = !!c && c.hasLeft && c.hasRight &&
-        Math.abs((block.source.left - c.left) - (c.right - block.source.right)) < 3 &&
-        block.source.left - c.left > 4;
+      const centered = !!c && isCenteredIn(block.source, c);
 
+      // 字級被壓到跟同一排、同一頁一致的：排成一行時不要再比那個字級小太多
+      const capped = (sharedSize.get(k) ?? Infinity) < (block.maxFont ?? block.fontSize) - 0.01;
       texts.forEach((t, slot) => {
         const text = multi ? `[${t.lang}] ${t.text}` : t.text;
-        const fit = fitText(text, width, slotH, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio);
+        const fit = fitText(text, width, slotH, maxFont, minFont, measure, PDF_LAYOUT.lineHeightRatio, capped ? 0.92 : 0.8);
         ctx.font = fontFor(fit.fontSize);
         ctx.fillStyle = inkFor(t.li);
         const lh = fit.fontSize * PDF_LAYOUT.lineHeightRatio;
@@ -2461,6 +2474,8 @@ export const processPdf = async (
           if (centered) {
             const cellCenter = (c!.left + c!.right) / 2;
             x = Math.max(box.left, cellCenter - ctx.measureText(line).width / 2);
+          } else if (block.alignRight) {
+            x = Math.max(box.left, box.right - ctx.measureText(line).width);
           }
           ctx.fillText(line, x, baseline);
           baseline += lh;
