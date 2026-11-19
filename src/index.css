@@ -317,7 +317,7 @@ button.neo-pill:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0 v
 .tdl__item.is-saved .tdl__act { background: #fff; color: var(--t-green); box-shadow: inset 0 0 0 2px var(--t-green); }
 @media (min-width: 1024px) {
   .tri { flex: 1; max-height: 600px; }
-  .tri__title { font-size: 1.45rem; }
+  .tri__title { font-size: 1.3rem; }
   .tri__cols { flex: 1; display: grid; grid-template-columns: 1.1fr 1.25fr 0.9fr; gap: 1.25rem; }
   .tcard { padding: 1.4rem 1.25rem 1.2rem; }
   .tlist { flex: 1; overflow: auto; }
