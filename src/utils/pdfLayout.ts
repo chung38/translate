@@ -57,6 +57,8 @@ export interface LayoutBlock {
   stack?: { id: number; region: Box };
   /** 原文是靠右的一行（例：「記錄：陳淑燕 4/29」）：譯文往左延伸、靠右對齊 */
   alignRight?: boolean;
+  /** 原文是表格外置中的標題（例：「會議記錄表」）：譯文以原文中心為準左右展開、置中 */
+  alignCenter?: boolean;
 }
 
 export const LAYOUT = {
@@ -550,6 +552,11 @@ export function layoutSegments(
   const contentRight = longRights.length
     ? longRights[Math.floor(longRights.length / 2)]
     : (segs.length ? Math.max(...segs.map(s => s.seg.right)) : pageW);
+  const longLefts = segs
+    .filter(s => s.seg.right - s.seg.left > pageW * 0.55)
+    .map(s => s.seg.left)
+    .sort((a, b) => a - b);
+  const contentLeft = longLefts.length ? longLefts[Math.floor(longLefts.length / 2)] : LAYOUT.pageMargin;
 
   // 1) 接成段落
   type Para = { lines: Segment[]; cell: Cell };
@@ -606,7 +613,7 @@ export function layoutSegments(
 
   type Draft = {
     p: Para; source: Box; fontSize: number; own: Set<Segment>;
-    left: number; top: number; right: number; vertical: boolean; alignRight: boolean;
+    left: number; top: number; right: number; vertical: boolean; alignRight: boolean; alignCenter: boolean;
   };
   const drafts: Draft[] = paras.map(p => {
     const source = unionBox(p.lines);
@@ -637,7 +644,23 @@ export function layoutSegments(
     // 不然窄欄的「備註」只剩原文那一點寬，英文 Remarks 會被拆成兩半
     let left = Math.max(source.left, cell.hasLeft ? cell.left + pad : 0);
     let alignRight = false;
-    if (isCenteredIn(source, cell)) {
+    let alignCenter = false;
+    const sameLineNeighbor = all.some(o => !own.has(o) &&
+      Math.min(o.bottom, source.bottom) - Math.max(o.top, source.top) > 0);
+    // 表格外置中的標題（例：「會議記錄表」）：每一行的中心都在頁面（或版心）正中間，同一行沒有別的字
+    const centerOf = (l: { left: number; right: number }) => (l.left + l.right) / 2;
+    const tol = Math.max(3, fontSize * 0.6);
+    const pageCenters = [pageW / 2, (contentLeft + contentRight) / 2];
+    const centeredOnPage = !vertical && !cell.hasLeft && !cell.hasRight && !sameLineNeighbor &&
+      source.right - source.left < (contentRight - contentLeft) * 0.75 &&
+      pageCenters.some(c0 => p.lines.every(l => Math.abs(centerOf(l) - c0) < tol));
+    if (centeredOnPage) {
+      const c0 = centerOf(source);
+      const half = Math.max(source.right - c0, Math.min(c0 - LAYOUT.pageMargin, pageW - LAYOUT.pageMargin - c0));
+      left = c0 - half;
+      right = c0 + half;
+      alignCenter = true;
+    } else if (isCenteredIn(source, cell)) {
       left = cell.left + pad;
       for (const o of all) {
         if (own.has(o)) continue;
@@ -659,14 +682,14 @@ export function layoutSegments(
     }
 
     return {
-      p, source, fontSize, own, right, vertical, left, alignRight,
+      p, source, fontSize, own, right, vertical, left, alignRight, alignCenter,
       top: Math.max(source.top, cell.hasTop ? cell.top + pad : 0),
     };
   });
 
   const blocks: LayoutBlock[] = [];
   for (const d of drafts) {
-    const { p, source, fontSize, own, left, top, right, vertical, alignRight } = d;
+    const { p, source, fontSize, own, left, top, right, vertical, alignRight, alignCenter } = d;
     const { cell } = p;
 
     const text = cleanCjkSpacing(readStackedColumns(p.lines));
@@ -722,6 +745,7 @@ export function layoutSegments(
       cell: cell.hasLeft || cell.hasRight || cell.hasTop || cell.hasBottom ? cell : undefined,
       vertical,
       ...(alignRight ? { alignRight: true } : {}),
+      ...(alignCenter ? { alignCenter: true } : {}),
     });
   }
 

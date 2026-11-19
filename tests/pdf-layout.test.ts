@@ -354,6 +354,21 @@ describe('排版小細節', () => {
     expect(rec.box.left).toBeLessThan(100);
   });
 
+  it('表格外置中的標題（會議記錄表）譯文以頁面中心左右展開、置中', () => {
+    const title: Segment = { text: '會議記錄表', left: 242, right: 353, top: 40, bottom: 62, fontSize: 22, glyphs: [] };
+    const page: Segment = { text: '第 1 頁', left: 530, right: 565, top: 70, bottom: 82, fontSize: 12, glyphs: [] };
+    const body: Segment = { text: '這是一行很長的內文用來決定版心寬度這是一行很長的內文用來決定版心寬度', left: 30, right: 565, top: 120, bottom: 132, fontSize: 12, glyphs: [] };
+    const blocks = layoutSegments([title, page, body], 595, 842);
+    const t = blocks.find(b => b.text === '會議記錄表')!;
+    expect(t.alignCenter).toBe(true);
+    expect((t.box.left + t.box.right) / 2).toBeCloseTo(297.5, 0);
+    expect(t.box.right - t.box.left).toBeGreaterThan(400);
+    // 底下的「第 1 頁」在展開後的範圍裡：譯文高度不會蓋到它
+    expect(t.box.bottom).toBeLessThanOrEqual(70);
+    // 靠左的一般段落不算置中
+    expect(blocks.find(b => b.text.startsWith('這是'))!.alignCenter).toBeFalsy();
+  });
+
   it('置中的窄格標籤可以用整格寬（Remarks 不會被拆成兩半）', () => {
     const grid: GridLines = {
       v: [538, 569].map(x => ({ x, y0: 180, y1: 222 })),

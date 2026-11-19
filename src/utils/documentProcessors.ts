@@ -2501,6 +2501,8 @@ export const processPdf = async (
           if (centered) {
             const cellCenter = (c!.left + c!.right) / 2;
             x = Math.max(box.left, cellCenter - ctx.measureText(line).width / 2);
+          } else if (block.alignCenter) {
+            x = Math.max(box.left, (box.left + box.right) / 2 - ctx.measureText(line).width / 2);
           } else if (block.alignRight) {
             x = Math.max(box.left, box.right - ctx.measureText(line).width);
           }
