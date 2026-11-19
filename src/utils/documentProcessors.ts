@@ -1,5 +1,6 @@
 import React from 'react';
 import type { Worksheet } from 'exceljs';
+import { fitWorksheet, isSymbolFont, splitSymbolRuns, symbolCharsOf, type MeasureText } from './excelFit';
 import {
   detectGridLines, fitText, fontGroups, layoutSegments, layoutTextItems, sampleBlockColors, textItemBoxes, wrapText,
   type GridLines, type LayoutBlock, type RawTextItem, type Segment,
@@ -1514,6 +1515,30 @@ export const processDocx = async (
   return generatedFiles;
 };
 
+// Excel 撐開表格用：用瀏覽器量字寬（盡量用儲存格本來的字型，沒有的話用相近的中文字型）
+const excelMeasureCache = new Map<string, number>();
+let excelMeasureCtx: CanvasRenderingContext2D | null = null;
+const measureExcelText: MeasureText = (text, size, font, bold) => {
+  const key = `${font || ''}|${bold ? 1 : 0}|${text}`;
+  let w100 = excelMeasureCache.get(key);
+  if (w100 === undefined) {
+    if (!excelMeasureCtx && typeof document !== 'undefined') {
+      excelMeasureCtx = document.createElement('canvas').getContext('2d');
+    }
+    if (excelMeasureCtx) {
+      const family = [font ? `"${font}"` : '', '"PMingLiU"', '"新細明體"', '"Microsoft JhengHei"', '"Noto Sans TC"', '"Noto Sans Thai"', 'Arial', 'sans-serif']
+        .filter(Boolean).join(', ');
+      excelMeasureCtx.font = `${bold ? 'bold ' : ''}100px ${family}`;
+      w100 = excelMeasureCtx.measureText(text).width;
+    } else {
+      // 沒有畫布（測試環境）：中文一個字一個字寬，其他半個字寬
+      w100 = Array.from(text).reduce((a, ch) => a + (/[\u2e80-\u9fff\uff00-\uffef]/.test(ch) ? 100 : 55), 0);
+    }
+    excelMeasureCache.set(key, w100);
+  }
+  return (w100 / 100) * size;
+};
+
 export const processExcel = async (
   file: File, 
   targetLanguages: string[],
@@ -1657,7 +1682,8 @@ export const processExcel = async (
     const newWorkbook = new ExcelJS.Workbook();
     await newWorkbook.xlsx.load(await file.arrayBuffer());
 
-    const translatedCols: Record<string, Set<number>> = {};
+    const translatedCells: Record<string, Set<string>> = {};
+    const originalWrap: Record<string, Map<string, boolean>> = {};
 
     for (const worksheet of newWorkbook.worksheets) {
       worksheet.eachRow((row, rowNumber) => {
@@ -1676,6 +1702,10 @@ export const processExcel = async (
             }
 
             const newRichText: any[] = [];
+            const symbolChars = symbolCharsOf(
+              typeof cell.value === 'object' ? (cell.value as any)?.richText : undefined
+            );
+            const plainDefaultFont = isSymbolFont(defaultFont) ? {} : defaultFont;
 
             if (translationItem.isFormula) {
               newRichText.push({ text: String((cell.value as any).result || ''), font: defaultFont });
@@ -1694,7 +1724,10 @@ export const processExcel = async (
               const rawTranslatedText = translationItem.translations[lang] || '(翻譯失敗)';
               const translatedText = sanitizeOutputText(rawTranslatedText, lang);
               if (isEchoTranslation(translationItem.original, translatedText)) return;
-              const adjustedDefaultFont = adjustFontForLanguage(defaultFont, lang);
+              const adjustedDefaultFont = adjustFontForLanguage(plainDefaultFont, lang);
+              const pushTranslated = (text: string, font: any) => {
+                for (const run of splitSymbolRuns(text, font, adjustedDefaultFont, symbolChars)) newRichText.push(run);
+              };
 
               const hasMergedRichText = !!(translationItem.mergedRichText && translationItem.mergedRichText.length > 0);
 
@@ -1721,29 +1754,29 @@ export const processExcel = async (
                     const betweenText = translatedText.substring(lastIndex, match.index);
                     if (betweenText) {
                       const cleanBetween = stripTags(betweenText);
-                      newRichText.push({ text: cleanBetween, font: adjustedDefaultFont });
+                      pushTranslated(cleanBetween, adjustedDefaultFont);
                     }
                   }
                   
                   if (text) {
-                    let finalText = stripTags(text);
-                    newRichText.push({ text: finalText, font: adjustedOriginalFont });
+                    const finalText = stripTags(text);
+                    pushTranslated(finalText, adjustedOriginalFont);
                   }
                   lastIndex = fRegex.lastIndex;
                 }
                 
                 if (!hasTagsInTranslation) {
                   const cleanText = stripTags(translatedText);
-                  newRichText.push({ text: cleanText, font: adjustedDefaultFont });
+                  pushTranslated(cleanText, adjustedDefaultFont);
                 } else if (lastIndex < translatedText.length) {
                   const remainingText = translatedText.substring(lastIndex);
                   if (remainingText) {
                     const cleanText = stripTags(remainingText);
-                    newRichText.push({ text: cleanText, font: adjustedDefaultFont });
+                    pushTranslated(cleanText, adjustedDefaultFont);
                   }
                 }
               } else {
-                newRichText.push({ text: '\n' + stripTags(translatedText), font: adjustedDefaultFont });
+                pushTranslated('\n' + stripTags(translatedText), adjustedDefaultFont);
               }
             });
             
@@ -1755,8 +1788,10 @@ export const processExcel = async (
             });
             cell.value = { richText: cleanedRichText };
 
-            if (!translatedCols[worksheet.name]) translatedCols[worksheet.name] = new Set();
-            translatedCols[worksheet.name].add(colNumber);
+            if (!translatedCells[worksheet.name]) translatedCells[worksheet.name] = new Set();
+            translatedCells[worksheet.name].add(cell.address);
+            if (!originalWrap[worksheet.name]) originalWrap[worksheet.name] = new Map();
+            originalWrap[worksheet.name].set(cell.address, !!cell.alignment?.wrapText);
           }
           cell.alignment = { 
             ...(cell.alignment || {}), 
@@ -1765,16 +1800,14 @@ export const processExcel = async (
         });
       });
 
-      const MAX_COL_WIDTH = 30;
-      const sheetTranslatedCols = translatedCols[worksheet.name];
-      if (sheetTranslatedCols) {
-        sheetTranslatedCols.forEach(colNumber => {
-          const col = worksheet.getColumn(colNumber);
-          const currentWidth = (col.width && col.width > 0) ? col.width : 12;
-          if (currentWidth > MAX_COL_WIDTH) {
-            col.width = MAX_COL_WIDTH;
-          }
-        });
+      // 譯文加進去之後把表格撐開（列高、太窄的欄），不用再手動拉
+      const sheetCells = translatedCells[worksheet.name];
+      if (sheetCells?.size) {
+        try {
+          fitWorksheet(worksheet, sheetCells, measureExcelText, { originalWrap: originalWrap[worksheet.name] });
+        } catch (fitErr) {
+          console.warn(`工作表「${worksheet.name}」自動調整列高失敗，保留原本大小`, fitErr);
+        }
       }
     }
 
